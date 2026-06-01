@@ -380,3 +380,34 @@ tests, all green.
 - `src/index_deck.py` — CLI
 - `tests/test_parser_acceptance.py` — 13 acceptance tests
 - `out/index.json` — generated artifact
+
+## PDF text-layer bbox refinement (2026-06-01)
+
+**Status:** complete. Text element bboxes are now glyph-exact from the soffice
+PDF text layer, with per-line sub-boxes.
+
+- [x] `src/render.py` — cached `deck_pdf()`; `render_deck` rasterizes from it (PNG output unchanged, guarded by test_render.py)
+- [x] `src/refine_text.py` — pure core (`words_to_inches`, `assign_words` w/ smallest-box tiebreak, `cluster_lines`, `union_bbox`) + `refine_index` + CLI
+- [x] `tests/test_refine_text.py` — unit + integration (soffice-gated)
+- [x] `out/index.refined.json` — index with refined `bbox`, additive `shape_bbox`, `line_bboxes`, `bbox_source`
+
+**Design choices**
+- PDF points / 72 = inches, scale derived per page (`slide_w / (page_w_pt/72)`)
+  so it is robust to any soffice page scaling.
+- Words assigned to the smallest-area containing element so merged
+  diagram_label/stat boxes don't steal each other's text.
+- `cluster_lines` requires >50% vertical overlap (not a sliver) to merge words
+  into a line, preventing cascade-merge of tightly-leaded distinct lines.
+- `{chart, chart_category, image, picture, arrow}` excluded — chart sub-regions
+  stay as tuned by chart_geom; visual elements carry no snap-worthy PDF text.
+- No-match elements fall back to `bbox_source="shape"` with the original box, so
+  text baked into images never regresses.
+
+**Scope boundary:** per-line *data* is emitted now. Highlighting a single spoken
+line (matcher picks which line; viewer draws that one box) is a noted follow-up.
+
+**How to run**
+```
+python3 -m src.refine_text                                  # out/index.json -> out/index.refined.json
+python3 -m src.refine_text --input out/index.enriched.json --out out/index.refined.json
+```
