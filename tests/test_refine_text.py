@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+DECK = ROOT / "test_deck.pptx"
 
 SOFFICE_MISSING = shutil.which("soffice") is None
 
@@ -12,12 +16,12 @@ SOFFICE_MISSING = shutil.which("soffice") is None
 def test_deck_pdf_caches(tmp_path):
     from src.render import deck_pdf
 
-    pdf = deck_pdf("test_deck.pptx", tmp_path)
+    pdf = deck_pdf(DECK, tmp_path)
     assert pdf.exists()
     assert pdf.suffix == ".pdf"
     mtime = pdf.stat().st_mtime
 
     # Second call must be a cache hit: same path, not regenerated.
-    pdf2 = deck_pdf("test_deck.pptx", tmp_path)
+    pdf2 = deck_pdf(DECK, tmp_path)
     assert pdf2 == pdf
     assert pdf2.stat().st_mtime == mtime

@@ -65,7 +65,11 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
 
 
 def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> list[Path]:
-    """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths."""
+    """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths.
+
+    The intermediate PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`)
+    so downstream tools (e.g. text-bbox refinement) can reuse it.
+    """
     pptx_path = Path(pptx_path).resolve()
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
