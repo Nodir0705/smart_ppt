@@ -67,6 +67,23 @@ class MatchResult:
     slide_no: int
 
 
+def best_index(preferred: str | Path | None = None, out_dir: str | Path = "out") -> Path:
+    """Resolve which index file to use.
+
+    An explicit `preferred` path wins; otherwise return the richest available
+    among scoped > refined > base (so the live app gets the Phase-1 grounding
+    improvements by default while still working with only the base index).
+    """
+    if preferred:
+        return Path(preferred)
+    out = Path(out_dir)
+    for name in ("index.scoped.json", "index.refined.json", "index.json"):
+        p = out / name
+        if p.exists():
+            return p
+    return out / "index.json"
+
+
 # ---------- index loader with embedding cache ----------
 
 class Index:
@@ -211,8 +228,8 @@ class PolicyConfig:
     # --- group-aware temporal bonuses (added to raw score to form the effective
     #     score the gap/ranking operate on; threshold still applies to RAW score
     #     so bonuses never promote a genuinely-irrelevant element) ---
-    stay_bonus: float = 0.08          # reward staying on the current element
-    same_group_bonus: float = 0.06    # reward staying within the current group (e.g. same chart)
+    stay_bonus: float = 0.06          # active element resists a same-group sibling (intra-group anti-flicker)
+    same_group_bonus: float = 0.04    # pull attention into the active group (e.g. keep "match" in the latency chart)
 
 
 class MatchPolicy:
@@ -254,13 +271,24 @@ class MatchPolicy:
         if not per_el:
             return MatchResult(None, None, None, 0.0, 0.0, None, slide_no), []
 
+        # The active element only resists a SAME-GROUP sibling (intra-group
+        # flicker). When the strongest rival is in a different group it's a real
+        # topic change, so the active yields freely (no stay bonus) — this keeps
+        # legitimate switches (e.g. between diagram nodes) working.
+        top_rival = next((r for _s, r in per_el if r.id != self.active_id), None)
+        challenged_same_group = (
+            self.active_id is not None
+            and top_rival is not None
+            and self._active_group is not None
+            and top_rival.group == self._active_group
+        )
+
         def effective(raw: float, ref: ElementRef) -> float:
-            bonus = 0.0
             if ref.id == self.active_id:
-                bonus += self.cfg.stay_bonus
-            elif self._active_group is not None and ref.group == self._active_group:
-                bonus += self.cfg.same_group_bonus
-            return raw + bonus
+                return raw + (self.cfg.stay_bonus if challenged_same_group else 0.0)
+            if self._active_group is not None and ref.group == self._active_group:
+                return raw + self.cfg.same_group_bonus
+            return raw
 
         ranked = sorted(per_el, key=lambda t: effective(*t), reverse=True)
         best_raw, best = ranked[0]
