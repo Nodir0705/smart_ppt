@@ -1,0 +1,12 @@
+{
+  "_doc": "Ground-truth highlight trajectories per slide for the narration in scripts/narration.json. Each slide lists the ORDERED sequence of elements that should light up as the narrator speaks. Each step is a list of acceptable element ids (alternates for genuinely ambiguous references). Scored as ordered recall: walk the expected steps, advancing a pointer through the actual trajectory; a step hits if any acceptable id appears at/after the pointer.",
+  "slides": [
+    {"slide": 1, "expected": [["s1_e0"], ["s1_e1"]]},
+    {"slide": 2, "expected": [["s2_e1"], ["s2_e2"], ["s2_e3"], ["s2_e4"], ["s2_e5"], ["s2_e6"], ["s2_e0", "s2_e7"]]},
+    {"slide": 3, "expected": [["s3_e0"], ["s3_e4"], ["s3_e5"], ["s3_e6"], ["s3_e7"], ["s3_e8", "s3_e11", "s3_e14"], ["s3_e9"], ["s3_e10"], ["s3_e12"], ["s3_e13"]]},
+    {"slide": 4, "expected": [["s4_e0"], ["s4_e2"], ["s4_e4"], ["s4_e3"], ["s4_e5"], ["s4_e7"], ["s4_e8"], ["s4_e9"]]},
+    {"slide": 5, "expected": [["s5_e0"], ["s5_e2"], ["s5_e3"], ["s5_e4"], ["s5_e5"], ["s5_e6"]]},
+    {"slide": 6, "expected": [["s6_e4"], ["s6_e0"], ["s6_e1"], ["s6_e2"], ["s6_e3"]]},
+    {"slide": 7, "expected": [["s7_e0"], ["s7_e1", "s7_e2"]]}
+  ]
+}
