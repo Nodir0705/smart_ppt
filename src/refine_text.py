@@ -186,7 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     deck = args.deck or index["deck"]
     pdf_path = deck_pdf(deck, args.pdf_dir)
     refined = refine_index(index, pdf_path)
-    Path(args.out).write_text(json.dumps(refined, indent=2))
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(refined, indent=2))
 
     n = sum(1 for s in refined["slides"] for e in s["elements"]
             if e.get("bbox_source") == "pdf_text")

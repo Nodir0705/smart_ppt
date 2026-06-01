@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DECK = ROOT / "test_deck.pptx"
+INDEX_JSON = ROOT / "out" / "index.json"
 
 SOFFICE_MISSING = shutil.which("soffice") is None
 
@@ -172,13 +173,14 @@ def test_refine_index_pure_no_pdf_words(monkeypatch):
 
 
 @pytest.mark.skipif(SOFFICE_MISSING, reason="soffice not installed")
+@pytest.mark.skipif(not INDEX_JSON.exists(), reason="out/index.json not generated")
 def test_refine_index_real_deck_tightens_text(tmp_path):
     import json as _json
 
     from src.refine_text import refine_index
     from src.render import deck_pdf
 
-    index = _json.load(open(ROOT / "out" / "index.json"))
+    index = _json.load(open(INDEX_JSON))
     pdf = deck_pdf(DECK, tmp_path)
     refined = refine_index(index, pdf)
 
