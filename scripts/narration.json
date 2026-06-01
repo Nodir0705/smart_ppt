@@ -1,0 +1,34 @@
+{
+  "voice": "out/voices/en_US-amy-low.onnx",
+  "default_pause_ms": 600,
+  "slides": [
+    {
+      "slide": 1,
+      "text": "Welcome to The Smart Pointer. A speech driven highlighter for live presentations."
+    },
+    {
+      "slide": 2,
+      "text": "Here is how it works. First, we parse the deck offline and index every pointable element. Then we extract text, position, and trigger phrases. At runtime, we listen with streaming speech to text. We match spoken words to the nearest indexed element. Finally we highlight it without needing a laser pointer. The match itself takes less than one millisecond."
+    },
+    {
+      "slide": 3,
+      "text": "The pipeline has four stages. Parse and index runs offline and is slow but happens only once. Speech to text runs live as a streaming process. Match and rank is sub millisecond per query. And the highlight overlay happens in a single frame."
+    },
+    {
+      "slide": 4,
+      "text": "Where does the time go? Looking at latency by stage, the STT engine dominates with one hundred and eighty milliseconds. Render takes about sixteen. Match is one. And sync is four. On the build effort side, parsing takes half the work. Matching is twenty percent. And the overlay UI takes thirty."
+    },
+    {
+      "slide": 5,
+      "text": "Accuracy versus confidence threshold. At a low threshold like zero point one we get many false positives. At zero point three accuracy improves. Zero point five is the sweet spot. Past zero point seven we start missing valid matches. And at zero point nine we miss most of them."
+    },
+    {
+      "slide": 6,
+      "text": "Here is the system architecture. Audio enters at the microphone. It flows to the speech to text engine, which converts it into words. The matcher finds the best element on the current slide. And the overlay draws the highlight on top."
+    },
+    {
+      "slide": 7,
+      "text": "This slide contains a real image element. The figure on the left is a placeholder photo region that the vision model must label."
+    }
+  ]
+}
