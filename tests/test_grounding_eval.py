@@ -1,0 +1,54 @@
+"""Phase-1 grounding acceptance test (slow, opt-in).
+
+Runs the full TTS->STT->matcher->policy audit against the ground-truth cues and
+asserts the three target failures are fixed, no per-slide regression below the
+post-Phase-1 floor, overall accuracy holds, and flicker stays modest.
+
+Opt-in: set SMARTPPT_RUN_EVAL=1. It needs soffice, the narration WAVs, and the
+scoped index (out/index.scoped.json); skips cleanly when any are absent.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+SCOPED = ROOT / "out" / "index.scoped.json"
+MANIFEST = ROOT / "out" / "narration" / "manifest.json"
+
+_reasons = []
+if os.environ.get("SMARTPPT_RUN_EVAL") != "1":
+    _reasons.append("set SMARTPPT_RUN_EVAL=1 to run")
+if shutil.which("soffice") is None:
+    _reasons.append("soffice not installed")
+if not SCOPED.exists():
+    _reasons.append("out/index.scoped.json missing (run src.group_scope)")
+if not MANIFEST.exists():
+    _reasons.append("narration manifest missing (run src.tts)")
+
+pytestmark = pytest.mark.skipif(bool(_reasons), reason="; ".join(_reasons))
+
+
+def test_phase1_grounding_targets_met():
+    from tools.timeline_audit import audit
+
+    res = audit(str(SCOPED), normalize_index=True)
+    slides = res["slides"]
+    overall = res["overall"]
+
+    # The three originally-failing targets must now be highlighted.
+    assert "s4_e2" in slides[4]["trajectory"], "STT latency bar never lit"
+    assert "s4_e3" in slides[4]["trajectory"], "Match latency bar never lit"
+    assert "s6_e1" in slides[6]["trajectory"], "STT Engine node never lit"
+
+    # No per-slide regression below the Phase-1 floor.
+    floor = {1: 2, 2: 6, 3: 9, 4: 7, 5: 6, 6: 5, 7: 2}
+    for sno, lo in floor.items():
+        assert slides[sno]["hits"] >= lo, f"slide {sno} regressed: {slides[sno]['hits']} < {lo}"
+
+    # Overall accuracy and flicker stay in range (baseline was 34/40, flicker 6).
+    assert overall["hits"] >= 36, f"overall accuracy dropped: {overall['hits']}/40"
+    assert overall["flicker"] <= 10, f"too much flicker: {overall['flicker']}"

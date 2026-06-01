@@ -103,6 +103,7 @@ def run(index_path, only=None, normalize=None):
     engine = VoskEngine(sample_rate=16000)
 
     tot_hits = tot_steps = tot_flicker = 0
+    per_slide: dict[int, dict] = {}
     for item in manifest:
         sno = item["slide"]
         if only is not None and sno != only:
@@ -114,12 +115,26 @@ def run(index_path, only=None, normalize=None):
         tot_hits += hits
         tot_steps += steps
         tot_flicker += flicker
+        per_slide[sno] = {"hits": hits, "steps": steps, "missed": missed,
+                          "flicker": flicker, "trajectory": [x for x in traj if x]}
         flag = "" if hits == steps else f"   MISSED {missed}"
         print(f"slide {sno}: {hits}/{steps}  flicker={flicker}{flag}")
         print(f"          trajectory: {[x for x in traj]}")
     acc = tot_hits / tot_steps if tot_steps else 0.0
     print(f"\nOVERALL: {tot_hits}/{tot_steps} = {acc:.3f}   total_flicker={tot_flicker}")
-    return tot_hits, tot_steps, tot_flicker
+    return {"slides": per_slide,
+            "overall": {"hits": tot_hits, "steps": tot_steps, "flicker": tot_flicker}}
+
+
+def audit(index_path, normalize_index=True):
+    """Programmatic entry: returns the structured result dict (see run())."""
+    normalize = None
+    if normalize_index:
+        from src.asr_normalize import build_alias_map, normalize as _norm
+        raw = json.loads(Path(index_path).read_text())
+        amap = build_alias_map(raw)
+        normalize = (lambda t: _norm(t, amap)) if amap else None
+    return run(index_path, normalize=normalize)
 
 
 def main(argv=None):
