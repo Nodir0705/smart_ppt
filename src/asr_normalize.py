@@ -77,7 +77,7 @@ def build_alias_map(index: dict) -> dict[str, str]:
     acronyms: set[str] = set()
     for slide in index.get("slides", []):
         for elem in slide.get("elements", []):
-            text = elem.get("text", "")
+            text = elem.get("text") or ""
             for match in _ACRONYM_RE.findall(text):
                 acronyms.add(match)
 

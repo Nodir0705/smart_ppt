@@ -51,3 +51,12 @@ def test_load_aliases_reads_overrides(tmp_path):
     p.write_text(json.dumps({"Speech To Text": "stt"}))
     d = load_aliases(p)
     assert d.get("speech to text") == "stt"
+
+
+def test_build_alias_map_handles_none_text():
+    # arrows/images can have text=None — must not crash
+    index = {"slides": [{"slide_number": 6, "elements": [
+        {"id": "s6_e5", "type": "arrow", "text": None},
+        {"id": "s6_e1", "type": "diagram_label", "text": "STT Engine"}]}]}
+    amap = build_alias_map(index)
+    assert amap.get("s t t") == "stt"
