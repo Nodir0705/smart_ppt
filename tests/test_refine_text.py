@@ -106,3 +106,23 @@ def test_apply_refinement_sets_pdf_text():
     assert e["bbox"] == {"x": 1.0, "y": 1.0, "w": 1.4, "h": 0.2, "units": "inches"}
     assert len(e["line_bboxes"]) == 1
     assert e["bbox"]["w"] < e["shape_bbox"]["w"]
+
+
+def test_cluster_lines_no_cascade_on_sliver_overlap():
+    from src.refine_text import cluster_lines
+
+    # consecutive line boxes overlap by only 0.05 (tight leading) -> 3 distinct lines
+    w = lambda t, y0: {"text": t, "x0": 1.0, "y0": y0, "x1": 1.5, "y1": y0 + 0.2}
+    words = [w("r1", 1.0), w("r2", 1.15), w("r3", 1.30)]
+    lines = cluster_lines(words, y_tol=0.03)
+    assert [[x["text"] for x in ln] for ln in lines] == [["r1"], ["r2"], ["r3"]]
+
+
+def test_cluster_lines_groups_within_y_tol():
+    from src.refine_text import cluster_lines
+
+    # two short words, boxes do not overlap but centers are within y_tol -> same line
+    a = {"text": "a", "x0": 1.0, "y0": 1.000, "x1": 1.4, "y1": 1.010}
+    b = {"text": "b", "x0": 1.5, "y0": 1.011, "x1": 1.9, "y1": 1.021}
+    lines = cluster_lines([a, b], y_tol=0.03)
+    assert [[x["text"] for x in ln] for ln in lines] == [["a", "b"]]

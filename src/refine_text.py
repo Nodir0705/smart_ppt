@@ -88,14 +88,18 @@ def cluster_lines(words: list[dict], y_tol: float = 0.03) -> list[list[dict]]:
     ws = sorted(words, key=lambda w: ((w["y0"] + w["y1"]) / 2.0, w["x0"]))
     lines: list[list[dict]] = []
     for w in ws:
+        wh = w["y1"] - w["y0"]
         cy = (w["y0"] + w["y1"]) / 2.0
         placed = False
         for line in lines:
             ly0 = min(x["y0"] for x in line)
             ly1 = max(x["y1"] for x in line)
+            lh = ly1 - ly0
             lcy = (ly0 + ly1) / 2.0
             overlap = min(w["y1"], ly1) - max(w["y0"], ly0)
-            if overlap > 0 or abs(cy - lcy) <= y_tol:
+            min_h = min(wh, lh)
+            strong_overlap = min_h > 0 and overlap > 0.5 * min_h
+            if strong_overlap or abs(cy - lcy) <= y_tol:
                 line.append(w)
                 placed = True
                 break
