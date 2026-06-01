@@ -126,3 +126,79 @@ def test_cluster_lines_groups_within_y_tol():
     b = {"text": "b", "x0": 1.5, "y0": 1.011, "x1": 1.9, "y1": 1.021}
     lines = cluster_lines([a, b], y_tol=0.03)
     assert [[x["text"] for x in ln] for ln in lines] == [["a", "b"]]
+
+
+def _slide(index, n):
+    return next(s for s in index["slides"] if s["slide_number"] == n)
+
+
+def test_refine_index_pure_no_pdf_words(monkeypatch):
+    """With an empty PDF (no words on any page), every text element falls back
+    to shape source — no crash, schema additive."""
+    import src.refine_text as rt
+
+    index = {
+        "deck": "x.pptx",
+        "slide_size": {"w": 13.333, "h": 7.5, "units": "inches"},
+        "slides": [{
+            "slide_number": 1,
+            "elements": [
+                {"id": "s1_e0", "type": "body", "text": "hello",
+                 "bbox": {"x": 1.0, "y": 1.0, "w": 4.0, "h": 1.0, "units": "inches"},
+                 "needs_vision": False},
+                {"id": "s1_e1", "type": "image", "text": "",
+                 "bbox": {"x": 0.0, "y": 0.0, "w": 2.0, "h": 2.0, "units": "inches"},
+                 "needs_vision": True},
+            ],
+        }],
+    }
+
+    class _Page:
+        width, height = 960.0, 540.0
+        def extract_words(self):
+            return []
+
+    class _PDF:
+        pages = [_Page()]
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(rt.pdfplumber, "open", lambda _p: _PDF())
+    out = rt.refine_index(index, "ignored.pdf")
+    e0 = out["slides"][0]["elements"][0]
+    assert e0["bbox_source"] == "shape"          # refinable but no words
+    assert e0["line_bboxes"] == []
+    assert "bbox_source" not in out["slides"][0]["elements"][1]  # image untouched
+
+
+@pytest.mark.skipif(SOFFICE_MISSING, reason="soffice not installed")
+def test_refine_index_real_deck_tightens_text(tmp_path):
+    import json as _json
+
+    from src.refine_text import refine_index
+    from src.render import deck_pdf
+
+    index = _json.load(open(ROOT / "out" / "index.json"))
+    pdf = deck_pdf(DECK, tmp_path)
+    refined = refine_index(index, pdf)
+
+    slide2 = _slide(refined, 2)
+    pdf_text = [e for e in slide2["elements"] if e.get("bbox_source") == "pdf_text"]
+    assert pdf_text, "expected at least one refined text element on slide 2"
+
+    sw = refined["slide_size"]["w"]
+    sh = refined["slide_size"]["h"]
+    eps = 0.05
+
+    # At least one element is strictly tighter horizontally than its shape box.
+    assert any(e["bbox"]["w"] < e["shape_bbox"]["w"] - eps for e in pdf_text)
+
+    for e in pdf_text:
+        assert e["line_bboxes"], f"{e['id']} has no line boxes"
+        for ln in e["line_bboxes"]:
+            assert ln["x"] >= e["shape_bbox"]["x"] - eps
+            assert ln["y"] >= e["shape_bbox"]["y"] - eps
+            assert ln["x"] + ln["w"] <= e["shape_bbox"]["x"] + e["shape_bbox"]["w"] + eps
+            assert ln["y"] + ln["h"] <= e["shape_bbox"]["y"] + e["shape_bbox"]["h"] + eps
+            assert -eps <= ln["x"] and ln["x"] + ln["w"] <= sw + eps
+            assert -eps <= ln["y"] and ln["y"] + ln["h"] <= sh + eps

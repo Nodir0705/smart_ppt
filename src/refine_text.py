@@ -145,3 +145,56 @@ def _apply_refinement(e: dict, words: list[dict]) -> None:
     e["line_bboxes"] = [union_bbox(line) for line in lines]
     e["bbox"] = union_bbox(words)
     e["bbox_source"] = "pdf_text"
+
+
+def refine_index(index: dict, pdf_path) -> dict:
+    """Refine every text element's bbox in `index` (mutated and returned)."""
+    slide_size = index["slide_size"]
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        pages = pdf.pages
+        if len(pages) != len(index["slides"]):
+            raise RuntimeError(
+                f"PDF has {len(pages)} pages but index has "
+                f"{len(index['slides'])} slides"
+            )
+        for slide, page in zip(index["slides"], pages):
+            sx = slide_size["w"] / (page.width / PT_PER_INCH)
+            sy = slide_size["h"] / (page.height / PT_PER_INCH)
+            words = words_to_inches(page.extract_words(), sx, sy)
+            refinable = [(e["id"], e["bbox"]) for e in slide["elements"]
+                         if _is_refinable(e)]
+            assigned = assign_words(refinable, words)
+            for e in slide["elements"]:
+                if _is_refinable(e):
+                    _apply_refinement(e, assigned.get(e["id"], []))
+    return index
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Refine text element bboxes via the PDF text layer."
+    )
+    ap.add_argument("--input", default="out/index.json")
+    ap.add_argument("--out", default="out/index.refined.json")
+    ap.add_argument("--deck", default=None,
+                    help="path to .pptx (default: index['deck'])")
+    ap.add_argument("--pdf-dir", default="out",
+                    help="where to cache the soffice PDF")
+    args = ap.parse_args(argv)
+
+    index = json.loads(Path(args.input).read_text())
+    deck = args.deck or index["deck"]
+    pdf_path = deck_pdf(deck, args.pdf_dir)
+    refined = refine_index(index, pdf_path)
+    Path(args.out).write_text(json.dumps(refined, indent=2))
+
+    n = sum(1 for s in refined["slides"] for e in s["elements"]
+            if e.get("bbox_source") == "pdf_text")
+    total = sum(1 for s in refined["slides"] for e in s["elements"]
+                if _is_refinable(e))
+    print(f"refined {n}/{total} text elements → {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
