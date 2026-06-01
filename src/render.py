@@ -33,8 +33,43 @@ def _pngs_are_fresh(pptx_path: Path, out_dir: Path, expected_count: int) -> bool
     return all(p.stat().st_mtime >= pptx_mtime for p in pngs)
 
 
+def _pdf_is_fresh(pptx_path: Path, pdf_path: Path) -> bool:
+    return pdf_path.exists() and pdf_path.stat().st_mtime >= pptx_path.stat().st_mtime
+
+
+def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
+    """Produce and cache `pdf_dir/<stem>.pdf` from the pptx (mtime-keyed)."""
+    pptx_path = Path(pptx_path).resolve()
+    pdf_dir = Path(pdf_dir).resolve()
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = pdf_dir / (pptx_path.stem + ".pdf")
+    if _pdf_is_fresh(pptx_path, pdf_path):
+        return pdf_path
+
+    with tempfile.TemporaryDirectory(prefix="smartppt_pdf_") as td:
+        td_path = Path(td)
+        r = subprocess.run(
+            [
+                "soffice", "--headless", "--nologo", "--nofirststartwizard",
+                "--convert-to", "pdf", "--outdir", str(td_path), str(pptx_path),
+            ],
+            check=False, capture_output=True, text=True, timeout=120,
+        )
+        produced = td_path / (pptx_path.stem + ".pdf")
+        if not produced.exists():
+            raise RuntimeError(
+                f"soffice failed to produce PDF.\nstdout: {r.stdout}\nstderr: {r.stderr}"
+            )
+        shutil.move(str(produced), str(pdf_path))
+    return pdf_path
+
+
 def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> list[Path]:
-    """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths."""
+    """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths.
+
+    The intermediate PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`)
+    so downstream tools (e.g. text-bbox refinement) can reuse it.
+    """
     pptx_path = Path(pptx_path).resolve()
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -47,28 +82,18 @@ def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> l
     for p in _existing_pngs(out_dir):
         p.unlink()
 
+    # 1) pptx → pdf (cached at out_dir.parent/<stem>.pdf so refine_text reuses it)
+    pdf_path = deck_pdf(pptx_path, out_dir.parent)
+
     with tempfile.TemporaryDirectory(prefix="smartppt_render_") as td:
         td_path = Path(td)
-        # 1) pptx → pdf
-        r = subprocess.run(
-            [
-                "soffice", "--headless", "--nologo", "--nofirststartwizard",
-                "--convert-to", "pdf", "--outdir", str(td_path), str(pptx_path),
-            ],
-            check=False, capture_output=True, text=True, timeout=120,
-        )
-        pdf_path = td_path / (pptx_path.stem + ".pdf")
-        if not pdf_path.exists():
-            raise RuntimeError(
-                f"soffice failed to produce PDF.\nstdout: {r.stdout}\nstderr: {r.stderr}"
-            )
         # 2) pdf → png (pdftoppm writes <prefix>-1.png, -2.png, ...)
         prefix = td_path / "slide"
         subprocess.run(
             ["pdftoppm", "-png", "-r", str(dpi), str(pdf_path), str(prefix)],
             check=True, capture_output=True, text=True, timeout=120,
         )
-        # 3) Move into out_dir with zero-padded names (slide_001.png, slide_002.png, ...)
+        # 3) Move into out_dir with zero-padded names (slide_001.png, ...)
         produced = sorted(td_path.glob("slide-*.png"))
         if len(produced) != expected:
             raise RuntimeError(
