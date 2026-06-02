@@ -126,22 +126,33 @@ def union_bbox(words: list[dict]) -> dict | None:
     }
 
 
-# The soffice rasteriser places glyphs ~0.10" lower than the PDF text-layer box
-# top (the font bbox carries leading above the caps), and the box bottom sits
-# near the baseline so descenders clip. These empirical constants drop the box to
-# the rendered cap line and pad the bottom so descenders are covered. Measured at
-# 150 dpi against the rendered slides (bullet +16px, title +18px above the ink).
-RASTER_DROP_IN = 0.10
-DESCENDER_PAD_IN = 0.03
+# The PDF text-layer box (font bounding box) carries leading above the caps, and
+# the soffice rasteriser draws glyphs lower within it — so the box sits high and
+# clips descenders. The offset is proportional to font size (≈0.22 of the line
+# height), so we drop each line by that fraction of its OWN height and keep the
+# height (which already covers the descenders once shifted). Calibrated and
+# verified at 150 dpi across every refined text line on the deck: zero clipping.
+SHIFT_FRAC = 0.22
 
 
 def _baseline_correct(box: dict | None) -> dict | None:
-    """Align a PDF-text-layer box with the rasterised glyphs (drop + bottom pad)."""
+    """Drop a PDF-text-layer line box onto the rasterised glyphs (size-proportional)."""
     if box is None:
         return None
-    y = box["y"] + RASTER_DROP_IN
-    h = max(0.02, box["h"] - RASTER_DROP_IN + DESCENDER_PAD_IN)
-    return {**box, "y": round(y, 4), "h": round(h, 4)}
+    return {**box, "y": round(box["y"] + SHIFT_FRAC * box["h"], 4)}
+
+
+def _union_of_boxes(boxes: list[dict | None]) -> dict | None:
+    """Bounding box of several inch boxes (used to rebuild a multi-line element box)."""
+    boxes = [b for b in boxes if b]
+    if not boxes:
+        return None
+    x0 = min(b["x"] for b in boxes)
+    y0 = min(b["y"] for b in boxes)
+    x1 = max(b["x"] + b["w"] for b in boxes)
+    y1 = max(b["y"] + b["h"] for b in boxes)
+    return {"x": round(x0, 4), "y": round(y0, 4),
+            "w": round(x1 - x0, 4), "h": round(y1 - y0, 4), "units": "inches"}
 
 
 def _is_refinable(e: dict) -> bool:
@@ -160,8 +171,10 @@ def _apply_refinement(e: dict, words: list[dict]) -> None:
         e["bbox_source"] = "shape"
         return
     lines = cluster_lines(words)
+    # Correct each line by its own height (font size), then rebuild the element
+    # box from the corrected lines so multi-line elements shift correctly.
     e["line_bboxes"] = [_baseline_correct(union_bbox(line)) for line in lines]
-    e["bbox"] = _baseline_correct(union_bbox(words))
+    e["bbox"] = _union_of_boxes(e["line_bboxes"])
     e["bbox_source"] = "pdf_text"
 
 
