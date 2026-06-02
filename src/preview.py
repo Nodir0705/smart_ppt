@@ -22,8 +22,7 @@ from .geom import inches_to_image_px
 from .matcher import Index, Matcher
 
 
-HIGHLIGHT_COLOUR = (255, 212, 0)        # amber
-HIGHLIGHT_HALO = (40, 40, 40)           # dark halo behind the amber
+HIGHLIGHT_HALO = (40, 40, 40)           # dark outline box around the active element
 HIGHLIGHT_WIDTH = 8                     # outline thickness in image px
 
 
@@ -75,14 +74,10 @@ def render_preview(
 
     x, y, w, h = inches_to_image_px(el_bbox_in, slide_w_in, slide_h_in, img.width, img.height)
     draw = ImageDraw.Draw(img)
-    # halo
-    draw.rectangle(
-        [x - 2, y - 2, x + w + 2, y + h + 2],
-        outline=HIGHLIGHT_HALO, width=HIGHLIGHT_WIDTH + 4,
-    )
+    # single dark outline box around the active element
     draw.rectangle(
         [x, y, x + w, y + h],
-        outline=HIGHLIGHT_COLOUR, width=HIGHLIGHT_WIDTH,
+        outline=HIGHLIGHT_HALO, width=HIGHLIGHT_WIDTH,
     )
     img.save(out_path)
     info["bbox_image_px"] = (round(x, 1), round(y, 1), round(w, 1), round(h, 1))

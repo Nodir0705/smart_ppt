@@ -26,7 +26,6 @@ from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
 from .stt import RollingBuffer, VoskEngine, hotwords_from_index
 
 
-AMBER = (255, 212, 0)
 HALO = (40, 40, 40)
 LABEL_BG = (255, 212, 0)
 LABEL_FG = (20, 20, 20)
@@ -48,9 +47,8 @@ def _pick_font(size: int) -> ImageFont.FreeTypeFont:
 def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
     x, y, w, h = bbox_px
     draw = ImageDraw.Draw(img)
-    # dark halo + amber outline
-    draw.rectangle([x - 2, y - 2, x + w + 2, y + h + 2], outline=HALO, width=10)
-    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=6)
+    # single dark outline box around the active element
+    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
     # numbered badge in top-left of the box
     badge_d = 56
     bx, by = x - 8, y - 8

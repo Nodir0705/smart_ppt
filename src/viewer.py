@@ -41,7 +41,7 @@ from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
 ANIM_MS = 180
 ANIM_FRAMES = 12
 HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # dark outline box around the active element
-HIGHLIGHT_OUTER_WIDTH = 9
+HIGHLIGHT_OUTER_WIDTH = 5
 
 
 class ViewerApp:
