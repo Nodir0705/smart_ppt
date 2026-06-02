@@ -104,7 +104,9 @@ def test_apply_refinement_sets_pdf_text():
     _apply_refinement(e, words)
     assert e["bbox_source"] == "pdf_text"
     assert e["shape_bbox"]["w"] == 9.0
-    assert e["bbox"] == {"x": 1.0, "y": 1.0, "w": 1.4, "h": 0.2, "units": "inches"}
+    # x/w are the tight glyph union; y/h carry the baseline raster correction
+    # (drop 0.10", pad bottom 0.03"): y 1.0->1.1, h 0.2 -> 0.2-0.10+0.03 = 0.13.
+    assert e["bbox"] == {"x": 1.0, "y": 1.1, "w": 1.4, "h": 0.13, "units": "inches"}
     assert len(e["line_bboxes"]) == 1
     assert e["bbox"]["w"] < e["shape_bbox"]["w"]
 
@@ -204,3 +206,12 @@ def test_refine_index_real_deck_tightens_text(tmp_path):
             assert ln["y"] + ln["h"] <= e["shape_bbox"]["y"] + e["shape_bbox"]["h"] + eps
             assert -eps <= ln["x"] and ln["x"] + ln["w"] <= sw + eps
             assert -eps <= ln["y"] and ln["y"] + ln["h"] <= sh + eps
+
+
+def test_baseline_correct_drops_box_and_pads_bottom():
+    from src.refine_text import _baseline_correct
+    out = _baseline_correct({"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.30, "units": "inches"})
+    assert out["x"] == 1.0 and out["w"] == 3.0          # x/w unchanged
+    assert out["y"] == 2.10                              # dropped 0.10"
+    assert out["h"] == 0.23                              # 0.30 - 0.10 + 0.03
+    assert _baseline_correct(None) is None

@@ -126,6 +126,24 @@ def union_bbox(words: list[dict]) -> dict | None:
     }
 
 
+# The soffice rasteriser places glyphs ~0.10" lower than the PDF text-layer box
+# top (the font bbox carries leading above the caps), and the box bottom sits
+# near the baseline so descenders clip. These empirical constants drop the box to
+# the rendered cap line and pad the bottom so descenders are covered. Measured at
+# 150 dpi against the rendered slides (bullet +16px, title +18px above the ink).
+RASTER_DROP_IN = 0.10
+DESCENDER_PAD_IN = 0.03
+
+
+def _baseline_correct(box: dict | None) -> dict | None:
+    """Align a PDF-text-layer box with the rasterised glyphs (drop + bottom pad)."""
+    if box is None:
+        return None
+    y = box["y"] + RASTER_DROP_IN
+    h = max(0.02, box["h"] - RASTER_DROP_IN + DESCENDER_PAD_IN)
+    return {**box, "y": round(y, 4), "h": round(h, 4)}
+
+
 def _is_refinable(e: dict) -> bool:
     return (
         e.get("type") not in EXCLUDED_TYPES
@@ -142,8 +160,8 @@ def _apply_refinement(e: dict, words: list[dict]) -> None:
         e["bbox_source"] = "shape"
         return
     lines = cluster_lines(words)
-    e["line_bboxes"] = [union_bbox(line) for line in lines]
-    e["bbox"] = union_bbox(words)
+    e["line_bboxes"] = [_baseline_correct(union_bbox(line)) for line in lines]
+    e["bbox"] = _baseline_correct(union_bbox(words))
     e["bbox_source"] = "pdf_text"
 
 
