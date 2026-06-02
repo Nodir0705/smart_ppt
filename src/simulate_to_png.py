@@ -48,7 +48,7 @@ def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
     x, y, w, h = bbox_px
     draw = ImageDraw.Draw(img)
     # single dark outline box around the active element
-    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
+    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=4)
     # numbered badge in top-left of the box
     badge_d = 56
     bx, by = x - 8, y - 8

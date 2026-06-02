@@ -43,7 +43,7 @@ from .stt import RollingBuffer, VoskEngine, hotwords_from_index
 
 # match the Tk viewer's highlight look (src/viewer.py)
 HALO = (40, 40, 40)
-HIGHLIGHT_HALO_WIDTH = 6
+HIGHLIGHT_HALO_WIDTH = 3
 
 # animation parameters — same as viewer
 ANIM_FRAMES = 12

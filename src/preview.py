@@ -77,7 +77,7 @@ def render_preview(
     # single dark outline box around the active element
     draw.rectangle(
         [x, y, x + w, y + h],
-        outline=HIGHLIGHT_HALO, width=HIGHLIGHT_WIDTH,
+        outline=HIGHLIGHT_HALO, width=5,
     )
     img.save(out_path)
     info["bbox_image_px"] = (round(x, 1), round(y, 1), round(w, 1), round(h, 1))
