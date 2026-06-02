@@ -112,6 +112,51 @@ def _add_phrase(phrases: list, phrase: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# stat spoken-form phrases  (e.g. "< 1 ms" -> "less than one millisecond")
+# ---------------------------------------------------------------------------
+
+_SYMBOL_WORDS = {
+    "<": ["less than", "under", "below"], ">": ["more than", "over", "above"],
+    "≤": ["at most", "up to"], "≥": ["at least"], "~": ["about", "around"],
+}
+_UNIT_WORDS = {
+    "ms": ["millisecond", "milliseconds"], "s": ["second", "seconds"],
+    "fps": ["frames per second"], "%": ["percent"], "x": ["times"],
+    "kb": ["kilobyte", "kilobytes"], "mb": ["megabyte", "megabytes"],
+    "gb": ["gigabyte", "gigabytes"],
+}
+_NUM_WORDS = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
+    "6": "six", "7": "seven", "8": "eight", "9": "nine", "10": "ten",
+}
+
+
+def stat_phrases(text: str) -> list[str]:
+    """Spoken-form trigger phrases for a "[symbol] number unit" stat callout.
+
+    "< 1 ms" -> ["one millisecond", "less than one millisecond",
+                 "less than a millisecond", "sub millisecond", ...].
+    Returns [] when the text isn't a recognisable stat.
+    """
+    import re
+    m = re.match(r"^\s*([<>≤≥~]?)\s*(\d+(?:\.\d+)?)\s*([a-zA-Z%]+)\s*$", text.strip())
+    if not m:
+        return []
+    sym, num, unit = m.group(1), m.group(2), m.group(3).lower()
+    num_word = _NUM_WORDS.get(num, num)
+    units = _UNIT_WORDS.get(unit, [unit])
+    out: list[str] = []
+    for u in units:
+        out.append(f"{num_word} {u}")
+        for sw in _SYMBOL_WORDS.get(sym, []):
+            out.append(f"{sw} {num_word} {u}")
+            out.append(f"{sw} a {u}")
+    if sym == "<" and unit == "ms":
+        out += ["sub millisecond", "sub-millisecond"]
+    return out
+
+
 def scope_index(index: dict, expansions: dict | None = None) -> dict:
     """Return index (mutated + returned) with group metadata and extra trigger phrases.
 
@@ -145,6 +190,12 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
                 slide_title = elem.get("text") or None
                 break
 
+        # A bullet list is one group, so the temporal tracker's same-group
+        # stickiness damps backward flicker between bullets (Extract -> Parse)
+        # while still allowing the sustained forward progression.
+        bullet_ids = [e["id"] for e in elements if e.get("type") == "bullet"]
+        bullet_group = bullet_ids[0] if len(bullet_ids) >= 2 else None
+
         for elem in elements:
             eid = elem["id"]
             parent_id = elem.get("parent_id")
@@ -158,9 +209,17 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
                     elem["group_label"] = group_label_for_chart(parent_elem, slide_title)
                 else:
                     elem["group_label"] = None
+            elif bullet_group is not None and elem.get("type") == "bullet":
+                elem["group_id"] = bullet_group
+                elem["group_label"] = "bullets"
             else:
                 elem["group_id"] = eid
                 elem["group_label"] = None
+
+            # ------ spoken-form phrases for stat callouts ------
+            if elem.get("type") == "stat":
+                for ph in stat_phrases(elem.get("text") or ""):
+                    _add_phrase(phrases, ph)
 
             # ------ scoped phrases for chart_category ------
             if elem.get("type") == "chart_category":

@@ -54,3 +54,28 @@ def test_scope_is_idempotent():
     twice = scope_index(once, expansions={"STT": "speech to text"})
     n2 = len(twice["slides"][0]["elements"][0]["trigger_phrases"])
     assert n1 == n2
+
+
+def test_stat_phrases_expands_symbol_number_unit():
+    from src.group_scope import stat_phrases
+    out = stat_phrases("< 1 ms")
+    assert "one millisecond" in out
+    assert "less than one millisecond" in out
+    assert "sub-millisecond" in out
+    assert stat_phrases("How It Works") == []   # not a stat
+
+
+def test_bullets_share_one_group():
+    from src.group_scope import scope_index
+    index = {"slides": [{"slide_number": 2, "elements": [
+        {"id": "s2_e1", "type": "title", "text": "How", "bbox": {}, "trigger_phrases": []},
+        {"id": "s2_e2", "type": "bullet", "text": "Parse", "bbox": {}, "trigger_phrases": [], "parent_id": None},
+        {"id": "s2_e3", "type": "bullet", "text": "Extract", "bbox": {}, "trigger_phrases": [], "parent_id": None},
+        {"id": "s2_e0", "type": "stat", "text": "< 1 ms", "bbox": {}, "trigger_phrases": [], "parent_id": None},
+    ]}]}
+    out = scope_index(index, expansions={})
+    els = {e["id"]: e for e in out["slides"][0]["elements"]}
+    assert els["s2_e2"]["group_id"] == els["s2_e3"]["group_id"]   # bullets grouped
+    assert els["s2_e2"]["group_id"] == "s2_e2"
+    assert els["s2_e1"]["group_id"] == "s2_e1"                    # title not in bullet group
+    assert "less than one millisecond" in els["s2_e0"]["trigger_phrases"]

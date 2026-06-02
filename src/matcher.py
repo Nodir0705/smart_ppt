@@ -224,7 +224,7 @@ class PolicyConfig:
     threshold: float = 0.55       # minimum cosine sim to consider any emission
     gap: float = 0.03             # best must beat runner-up by at least this (on effective score)
     stickiness: int = 1           # consecutive frames needed before switching active element (raise to 2–3 for streaming partials)
-    clear_after_n_low: int = 4    # consecutive low-confidence frames before clearing the active element
+    clear_after_n_low: int = 8    # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps so group stickiness survives)
     # --- group-aware temporal bonuses (added to raw score to form the effective
     #     score the gap/ranking operate on; threshold still applies to RAW score
     #     so bonuses never promote a genuinely-irrelevant element) ---
