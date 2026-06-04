@@ -20,7 +20,82 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from src.matcher import MatchResult, MatchPolicy, PolicyConfig  # noqa: E402
+from src.matcher import ElementRef, MatchResult, MatchPolicy, PolicyConfig  # noqa: E402
+
+
+# ---------- stub matcher exposing scored() for group-aware policy tests ----------
+
+def _ref(eid, group_id):
+    return ElementRef(id=eid, type="x", text=eid, slide_no=1, phrases=[eid],
+                      emb_start=0, emb_end=1, group_id=group_id)
+
+
+class ScoredStubMatcher:
+    """Returns a scripted list of (raw_score, ElementRef) per step via scored()."""
+
+    def __init__(self, scored_seq):
+        self._seq = list(scored_seq)
+        self._i = 0
+
+    def scored(self, spoken, slide_no):
+        item = self._seq[self._i]
+        self._i += 1
+        return item
+
+
+class TestGroupPolicy:
+    def test_same_group_bonus_flips_a_close_call(self):
+        # frame 1: A (group G) wins outright -> active A, active_group G
+        # frame 2: raw best is B (group H, 0.70) but C (group G, 0.68) is in the
+        #          active group; same_group_bonus (0.06) lifts C to 0.74 > B 0.70.
+        A, B, C = _ref("A", "G"), _ref("B", "H"), _ref("C", "G")
+        pol = MatchPolicy(
+            ScoredStubMatcher([
+                [(0.80, A), (0.50, B)],
+                [(0.70, B), (0.68, C)],
+            ]),
+            PolicyConfig(threshold=0.55, gap=0.03, stickiness=1,
+                         stay_bonus=0.08, same_group_bonus=0.06),
+        )
+        _, active, why = pol.step("x", 1)
+        assert (active, why) == ("A", "switch")
+        assert pol._active_group == "G"
+        _, active, why = pol.step("x", 1)
+        # C wins on effective score thanks to staying in group G
+        assert (active, why) == ("C", "switch")
+
+    def test_stay_bonus_holds_against_same_group_sibling(self):
+        # active A (group G); a same-group sibling B leads raw by 0.01, but A's
+        # stay_bonus (0.08) outweighs B's same_group_bonus (0.04):
+        # A_eff = 0.70+0.08 = 0.78 > B_eff = 0.71+0.04 = 0.75 → A holds (no flicker).
+        A, B = _ref("A", "G"), _ref("B", "G")
+        pol = MatchPolicy(
+            ScoredStubMatcher([
+                [(0.80, A), (0.40, B)],
+                [(0.71, B), (0.70, A)],
+            ]),
+            PolicyConfig(threshold=0.55, gap=0.03, stickiness=1,
+                         stay_bonus=0.08, same_group_bonus=0.04),
+        )
+        pol.step("x", 1)                      # -> A
+        _, active, why = pol.step("x", 1)
+        assert active == "A" and why == "hold"
+
+    def test_active_yields_freely_to_a_different_group(self):
+        # active A (group G); rival B (group H) leads raw by 0.05 (> gap). Because
+        # B is a DIFFERENT group, A gets NO stay bonus and yields (real switch).
+        A, B = _ref("A", "G"), _ref("B", "H")
+        pol = MatchPolicy(
+            ScoredStubMatcher([
+                [(0.80, A), (0.40, B)],
+                [(0.75, B), (0.70, A)],
+            ]),
+            PolicyConfig(threshold=0.55, gap=0.03, stickiness=1,
+                         stay_bonus=0.08, same_group_bonus=0.04),
+        )
+        pol.step("x", 1)                      # -> A
+        _, active, why = pol.step("x", 1)
+        assert active == "B" and why == "switch"
 
 
 # ---------- stub matcher for policy tests ----------

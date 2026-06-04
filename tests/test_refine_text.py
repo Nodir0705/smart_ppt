@@ -104,7 +104,9 @@ def test_apply_refinement_sets_pdf_text():
     _apply_refinement(e, words)
     assert e["bbox_source"] == "pdf_text"
     assert e["shape_bbox"]["w"] == 9.0
-    assert e["bbox"] == {"x": 1.0, "y": 1.0, "w": 1.4, "h": 0.2, "units": "inches"}
+    # x/w are the tight glyph union; y is dropped by 0.22*line-height (0.22*0.2 =
+    # 0.044) to land on the rasterised glyphs; height is unchanged.
+    assert e["bbox"] == {"x": 1.0, "y": 1.044, "w": 1.4, "h": 0.2, "units": "inches"}
     assert len(e["line_bboxes"]) == 1
     assert e["bbox"]["w"] < e["shape_bbox"]["w"]
 
@@ -204,3 +206,21 @@ def test_refine_index_real_deck_tightens_text(tmp_path):
             assert ln["y"] + ln["h"] <= e["shape_bbox"]["y"] + e["shape_bbox"]["h"] + eps
             assert -eps <= ln["x"] and ln["x"] + ln["w"] <= sw + eps
             assert -eps <= ln["y"] and ln["y"] + ln["h"] <= sh + eps
+
+
+def test_baseline_correct_drops_box_by_height_fraction():
+    from src.refine_text import _baseline_correct
+    out = _baseline_correct({"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.30, "units": "inches"})
+    assert out["x"] == 1.0 and out["w"] == 3.0          # x/w unchanged
+    assert out["h"] == 0.30                              # height unchanged
+    assert out["y"] == 2.066                            # dropped 0.22 * 0.30 = 0.066"
+    assert _baseline_correct(None) is None
+
+
+def test_union_of_boxes_multiline():
+    from src.refine_text import _union_of_boxes
+    a = {"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.2, "units": "inches"}
+    b = {"x": 1.2, "y": 2.4, "w": 2.0, "h": 0.2, "units": "inches"}
+    u = _union_of_boxes([a, None, b])
+    assert u == {"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.6, "units": "inches"}
+    assert _union_of_boxes([None]) is None

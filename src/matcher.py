@@ -42,10 +42,18 @@ class ElementRef:
     phrases: list[str]
     emb_start: int  # inclusive index into the slide's embedding matrix
     emb_end: int    # exclusive
+    group_id: str | None = None    # group this element belongs to (parent chart, etc.)
+    group_label: str | None = None
+    order: int = 0                 # position within the slide (reading order)
 
     @property
     def is_pointable(self) -> bool:
         return self.emb_end > self.emb_start
+
+    @property
+    def group(self) -> str:
+        """Effective group key — the element's own id when it has no group."""
+        return self.group_id or self.id
 
 
 @dataclass
@@ -57,6 +65,23 @@ class MatchResult:
     runner_up_score: float
     runner_up_id: str | None
     slide_no: int
+
+
+def best_index(preferred: str | Path | None = None, out_dir: str | Path = "out") -> Path:
+    """Resolve which index file to use.
+
+    An explicit `preferred` path wins; otherwise return the richest available
+    among scoped > refined > base (so the live app gets the Phase-1 grounding
+    improvements by default while still working with only the base index).
+    """
+    if preferred:
+        return Path(preferred)
+    out = Path(out_dir)
+    for name in ("index.scoped.json", "index.refined.json", "index.json"):
+        p = out / name
+        if p.exists():
+            return p
+    return out / "index.json"
 
 
 # ---------- index loader with embedding cache ----------
@@ -78,6 +103,10 @@ class Index:
         self._build_cache_or_load()
 
     # ---- cache key based on index content + encoder model ----
+    # Bump CACHE_VERSION whenever the ElementRef schema changes so stale pickles
+    # (missing new fields) are rebuilt instead of unpickled into the new dataclass.
+    CACHE_VERSION = "v2-groups"
+
     def _cache_key(self) -> str:
         payload = self.index_path.read_bytes()
         model_name = getattr(self.encoder, "model_name", type(self.encoder).__name__)
@@ -85,6 +114,8 @@ class Index:
         h.update(payload)
         h.update(b"|")
         h.update(model_name.encode())
+        h.update(b"|")
+        h.update(self.CACHE_VERSION.encode())
         return h.hexdigest()[:16]
 
     def _cache_path(self) -> Path:
@@ -106,7 +137,7 @@ class Index:
             sno = slide["slide_number"]
             phrases: list[str] = []
             refs: list[ElementRef] = []
-            for el in slide["elements"]:
+            for order, el in enumerate(slide["elements"]):
                 el_phrases = list(el.get("trigger_phrases") or [])
                 start = len(phrases)
                 phrases.extend(el_phrases)
@@ -119,6 +150,9 @@ class Index:
                     phrases=el_phrases,
                     emb_start=start,
                     emb_end=end,
+                    group_id=el.get("group_id"),
+                    group_label=el.get("group_label"),
+                    order=order,
                 ))
             embs = self.encoder.encode(phrases) if phrases else np.zeros((0, self.encoder.dim), dtype=np.float32)
             self._by_slide[sno] = (embs, refs)
@@ -138,25 +172,32 @@ class Matcher:
         self.index = index
         self.encoder = encoder
 
-    def match(self, spoken: str, slide_no: int) -> MatchResult:
+    def scored(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
+        """Per-element raw scores (MAX over phrases), sorted high→low.
+
+        Stable on ties so element order is preserved. Empty when nothing to match.
+        """
         spoken = (spoken or "").strip()
         if not spoken or slide_no not in self.index._by_slide:
-            return MatchResult(None, None, None, 0.0, 0.0, None, slide_no)
+            return []
         embs, refs = self.index._by_slide[slide_no]
         if embs.shape[0] == 0:
-            return MatchResult(None, None, None, 0.0, 0.0, None, slide_no)
+            return []
         q = self.encoder.encode([spoken])[0]  # (dim,)
         sims = embs @ q  # (n_phrases,)
-        # per-element MAX over its phrases
         per_el: list[tuple[float, ElementRef]] = []
         for ref in refs:
             if not ref.is_pointable:
                 continue
             s = float(sims[ref.emb_start:ref.emb_end].max())
             per_el.append((s, ref))
+        per_el.sort(key=lambda t: t[0], reverse=True)
+        return per_el
+
+    def match(self, spoken: str, slide_no: int) -> MatchResult:
+        per_el = self.scored(spoken, slide_no)
         if not per_el:
             return MatchResult(None, None, None, 0.0, 0.0, None, slide_no)
-        per_el.sort(key=lambda t: t[0], reverse=True)
         best_s, best = per_el[0]
         if len(per_el) > 1:
             ru_s, ru = per_el[1]
@@ -181,9 +222,14 @@ class PolicyConfig:
     """Tunables for emit/hold decisions."""
 
     threshold: float = 0.55       # minimum cosine sim to consider any emission
-    gap: float = 0.03             # best must beat runner-up by at least this
+    gap: float = 0.03             # best must beat runner-up by at least this (on effective score)
     stickiness: int = 1           # consecutive frames needed before switching active element (raise to 2–3 for streaming partials)
-    clear_after_n_low: int = 4    # consecutive low-confidence frames before clearing the active element
+    clear_after_n_low: int = 8    # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps so group stickiness survives)
+    # --- group-aware temporal bonuses (added to raw score to form the effective
+    #     score the gap/ranking operate on; threshold still applies to RAW score
+    #     so bonuses never promote a genuinely-irrelevant element) ---
+    stay_bonus: float = 0.06          # active element resists a same-group sibling (intra-group anti-flicker)
+    same_group_bonus: float = 0.04    # pull attention into the active group (e.g. keep "match" in the latency chart)
 
 
 class MatchPolicy:
@@ -198,26 +244,83 @@ class MatchPolicy:
     Returns (emitted_id, why) where `why` is "hold" | "switch" | "clear" | "noop".
     """
 
-    def __init__(self, matcher: Matcher, config: PolicyConfig | None = None) -> None:
+    def __init__(self, matcher: Matcher, config: PolicyConfig | None = None,
+                 normalizer=None) -> None:
         self.matcher = matcher
         self.cfg = config or PolicyConfig()
+        self.normalizer = normalizer   # optional callable: spoken_text -> spoken_text
         self.active_id: str | None = None
+        self._active_group: str | None = None
         self._candidate: str | None = None
         self._cand_count = 0
         self._low_count = 0
 
     def reset(self) -> None:
         self.active_id = None
+        self._active_group = None
         self._candidate = None
         self._cand_count = 0
         self._low_count = 0
 
+    def _ranked(self, spoken: str, slide_no: int) -> tuple[MatchResult, list[tuple[float, ElementRef]]]:
+        """Re-rank raw scores by an effective score that rewards staying on the
+        current element / group. Returns (MatchResult-for-effective-best, ranked).
+        `ranked` items are (raw_score, ref) sorted by EFFECTIVE score, high→low.
+        """
+        per_el = self.matcher.scored(spoken, slide_no)
+        if not per_el:
+            return MatchResult(None, None, None, 0.0, 0.0, None, slide_no), []
+
+        # The active element only resists a SAME-GROUP sibling (intra-group
+        # flicker). When the strongest rival is in a different group it's a real
+        # topic change, so the active yields freely (no stay bonus) — this keeps
+        # legitimate switches (e.g. between diagram nodes) working.
+        top_rival = next((r for _s, r in per_el if r.id != self.active_id), None)
+        challenged_same_group = (
+            self.active_id is not None
+            and top_rival is not None
+            and self._active_group is not None
+            and top_rival.group == self._active_group
+        )
+
+        def effective(raw: float, ref: ElementRef) -> float:
+            if ref.id == self.active_id:
+                return raw + (self.cfg.stay_bonus if challenged_same_group else 0.0)
+            if self._active_group is not None and ref.group == self._active_group:
+                return raw + self.cfg.same_group_bonus
+            return raw
+
+        ranked = sorted(per_el, key=lambda t: effective(*t), reverse=True)
+        best_raw, best = ranked[0]
+        if len(ranked) > 1:
+            ru_raw, ru = ranked[1]
+            ru_id, ru_eff = ru.id, effective(ru_raw, ru)
+        else:
+            ru_id, ru_eff = None, 0.0
+        res = MatchResult(
+            element_id=best.id, type=best.type, text=best.text,
+            score=best_raw, runner_up_score=ru_raw if len(ranked) > 1 else 0.0,
+            runner_up_id=ru_id, slide_no=slide_no,
+        )
+        # stash effective gap on the result via attributes the step() closure reads
+        res._eff_best = effective(best_raw, best)   # type: ignore[attr-defined]
+        res._eff_runner = ru_eff                    # type: ignore[attr-defined]
+        res._best_group = best.group                # type: ignore[attr-defined]
+        return res, ranked
+
     def step(self, spoken: str, slide_no: int) -> tuple[MatchResult, str | None, str]:
-        res = self.matcher.match(spoken, slide_no)
+        if self.normalizer is not None:
+            spoken = self.normalizer(spoken)
+        # Group-aware rerank when the matcher exposes scored() (the real Matcher);
+        # otherwise fall back to the plain match() result (legacy / scripted stubs).
+        if hasattr(self.matcher, "scored"):
+            res, _ranked = self._ranked(spoken, slide_no)
+        else:
+            res = self.matcher.match(spoken, slide_no)
         confident = (
             res.element_id is not None
             and res.score >= self.cfg.threshold
-            and (res.score - res.runner_up_score) >= self.cfg.gap
+            and (getattr(res, "_eff_best", res.score) - getattr(res, "_eff_runner", res.runner_up_score)) >= self.cfg.gap
         )
         if not confident:
             self._low_count += 1
@@ -225,6 +328,7 @@ class MatchPolicy:
             self._cand_count = 0
             if self.active_id is not None and self._low_count >= self.cfg.clear_after_n_low:
                 self.active_id = None
+                self._active_group = None
                 return res, None, "clear"
             return res, self.active_id, "hold" if self.active_id else "noop"
         # confident match
@@ -242,6 +346,7 @@ class MatchPolicy:
             self._cand_count = 1
         if self._cand_count >= self.cfg.stickiness:
             self.active_id = self._candidate
+            self._active_group = getattr(res, "_best_group", None)
             self._candidate = None
             self._cand_count = 0
             return res, self.active_id, "switch"

@@ -411,3 +411,45 @@ line (matcher picks which line; viewer draws that one box) is a noted follow-up.
 python3 -m src.refine_text                                  # out/index.json -> out/index.refined.json
 python3 -m src.refine_text --input out/index.enriched.json --out out/index.refined.json
 ```
+
+## Live grounding — Phase 1 (2026-06-01)
+
+**Status:** complete. Grounding accuracy 34/40 → 37/40 on the narration audit,
+flicker 6 → 5, and all three diagnosed failures fixed. Fully offline /
+deterministic / CPU-only (no live neural model; GPU was unavailable).
+
+**Baseline → result** (`python3 -m tools.timeline_audit --index out/index.scoped.json --normalize`)
+- s4_e2 STT latency bar — never lit → lit (alias layer)
+- s4_e3 Match latency bar — lost to pie "Matching" → lit (group scoping)
+- s6_e1 STT Engine node — never lit → lit (acronym expansion trigger)
+
+**Four deterministic levers**
+- [x] `src/asr_normalize.py` + `data/aliases.json` — post-STT alias/normalization
+      (fixes "STT"→"sgt" mishearings). Auto-derives acronym variants; hand overrides.
+- [x] `src/group_scope.py` + `data/expansions.json` — author-time `group_id`/
+      `group_label` + scoped triggers ("the match bar in the latency chart") +
+      acronym expansions ("speech to text engine"). Output `out/index.scoped.json`.
+- [x] `src/matcher.py` — `scored()` + group-aware effective score. `same_group_bonus`
+      keeps "match" in the latency chart; `stay_bonus` resists same-group sibling
+      flicker but yields freely to a different group (real switches still fire).
+- [x] runtime wiring — `best_index()` (scoped>refined>base) + alias normalizer in
+      viewer/simulate; cache key bumped (v2-groups).
+
+**Eval harness:** `tools/timeline_audit.py` + `tests/fixtures/expected_highlights.json`
+(ordered-recall metric). `tests/test_grounding_eval.py` (opt-in `SMARTPPT_RUN_EVAL=1`).
+
+**Known remaining (not Phase-1 targets):** "sync"→"sink" mishearing (s4_e5);
+the "< 1 ms" stat vs body paraphrase (s2); three identical "Live" table cells (s3).
+
+**Out of scope (Phase 2/3):** CLIP/SigLIP cross-modal live scorer; Florence-2/VLM
+author-time grounding; streaming engine swap with contextual biasing; cross-encoder rerank.
+
+**How to run**
+```
+python3 -m src.index_deck test_deck.pptx
+python3 -m src.refine_text                 # glyph-exact bboxes -> index.refined.json
+python3 -m src.group_scope                 # groups + scoped triggers -> index.scoped.json
+python3 -m src.render test_deck.pptx
+python3 -m src.tts
+python3 -m src.simulate                    # auto-uses index.scoped.json + alias normalize
+```

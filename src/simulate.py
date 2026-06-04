@@ -26,7 +26,8 @@ from .matcher import PolicyConfig
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Smart Pointer — end-to-end TTS simulation")
-    ap.add_argument("--index", default="out/index.json")
+    ap.add_argument("--index", default=None,
+                    help="index json (default: best available — scoped > refined > base)")
     ap.add_argument("--slides", default="out/slides")
     ap.add_argument("--script", default="scripts/narration.json")
     ap.add_argument("--narration-dir", default="out/narration")
@@ -37,7 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stick", type=int, default=PolicyConfig.stickiness)
     args = ap.parse_args(argv)
 
-    index_path = Path(args.index)
+    from .matcher import best_index
+    index_path = best_index(args.index)
     slides_dir = Path(args.slides)
     script_path = Path(args.script)
     narration_dir = Path(args.narration_dir)

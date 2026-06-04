@@ -40,10 +40,8 @@ from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
 # ---- highlight animation parameters ----
 ANIM_MS = 180
 ANIM_FRAMES = 12
-HIGHLIGHT_COLOUR = "#ffd400"      # bright amber, high contrast on most decks
-HIGHLIGHT_WIDTH = 5               # outline thickness in canvas px
-HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # thin dark halo so the outline reads on light slides
-HIGHLIGHT_OUTER_WIDTH = 9
+HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # dark outline box around the active element
+HIGHLIGHT_OUTER_WIDTH = 3
 
 
 class ViewerApp:
@@ -85,9 +83,14 @@ class ViewerApp:
         self.encoder = load_default_encoder()
         self.index = Index(index_path, self.encoder)
         self.matcher = Matcher(self.index, self.encoder)
+        # deterministic post-STT alias normalizer (fixes acronym mishearings)
+        from .asr_normalize import build_alias_map, normalize as _norm
+        _alias = build_alias_map(self.raw_index)
+        normalizer = (lambda t: _norm(t, _alias)) if _alias else None
         self.policy = MatchPolicy(
             self.matcher,
             PolicyConfig(threshold=threshold, gap=gap, stickiness=stickiness),
+            normalizer=normalizer,
         )
 
         # element lookup: id → (slide_no, bbox_inches, text, type)
@@ -292,14 +295,10 @@ class ViewerApp:
         x, y, w, h = bbox
         if w <= 0 or h <= 0:
             return
-        # dark halo behind the amber outline so it reads on light backgrounds too
+        # single dark outline box around the active element
         self._highlight_outer_id = self.canvas.create_rectangle(
-            x - 1, y - 1, x + w + 1, y + h + 1,
-            outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
-        )
-        self._highlight_inner_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
-            outline=HIGHLIGHT_COLOUR, width=HIGHLIGHT_WIDTH,
+            outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
         )
 
     def _update_status(self) -> None:
@@ -422,7 +421,8 @@ class ViewerApp:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Smart Pointer — Stage 4 viewer (Tkinter)")
-    ap.add_argument("--index", default="out/index.json")
+    ap.add_argument("--index", default=None,
+                    help="index json (default: best available — scoped > refined > base)")
     ap.add_argument("--slides", default="out/slides")
     ap.add_argument("--slide", type=int, default=1)
     ap.add_argument("--threshold", type=float, default=PolicyConfig.threshold)
@@ -434,7 +434,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="constrain Vosk to deck vocabulary only (use when speaker stays strictly on-topic)")
     args = ap.parse_args(argv)
 
-    index_path = Path(args.index)
+    from .matcher import best_index
+    index_path = best_index(args.index)
     slides_dir = Path(args.slides)
     if not index_path.exists():
         print(f"index not found: {index_path}")

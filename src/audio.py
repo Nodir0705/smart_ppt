@@ -12,6 +12,7 @@ All yield raw PCM bytes at the WAV's native rate (16 kHz mono is what Vosk wants
 
 from __future__ import annotations
 
+import audioop  # stdlib PCM resampling (ratecv) — resample playback to the device rate
 import threading
 import time
 import wave
@@ -138,42 +139,59 @@ class PlaybackSource:
             )
         self.chunk_frames = max(1, int(self.sample_rate * chunk_ms / 1000))
 
+    def _start_playback(self) -> bool:
+        """Begin decoupled speaker playback of the whole WAV.
+
+        Playback is driven by PortAudio's own callback thread from a full
+        in-memory buffer, so STT/embedding work on the consumer side can't starve
+        the device buffer (the old design wrote to the device *inside* the STT
+        loop, which underran → ALSA xrun → native crash). The buffer is also
+        resampled to the output device's native rate so ALSA never has to plug-
+        resample 16 kHz on a 44.1/48 kHz device. Returns True if playback began.
+        """
+        import sounddevice as sd
+        try:
+            import numpy as np
+            with wave.open(self.wav_path, "rb") as w:
+                pcm_all = w.readframes(w.getnframes())
+            play_pcm, play_sr = pcm_all, self.sample_rate
+            try:
+                dev_sr = int(sd.query_devices(kind="output")["default_samplerate"])
+            except Exception:
+                dev_sr = 0
+            if dev_sr and dev_sr != self.sample_rate:
+                play_pcm, _ = audioop.ratecv(pcm_all, 2, 1, self.sample_rate, dev_sr, None)
+                play_sr = dev_sr
+            data = np.frombuffer(play_pcm, dtype=np.int16)
+            sd.play(data, samplerate=play_sr, blocking=False)
+            return True
+        except Exception as e:
+            print(f"[PlaybackSource] no audio device ({e}); pacing without playback")
+            return False
+
     def chunks(self) -> Iterator[bytes]:
         import sounddevice as sd  # local import — keeps headless callers happy
-        stream = None
-        if not self.mute:
-            try:
-                stream = sd.RawOutputStream(
-                    samplerate=self.sample_rate, channels=1, dtype="int16",
-                    blocksize=self.chunk_frames,
-                )
-                stream.start()
-            except Exception as e:
-                # no audio device — fall back to wall-clock pacing
-                print(f"[PlaybackSource] no audio device ({e}); pacing without playback")
-                stream = None
+        playing = self._start_playback() if not self.mute else False
         try:
+            # Yield 16 kHz chunks paced by wall-clock for STT — independent of the
+            # speaker device, so playback and recognition can't deadlock or starve
+            # each other. Both advance at real time, staying aligned for the highlight.
             with wave.open(self.wav_path, "rb") as w:
                 last_t = time.monotonic()
                 while not self._stop.is_set():
                     pcm = w.readframes(self.chunk_frames)
                     if not pcm:
                         return
-                    if stream is not None:
-                        stream.write(pcm)  # blocks → real-time pacing
-                    else:
-                        # no speakers: pace by wall clock so STT runs at real-time
-                        target_t = last_t + (self.chunk_ms / 1000.0)
-                        delay = target_t - time.monotonic()
-                        if delay > 0:
-                            time.sleep(delay)
-                        last_t = time.monotonic()
+                    target_t = last_t + (self.chunk_ms / 1000.0)
+                    delay = target_t - time.monotonic()
+                    if delay > 0:
+                        time.sleep(delay)
+                    last_t = time.monotonic()
                     yield pcm
         finally:
-            if stream is not None:
+            if playing:
                 try:
-                    stream.stop()
-                    stream.close()
+                    sd.stop()
                 except Exception:
                     pass
 

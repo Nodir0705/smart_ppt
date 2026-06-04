@@ -42,10 +42,8 @@ from .stt import RollingBuffer, VoskEngine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
-AMBER = (255, 212, 0)
 HALO = (40, 40, 40)
-HIGHLIGHT_WIDTH = 8
-HIGHLIGHT_HALO_WIDTH = 14
+HIGHLIGHT_HALO_WIDTH = 3
 
 # animation parameters — same as viewer
 ANIM_FRAMES = 12
@@ -59,11 +57,12 @@ def _wav_duration_s(path: Path) -> float:
 
 def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
                    engine: VoskEngine, matcher: Matcher,
-                   hotwords: list[str], tail_words: int = 8) -> list[tuple[float, str | None]]:
+                   hotwords: list[str], tail_words: int = 8,
+                   normalizer=None) -> list[tuple[float, str | None]]:
     """Run the full pipeline against a muted PlaybackSource; return a list of
     (timestamp_seconds, active_element_id) transitions paced by audio time.
     """
-    policy = MatchPolicy(matcher, PolicyConfig())
+    policy = MatchPolicy(matcher, PolicyConfig(), normalizer=normalizer)
     buf = RollingBuffer(window_seconds=4.0)
     src = PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
@@ -91,8 +90,7 @@ def _draw_highlight(img: Image.Image, bbox_px: Bbox) -> None:
     if w <= 0 or h <= 0:
         return
     draw = ImageDraw.Draw(img)
-    draw.rectangle([x - 2, y - 2, x + w + 2, y + h + 2], outline=HALO, width=HIGHLIGHT_HALO_WIDTH)
-    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=HIGHLIGHT_WIDTH)
+    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=HIGHLIGHT_HALO_WIDTH)
 
 
 def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,
@@ -245,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
     matcher = Matcher(idx, enc)
     engine = VoskEngine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
+    # same deterministic ASR alias normalization the live app uses
+    from .asr_normalize import build_alias_map, normalize as _norm
+    _alias = build_alias_map(raw_index)
+    normalizer = (lambda t: _norm(t, _alias)) if _alias else None
 
     slide_videos: list[Path] = []
     for item in manifest:
@@ -253,7 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         out_mp4 = out_dir / f"slide_{sno:03d}.mp4"
         print(f"\nslide {sno}: {wav.name}")
         print("  running simulation…")
-        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords)
+        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords,
+                                normalizer=normalizer)
         for t, eid in events:
             print(f"    t={t:5.1f}s  active={eid}")
         with tempfile.TemporaryDirectory(prefix="smartppt_frames_") as td:
