@@ -117,6 +117,8 @@ class ViewerApp:
         self._image_id: Optional[int] = None
         self._highlight_outer_id: Optional[int] = None
         self._highlight_inner_id: Optional[int] = None
+        self._resize_job = None                          # pending settle-redraw
+        self._last_draw_size: Optional[tuple[int, int]] = None  # last drawn canvas size
 
         # ---- build UI ----
         self.root = tk.Tk()
@@ -147,7 +149,7 @@ class ViewerApp:
         self.root.bind("<Left>", lambda _e: self._change_slide(-1))
         self.root.bind("<Escape>", lambda _e: self._clear_highlight())
         self.root.bind("<Control-q>", lambda _e: self.root.destroy())
-        self.canvas.bind("<Configure>", lambda _e: self._redraw())
+        self.canvas.bind("<Configure>", self._on_configure)
 
         self._load_slide_image()
         self.entry.focus_set()
@@ -257,17 +259,44 @@ class ViewerApp:
         self._update_status()
 
     # ---------- rendering ----------
-    def _redraw(self) -> None:
+    def _on_configure(self, _event) -> None:
+        """Debounced resize handler.
+
+        Spurious <Configure> events (same size) are dropped. While the user is
+        actively dragging, redraw with the cheap BILINEAR filter for
+        responsiveness; once resizing settles (~80 ms idle), do one crisp
+        LANCZOS pass.
+        """
+        cw = max(self.canvas.winfo_width(), 1)
+        ch = max(self.canvas.winfo_height(), 1)
+        if (cw, ch) == self._last_draw_size:
+            return
+        self._redraw(resample=self._Image.BILINEAR)
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        self._resize_job = self.root.after(80, self._settle_redraw)
+
+    def _settle_redraw(self) -> None:
+        self._resize_job = None
+        self._redraw(resample=self._Image.LANCZOS)
+
+    def _redraw(self, resample=None) -> None:
         if self._image_pil is None:
             return
+        if resample is None:
+            resample = self._Image.LANCZOS
         cw = max(self.canvas.winfo_width(), 1)
         ch = max(self.canvas.winfo_height(), 1)
         self._fit = FitTransform.fit(self._image_pil.width, self._image_pil.height, cw, ch)
         if self._fit.draw_w <= 0 or self._fit.draw_h <= 0:
             return
+        self._last_draw_size = (cw, ch)
         resized = self._image_pil.resize(
             (max(int(self._fit.draw_w), 1), max(int(self._fit.draw_h), 1)),
-            self._Image.LANCZOS,
+            resample,
         )
         self._image_tk = self._ImageTk.PhotoImage(resized)
         self.canvas.delete("all")
