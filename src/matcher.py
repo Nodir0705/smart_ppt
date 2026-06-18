@@ -19,8 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,7 +103,7 @@ class Index:
     # ---- cache key based on index content + encoder model ----
     # Bump CACHE_VERSION whenever the ElementRef schema changes so stale pickles
     # (missing new fields) are rebuilt instead of unpickled into the new dataclass.
-    CACHE_VERSION = "v2-groups"
+    CACHE_VERSION = "v3-cpu-deterministic"
 
     def _cache_key(self) -> str:
         payload = self.index_path.read_bytes()
@@ -118,19 +116,65 @@ class Index:
         h.update(self.CACHE_VERSION.encode())
         return h.hexdigest()[:16]
 
+    # ElementRef fields persisted to the JSON sidecar (embeddings live in the .npz).
+    _META_FIELDS = (
+        "id", "type", "text", "slide_no", "phrases",
+        "emb_start", "emb_end", "group_id", "group_label", "order",
+    )
+    KEEP_CACHES = 3  # most-recent cache sets to retain (age eviction)
+
+    def _cache_stem(self) -> str:
+        return f"embeddings_{self._cache_key()}"
+
     def _cache_path(self) -> Path:
-        return self.cache_dir / f"embeddings_{self._cache_key()}.pkl"
+        return self.cache_dir / f"{self._cache_stem()}.npz"
+
+    def _meta_path(self) -> Path:
+        return self.cache_dir / f"{self._cache_stem()}.meta.json"
 
     def _build_cache_or_load(self) -> None:
-        cache_path = self._cache_path()
-        if cache_path.exists():
-            with cache_path.open("rb") as f:
-                self._by_slide = pickle.load(f)
+        cache_path, meta_path = self._cache_path(), self._meta_path()
+        if cache_path.exists() and meta_path.exists():
+            self._load_cache(cache_path, meta_path)
             return
         self._build_from_scratch()
+        self._write_cache(cache_path, meta_path)
+        self._evict_old_caches()
+
+    def _load_cache(self, cache_path: Path, meta_path: Path) -> None:
+        meta = json.loads(meta_path.read_text())
+        with np.load(cache_path) as npz:
+            for sno_str, refs_raw in meta["slides"].items():
+                sno = int(sno_str)
+                embs = npz[f"s{sno}"]
+                refs = [ElementRef(**{k: r[k] for k in self._META_FIELDS}) for r in refs_raw]
+                self._by_slide[sno] = (embs, refs)
+
+    def _write_cache(self, cache_path: Path, meta_path: Path) -> None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with cache_path.open("wb") as f:
-            pickle.dump(self._by_slide, f)
+        arrays: dict[str, np.ndarray] = {}
+        meta: dict = {"slides": {}}
+        for sno in sorted(self._by_slide):  # sorted -> deterministic layout
+            embs, refs = self._by_slide[sno]
+            arrays[f"s{sno}"] = np.ascontiguousarray(embs, dtype=np.float32)
+            meta["slides"][str(sno)] = [
+                {k: getattr(ref, k) for k in self._META_FIELDS} for ref in refs
+            ]
+        # Loaded arrays are bit-identical to what was saved, so match decisions
+        # stay deterministic (the .npz zip's own mtimes are irrelevant — nothing
+        # hashes the cache file). No pickle -> no arbitrary-code-execution format.
+        np.savez(cache_path, **arrays)
+        meta_path.write_text(json.dumps(meta, sort_keys=True, ensure_ascii=False))
+
+    def _evict_old_caches(self) -> None:
+        """Keep only the most-recent KEEP_CACHES sets; drop older ones + legacy pickles."""
+        for legacy in self.cache_dir.glob("embeddings_*.pkl"):
+            legacy.unlink(missing_ok=True)  # old format — never read again
+        npzs = sorted(self.cache_dir.glob("embeddings_*.npz"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in npzs[self.KEEP_CACHES:]:
+            stale.unlink(missing_ok=True)
+            stale.with_name(stale.stem + ".meta.json").unlink(missing_ok=True)
 
     def _build_from_scratch(self) -> None:
         for slide in self.raw["slides"]:
@@ -171,6 +215,17 @@ class Matcher:
     def __init__(self, index: Index, encoder: Encoder) -> None:
         self.index = index
         self.encoder = encoder
+        # 1-entry query cache: the live loop re-checks the same STT tail across
+        # throttle windows whenever speech is idle/repeats. encode() is pure, so
+        # returning the cached vector for an identical tail is behaviour-preserving.
+        self._last_query_text: str | None = None
+        self._last_query_vec: np.ndarray | None = None
+
+    def _encode_query(self, spoken: str) -> np.ndarray:
+        if spoken != self._last_query_text:
+            self._last_query_vec = self.encoder.encode([spoken])[0]  # (dim,)
+            self._last_query_text = spoken
+        return self._last_query_vec
 
     def scored(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
         """Per-element raw scores (MAX over phrases), sorted high→low.
@@ -183,7 +238,7 @@ class Matcher:
         embs, refs = self.index._by_slide[slide_no]
         if embs.shape[0] == 0:
             return []
-        q = self.encoder.encode([spoken])[0]  # (dim,)
+        q = self._encode_query(spoken)  # (dim,), cached for repeat tails
         sims = embs @ q  # (n_phrases,)
         per_el: list[tuple[float, ElementRef]] = []
         for ref in refs:
