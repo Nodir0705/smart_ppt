@@ -11,10 +11,11 @@ doesn't need any resampling.
 from __future__ import annotations
 
 import argparse
-import audioop
 import json
 import wave
 from pathlib import Path
+
+from .pcm import resample, to_mono
 
 
 TARGET_RATE = 16000  # matches Vosk small-en-us
@@ -23,9 +24,9 @@ TARGET_CHANNELS = 1
 
 def _resample(pcm: bytes, src_rate: int, src_channels: int) -> bytes:
     if src_channels != TARGET_CHANNELS:
-        pcm = audioop.tomono(pcm, 2, 0.5, 0.5) if src_channels == 2 else pcm
+        pcm = to_mono(pcm, 2) if src_channels == 2 else pcm
     if src_rate != TARGET_RATE:
-        pcm, _ = audioop.ratecv(pcm, 2, TARGET_CHANNELS, src_rate, TARGET_RATE, None)
+        pcm = resample(pcm, src_rate, TARGET_RATE, channels=TARGET_CHANNELS)
     return pcm
 
 

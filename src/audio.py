@@ -12,12 +12,13 @@ All yield raw PCM bytes at the WAV's native rate (16 kHz mono is what Vosk wants
 
 from __future__ import annotations
 
-import audioop  # stdlib PCM resampling (ratecv) — resample playback to the device rate
 import threading
 import time
 import wave
 from queue import Empty, Queue
 from typing import Iterator
+
+from .pcm import resample  # offline PCM resample (audioop-backed, 3.13-safe)
 
 
 # ---------- file source ----------
@@ -68,26 +69,40 @@ class MicSource:
         self._queue: Queue[bytes | None] = Queue()
         self._stop = threading.Event()
         self._stream = None  # type: ignore[assignment]
+        self._int16 = True   # ask PortAudio for native int16; fall back to float32
 
     def _callback(self, indata, frames, time_info, status) -> None:
         if self._stop.is_set():
             return
-        # indata is float32 by default; we want 16-bit PCM bytes for Vosk
+        if self._int16:
+            # PortAudio delivered native int16 — no float round-trip/truncation
+            self._queue.put(indata[:, 0].tobytes())
+            return
         import numpy as np
         pcm16 = (indata[:, 0] * 32767.0).clip(-32768, 32767).astype(np.int16)
         self._queue.put(pcm16.tobytes())
 
-    def start(self) -> None:
-        import sounddevice as sd
-        self._stream = sd.InputStream(
+    def _open(self, sd, dtype: str):
+        return sd.InputStream(
             samplerate=self.sample_rate,
             channels=1,
-            dtype="float32",
+            dtype=dtype,
             blocksize=self.blocksize,
             device=self.device,
             callback=self._callback,
         )
-        self._stream.start()
+
+    def start(self) -> None:
+        import sounddevice as sd
+        try:
+            self._int16 = True
+            self._stream = self._open(sd, "int16")
+            self._stream.start()
+        except Exception:
+            # device refused int16 — fall back to float32 + manual conversion
+            self._int16 = False
+            self._stream = self._open(sd, "float32")
+            self._stream.start()
 
     def chunks(self) -> Iterator[bytes]:
         if self._stream is None:
@@ -160,7 +175,7 @@ class PlaybackSource:
             except Exception:
                 dev_sr = 0
             if dev_sr and dev_sr != self.sample_rate:
-                play_pcm, _ = audioop.ratecv(pcm_all, 2, 1, self.sample_rate, dev_sr, None)
+                play_pcm = resample(pcm_all, self.sample_rate, dev_sr)
                 play_sr = dev_sr
             data = np.frombuffer(play_pcm, dtype=np.int16)
             sd.play(data, samplerate=play_sr, blocking=False)
