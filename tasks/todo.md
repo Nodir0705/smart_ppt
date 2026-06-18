@@ -33,10 +33,17 @@ Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
 - Two items intentionally not shipped: render `_count_slides` (would be dead code) and conftest
   FakeEncoder (pure test-speed; no production impact). Both noted, not silently dropped.
 
-### Deferred to Phase 1 (NOT this turn — needs env/manifest changes or re-tune)
-- torch CPU-wheel reinstall (env mutation — confirm with user)
-- bge-large → bge-small swap (forces threshold re-tune)
-- pyproject + uv lock; enrichment determinism + wiring fix
+### Phase 1 (in progress)
+- [x] bge-large → bge-small-en-v1.5 swap: **11x faster** live encode (114.6 → 10.1 ms/query
+      CPU 1-thread), 1.3G → 383M weights. Re-tuned `PolicyConfig.threshold` 0.55 → **0.65**
+      (bge-small cosines run ~0.05-0.10 higher). Grounding **37/40, flicker 0** (lost s3_e5).
+      Test re-baselines: slide-3 floor 9→8; filler test tracks threshold; mock switch test
+      frozen-time bug fixed (delay_s + tail(8)). 159 passed.
+- [~] torch CPU-wheel reinstall: BLOCKED — this is the **shared system Python** (`/usr`, 635 pkgs;
+      OCR project shares torch+CUDA). Mutating it would strip GPU from other projects. Safe path =
+      isolated venv (rank 2). **Awaiting user decision** on building the venv.
+- [ ] pyproject + uv lock + offline wheelhouse (rank 2) — pairs with the venv
+- [ ] enrichment wiring fix + determinism (rank 8); pypdfium2 (rank 7); conftest FakeEncoder
 
 ---
 
