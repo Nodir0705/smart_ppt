@@ -56,7 +56,20 @@ Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
       Raster-calibrated at 150dpi → SHIFT_FRAC 0.22→0.0 (tight boxes are glyph-exact, 3.4x
       tighter fit, equal clipping). Extraction ~142ms→8.9ms (~16x). pdfplumber removed from
       manifest. 14 refine tests + real-deck tightness pass; 121 suite.
-- [ ] remaining Phase 2 (deferred, niche): ffmpeg concat-demuxer static dedup, warm LibreOffice
+### Phase 2 (2026-06-19)
+- [x] static-frame dedup: simulate_to_video memoizes frame bytes keyed by the highlight
+      bbox — renders each unique frame once (14/160 on slide 1, ~91% reused), re-pipes
+      bytes for static holds. Better than the report's concat-demuxer idea (no segment-
+      boundary fragility). Output unchanged. 121 passed.
+- [~] warm LibreOffice (unoserver): NOT DONE — assessed as net-negative. Adds a daemon +
+      new dependency for a win the mtime cache already blunts (cold soffice only hits when
+      the deck CHANGES, which is rare for a grounding tool pointed at a finished deck).
+      Violates the offline/minimal-deps ethos. Report rated it "not high" value. Recommend skip.
+- [~] ONNX OnnxEncoder / faster-whisper / GGUF: MOOT or unrequested — ONNX encoder only
+      pays off if the ~700MB torch footprint is a hard constraint (user skipped footprint);
+      GGUF/VLM were for enrichment (deleted); faster-whisper is offline-narration-only, not asked.
+
+### Optimization program COMPLETE — only net-negative/moot items remain.
 
 ---
 
