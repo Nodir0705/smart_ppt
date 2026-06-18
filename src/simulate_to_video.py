@@ -112,13 +112,16 @@ def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,
     return None
 
 
-def _render_video_frames(slide_no: int, wav_path: Path, slides_dir: Path,
-                         raw_index: dict, events: list[tuple[float, str | None]],
-                         frames_dir: Path, fps: int, max_width: int) -> int:
-    """Render all frames for one slide into `frames_dir/00001.png … `.
+def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
+                       raw_index: dict, events: list[tuple[float, str | None]],
+                       out_path: Path, fps: int, max_width: int) -> int:
+    """Render highlight frames and stream them straight into ffmpeg.
 
-    Returns the number of frames written. Frames are at `max_width` × h
-    (preserving aspect) so the encoded MP4 isn't enormous.
+    Frames (RGB, `max_width` × h, aspect-preserved) are generated in Python and
+    piped to ffmpeg as raw rgb24 over stdin — no per-frame PNG encode and no
+    temp directory (the old path wrote ~3,300 PNGs per slide, ~86% identical).
+    x264 is pinned to `-threads 1` because its multi-threaded output is not
+    byte-deterministic. Returns the number of frames written.
     """
     png_path = slides_dir / f"slide_{slide_no:03d}.png"
     base = Image.open(png_path).convert("RGB")
@@ -137,65 +140,71 @@ def _render_video_frames(slide_no: int, wav_path: Path, slides_dir: Path,
     n_frames = int(dur * fps) + 1
     frame_dt = 1.0 / fps
 
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{img_w}x{img_h}",
+        "-framerate", str(fps), "-i", "-",          # frames from stdin
+        "-i", str(wav_path),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
+        "-threads", "1",                              # deterministic x264 output
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest", "-movflags", "+faststart",
+        str(out_path),
+    ]
+
     current: Bbox | None = None
     anim_start: Bbox | None = None
     anim_target: Bbox | None = None
     anim_step = 0
     event_idx = 0
 
-    for i in range(n_frames):
-        t = i * frame_dt
+    # stderr -> temp file so a chatty ffmpeg can't deadlock the stdin pipe.
+    with tempfile.TemporaryFile() as errf:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errf)
+        try:
+            for i in range(n_frames):
+                t = i * frame_dt
 
-        # consume any events that should have fired by time t
-        while event_idx < len(targets) and targets[event_idx][0] <= t:
-            new_t = targets[event_idx][1]
-            if current is None and new_t is not None:
-                # appearing from nowhere — pop in, no animation
-                current = new_t
-                anim_target = new_t
-                anim_step = ANIM_FRAMES  # done
-            elif new_t is None:
-                current = None
-                anim_target = None
-                anim_step = ANIM_FRAMES
-            else:
-                # animate from current to new_t
-                anim_start = current
-                anim_target = new_t
-                anim_step = 0
-            event_idx += 1
+                # consume any events that should have fired by time t
+                while event_idx < len(targets) and targets[event_idx][0] <= t:
+                    new_t = targets[event_idx][1]
+                    if current is None and new_t is not None:
+                        # appearing from nowhere — pop in, no animation
+                        current = new_t
+                        anim_target = new_t
+                        anim_step = ANIM_FRAMES  # done
+                    elif new_t is None:
+                        current = None
+                        anim_target = None
+                        anim_step = ANIM_FRAMES
+                    else:
+                        # animate from current to new_t
+                        anim_start = current
+                        anim_target = new_t
+                        anim_step = 0
+                    event_idx += 1
 
-        # advance animation
-        if anim_target is not None and anim_step < ANIM_FRAMES and anim_start is not None:
-            anim_step += 1
-            eased = ease_in_out_cubic(anim_step / ANIM_FRAMES)
-            current = lerp_bbox(anim_start, anim_target, eased)
-            if anim_step >= ANIM_FRAMES:
-                current = anim_target
+                # advance animation
+                if anim_target is not None and anim_step < ANIM_FRAMES and anim_start is not None:
+                    anim_step += 1
+                    eased = ease_in_out_cubic(anim_step / ANIM_FRAMES)
+                    current = lerp_bbox(anim_start, anim_target, eased)
+                    if anim_step >= ANIM_FRAMES:
+                        current = anim_target
 
-        frame = base.copy()
-        if current is not None:
-            _draw_highlight(frame, current)
-        frame.save(frames_dir / f"{i:05d}.png")
+                frame = base.copy()
+                if current is not None:
+                    _draw_highlight(frame, current)
+                proc.stdin.write(frame.tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass  # ffmpeg died early — surfaced via returncode/stderr below
+        ret = proc.wait()
+        if ret != 0:
+            errf.seek(0)
+            raise RuntimeError(f"ffmpeg failed:\n{errf.read().decode(errors='replace')[-2000:]}")
 
     return n_frames
-
-
-def _encode_video(frames_dir: Path, wav_path: Path, out_path: Path, fps: int) -> None:
-    cmd = [
-        "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-i", str(frames_dir / "%05d.png"),
-        "-i", str(wav_path),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed:\n{r.stderr[-2000:]}")
 
 
 def _concat_videos(parts: list[Path], out_path: Path) -> None:
@@ -259,15 +268,12 @@ def main(argv: list[str] | None = None) -> int:
                                 normalizer=normalizer)
         for t, eid in events:
             print(f"    t={t:5.1f}s  active={eid}")
-        with tempfile.TemporaryDirectory(prefix="smartppt_frames_") as td:
-            frames_dir = Path(td)
-            print(f"  rendering frames @ {args.fps} fps…")
-            n = _render_video_frames(
-                sno, wav, slides_dir, raw_index, events,
-                frames_dir, args.fps, args.max_width,
-            )
-            print(f"  encoding {n} frames + audio → {out_mp4.name}")
-            _encode_video(frames_dir, wav, out_mp4, args.fps)
+        print(f"  rendering + encoding @ {args.fps} fps → {out_mp4.name}")
+        n = _render_and_encode(
+            sno, wav, slides_dir, raw_index, events,
+            out_mp4, args.fps, args.max_width,
+        )
+        print(f"  streamed {n} frames")
         slide_videos.append(out_mp4)
         print(f"  ✓ {out_mp4} ({out_mp4.stat().st_size//1024} KB)")
 
