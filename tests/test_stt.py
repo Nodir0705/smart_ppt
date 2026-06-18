@@ -10,7 +10,6 @@ Layers:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -143,13 +142,10 @@ class TestMockedFullPipeline:
     should land on the expected element after each phrase finalises.
     """
 
-    def test_three_phrases_each_switch_highlight(self):
-        if os.environ.get("SKIP_SEMANTIC"):
-            pytest.skip("SKIP_SEMANTIC set")
-        from src.encoder import load_default_encoder
+    def test_three_phrases_each_switch_highlight(self, real_encoder):
         from src.matcher import Index, Matcher, MatchPolicy, PolicyConfig
 
-        enc = load_default_encoder()
+        enc = real_encoder
         idx = Index(INDEX_PATH, enc)
         matcher = Matcher(idx, enc)
         policy = MatchPolicy(matcher, PolicyConfig())

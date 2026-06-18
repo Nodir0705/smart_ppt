@@ -12,7 +12,6 @@ Two layers:
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -246,12 +245,9 @@ class TestPolicy:
 # ---------- end-to-end semantic acceptance (slow) ----------
 
 @pytest.fixture(scope="module")
-def loaded():
-    if os.environ.get("SKIP_SEMANTIC"):
-        pytest.skip("SKIP_SEMANTIC set")
-    from src.encoder import load_default_encoder
+def loaded(real_encoder):
     from src.matcher import Index, Matcher
-    enc = load_default_encoder()
+    enc = real_encoder
     idx = Index(ROOT / "out" / "index.json", enc)
     return Matcher(idx, enc), idx
 

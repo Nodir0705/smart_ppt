@@ -9,7 +9,6 @@ the per-layer tests would miss.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -22,18 +21,15 @@ SLIDES_DIR = ROOT / "out" / "slides"
 
 
 @pytest.fixture(scope="module")
-def loaded():
-    if os.environ.get("SKIP_SEMANTIC"):
-        pytest.skip("SKIP_SEMANTIC set")
+def loaded(real_encoder):
     if not INDEX_PATH.exists():
         pytest.skip("run `python3 -m src.index_deck test_deck.pptx` first")
     if not SLIDES_DIR.exists() or not (SLIDES_DIR / "slide_001.png").exists():
         pytest.skip("run `python3 -m src.render test_deck.pptx` first")
     from PIL import Image
-    from src.encoder import load_default_encoder
     from src.matcher import Index, Matcher
 
-    enc = load_default_encoder()
+    enc = real_encoder
     idx = Index(INDEX_PATH, enc)
     matcher = Matcher(idx, enc)
     raw = json.loads(INDEX_PATH.read_text())
