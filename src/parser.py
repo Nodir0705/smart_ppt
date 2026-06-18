@@ -79,7 +79,6 @@ def _norm(s: str) -> str:
     """Lowercased, whitespace-collapsed, punctuation-stripped (light)."""
     s = s.lower().strip()
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"[ ]", " ", s)  # nbsp
     return s
 
 
