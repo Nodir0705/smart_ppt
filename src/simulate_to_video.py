@@ -158,6 +158,15 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
     anim_step = 0
     event_idx = 0
 
+    # Frame-bytes memo: only the ~14% of frames where the highlight bbox changes
+    # (the 12-frame transitions) need re-rendering; the static runs between them are
+    # byte-identical, so render each unique frame once and re-pipe its bytes — skips
+    # a full base.copy() + draw + tobytes() (~2.7MB) on every static frame.
+    _UNSET = object()
+    last_current = _UNSET
+    last_bytes: bytes | None = None
+    rendered = 0
+
     # stderr -> temp file so a chatty ffmpeg can't deadlock the stdin pipe.
     with tempfile.TemporaryFile() as errf:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errf)
@@ -192,11 +201,17 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
                     if anim_step >= ANIM_FRAMES:
                         current = anim_target
 
-                frame = base.copy()
-                if current is not None:
-                    _draw_highlight(frame, current)
-                proc.stdin.write(frame.tobytes())
+                if current != last_current:
+                    frame = base.copy()
+                    if current is not None:
+                        _draw_highlight(frame, current)
+                    last_bytes = frame.tobytes()
+                    last_current = current
+                    rendered += 1
+                proc.stdin.write(last_bytes)
             proc.stdin.close()
+            print(f"  rendered {rendered}/{n_frames} unique frames "
+                  f"({n_frames - rendered} static frames reused)")
         except BrokenPipeError:
             pass  # ffmpeg died early — surfaced via returncode/stderr below
         ret = proc.wait()
