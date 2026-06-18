@@ -42,8 +42,14 @@ Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
 - [~] torch CPU-wheel reinstall: BLOCKED — this is the **shared system Python** (`/usr`, 635 pkgs;
       OCR project shares torch+CUDA). Mutating it would strip GPU from other projects. Safe path =
       isolated venv (rank 2). **Awaiting user decision** on building the venv.
-- [ ] pyproject + uv lock + offline wheelhouse (rank 2) — pairs with the venv
-- [ ] enrichment wiring fix + determinism (rank 8); pypdfium2 (rank 7); conftest FakeEncoder
+- [x] enrichment wiring fix (rank 8): **DELETED** the dead ~7GB VLM+LLM branch (enrich_vlm.py,
+      enrich_llm.py, test_enrich.py, dead out/index.* outputs). It wrote index.vlm/enriched.json
+      but group_scope builds scoped from refined, bypassing both → dead output every run. Also
+      redundant (parser already explodes chart categories into pointable elements) and off-ethos
+      (nondeterministic, GPU-leaning). Zero grounding impact (37/40). 121 passed.
+- [ ] footprint torch CPU-wheel — SKIPPED by user decision (shared system python; bge-small already
+      won the 10x model-weight footprint)
+- [ ] pyproject + uv lock + offline wheelhouse (rank 2); pypdfium2 (rank 7); conftest FakeEncoder
 
 ---
 
