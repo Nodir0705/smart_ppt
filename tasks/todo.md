@@ -49,7 +49,14 @@ Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
       (nondeterministic, GPU-leaning). Zero grounding impact (37/40). 121 passed.
 - [ ] footprint torch CPU-wheel — SKIPPED by user decision (shared system python; bge-small already
       won the 10x model-weight footprint)
-- [ ] pyproject + uv lock + offline wheelhouse (rank 2); pypdfium2 (rank 7); conftest FakeEncoder
+- [x] dependency manifest (rank 2): pyproject.toml + requirements.txt, pinned working set,
+      requires-python>=3.10,<3.13, folded pytest+ruff config (pytest.ini removed). 121 passed.
+- [x] conftest FakeEncoder (rank 10): session-scoped real encoder + model-free FakeEncoder.
+- [x] pypdfium2 (rank 7): refine_text.py swapped pdfplumber → pypdfium2 TIGHT glyph boxes.
+      Raster-calibrated at 150dpi → SHIFT_FRAC 0.22→0.0 (tight boxes are glyph-exact, 3.4x
+      tighter fit, equal clipping). Extraction ~142ms→8.9ms (~16x). pdfplumber removed from
+      manifest. 14 refine tests + real-deck tightness pass; 121 suite.
+- [ ] remaining Phase 2 (deferred, niche): ffmpeg concat-demuxer static dedup, warm LibreOffice
 
 ---
 

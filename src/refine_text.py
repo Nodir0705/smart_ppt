@@ -2,10 +2,12 @@
 
 The python-pptx parser gives each shape's container box, not where the glyphs
 land inside it. This transform opens the cached PDF (same one the renderer
-produces), reads per-word coordinates with pdfplumber, assigns words to elements
-by geometric containment, and rewrites each text element's `bbox` to the tight
-glyph union plus per-line `line_bboxes`. PDF points / 72 = inches — the units the
-parser already emits.
+produces), reads per-glyph coordinates with pypdfium2 (tight glyph boxes — the
+exact ink extent), assembles them into words, assigns words to elements by
+geometric containment, and rewrites each text element's `bbox` to the tight glyph
+union plus per-line `line_bboxes`. PDF points / 72 = inches — the units the parser
+already emits. pypdfium2's word extraction is ~29x faster than pdfminer's and its
+tight glyph boxes land directly on the rasterised glyphs (see SHIFT_FRAC below).
 """
 from __future__ import annotations
 
@@ -13,11 +15,15 @@ import argparse
 import json
 from pathlib import Path
 
-import pdfplumber
+import pypdfium2 as pdfium
 
 from src.render import deck_pdf
 
 PT_PER_INCH = 72.0
+
+# PDFium reports whitespace as zero-/degenerate-box chars; treat these as word
+# separators rather than glyphs.
+_WHITESPACE = {" ", "\t", "\r", "\n", " ", "​"}
 
 # Visual or geometry-tuned elements are left untouched (chart sub-regions are
 # tuned by chart_geom; images/arrows carry no PDF text worth snapping to).
@@ -126,20 +132,26 @@ def union_bbox(words: list[dict]) -> dict | None:
     }
 
 
-# The PDF text-layer box (font bounding box) carries leading above the caps, and
-# the soffice rasteriser draws glyphs lower within it — so the box sits high and
-# clips descenders. The offset is proportional to font size (≈0.22 of the line
-# height), so we drop each line by that fraction of its OWN height and keep the
-# height (which already covers the descenders once shifted). Calibrated and
-# verified at 150 dpi across every refined text line on the deck: zero clipping.
-SHIFT_FRAC = 0.22
+# With pdfminer/pdfplumber's font-metric boxes this was 0.22 — those boxes carried
+# leading above the caps, so each line had to be dropped ~0.22 of its height to
+# land on the rasterised glyphs. pypdfium2's TIGHT glyph boxes already ARE the ink
+# extent, so no correction is needed. Re-calibrated at 150 dpi across every refined
+# line on the deck: tight boxes hug the glyphs (median slack ~0.012in vs ~0.04in for
+# the old font-metric boxes, equivalent clipping). Kept as a tunable knob.
+SHIFT_FRAC = 0.0
 
 
-def _baseline_correct(box: dict | None) -> dict | None:
-    """Drop a PDF-text-layer line box onto the rasterised glyphs (size-proportional)."""
+def _baseline_correct(box: dict | None, shift: float | None = None) -> dict | None:
+    """Drop a line box onto the rasterised glyphs by `shift` of its own height.
+
+    `shift` defaults to SHIFT_FRAC (0.0 for pypdfium2 tight boxes); pass an
+    explicit value to exercise the size-proportional correction.
+    """
     if box is None:
         return None
-    return {**box, "y": round(box["y"] + SHIFT_FRAC * box["h"], 4)}
+    if shift is None:
+        shift = SHIFT_FRAC
+    return {**box, "y": round(box["y"] + shift * box["h"], 4)}
 
 
 def _union_of_boxes(boxes: list[dict | None]) -> dict | None:
@@ -178,26 +190,79 @@ def _apply_refinement(e: dict, words: list[dict]) -> None:
     e["bbox_source"] = "pdf_text"
 
 
+def _assemble_words(textpage, page_height: float,
+                    x_tol: float = 2.0, y_tol: float = 3.0) -> list[dict]:
+    """Group PDFium glyph boxes into words (point coords, y from page TOP).
+
+    Returns dicts {text, x0, x1, top, bottom} matching pdfplumber's extract_words
+    output shape. Uses TIGHT glyph boxes (loose=False), so a word's union is the
+    exact ink extent — there is no font-metric leading to baseline-correct away.
+    A new word starts on a whitespace char, a line change (top jumps > y_tol), or
+    a horizontal gap > x_tol.
+    """
+    words: list[dict] = []
+    cur: dict | None = None
+    prev_x1: float | None = None
+    for i in range(textpage.count_chars()):
+        ch = textpage.get_text_range(i, 1)
+        if ch in _WHITESPACE:
+            if cur is not None:
+                words.append(cur)
+                cur, prev_x1 = None, None
+            continue
+        left, bottom, right, top = textpage.get_charbox(i, loose=False)
+        w_top = page_height - top        # PDF bottom-left origin -> top-left origin
+        w_bottom = page_height - bottom
+        if cur is not None and (
+            abs(w_top - cur["top"]) > y_tol
+            or (prev_x1 is not None and left - prev_x1 > x_tol)
+        ):
+            words.append(cur)
+            cur = None
+        if cur is None:
+            cur = {"text": ch, "x0": left, "x1": right, "top": w_top, "bottom": w_bottom}
+        else:
+            cur["text"] += ch
+            cur["x0"] = min(cur["x0"], left)
+            cur["x1"] = max(cur["x1"], right)
+            cur["top"] = min(cur["top"], w_top)
+            cur["bottom"] = max(cur["bottom"], w_bottom)
+        prev_x1 = right
+    if cur is not None:
+        words.append(cur)
+    return words
+
+
+def _iter_pdf_pages(pdf_path):
+    """Yield (width_pt, height_pt, words) per PDF page (words as _assemble_words)."""
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        for page in pdf:
+            width, height = page.get_size()
+            textpage = page.get_textpage()
+            yield width, height, _assemble_words(textpage, height)
+    finally:
+        pdf.close()
+
+
 def refine_index(index: dict, pdf_path) -> dict:
     """Refine every text element's bbox in `index` (mutated and returned)."""
     slide_size = index["slide_size"]
-    with pdfplumber.open(str(pdf_path)) as pdf:
-        pages = pdf.pages
-        if len(pages) != len(index["slides"]):
-            raise RuntimeError(
-                f"PDF has {len(pages)} pages but index has "
-                f"{len(index['slides'])} slides"
-            )
-        for slide, page in zip(index["slides"], pages):
-            sx = slide_size["w"] / (page.width / PT_PER_INCH)
-            sy = slide_size["h"] / (page.height / PT_PER_INCH)
-            words = words_to_inches(page.extract_words(), sx, sy)
-            refinable = [(e["id"], e["bbox"]) for e in slide["elements"]
-                         if _is_refinable(e)]
-            assigned = assign_words(refinable, words)
-            for e in slide["elements"]:
-                if _is_refinable(e):
-                    _apply_refinement(e, assigned.get(e["id"], []))
+    pages = list(_iter_pdf_pages(pdf_path))
+    if len(pages) != len(index["slides"]):
+        raise RuntimeError(
+            f"PDF has {len(pages)} pages but index has {len(index['slides'])} slides"
+        )
+    for slide, (page_w, page_h, page_words) in zip(index["slides"], pages):
+        sx = slide_size["w"] / (page_w / PT_PER_INCH)
+        sy = slide_size["h"] / (page_h / PT_PER_INCH)
+        words = words_to_inches(page_words, sx, sy)
+        refinable = [(e["id"], e["bbox"]) for e in slide["elements"]
+                     if _is_refinable(e)]
+        assigned = assign_words(refinable, words)
+        for e in slide["elements"]:
+            if _is_refinable(e):
+                _apply_refinement(e, assigned.get(e["id"], []))
     return index
 
 

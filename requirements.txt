@@ -17,7 +17,6 @@ vosk==0.3.45
 piper-tts==1.4.2
 sounddevice==0.5.5
 soundfile==0.13.1
-pdfplumber==0.11.9
 pypdfium2==5.6.0
 python-pptx==1.0.2
 pillow==10.3.0

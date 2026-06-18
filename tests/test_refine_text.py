@@ -104,9 +104,9 @@ def test_apply_refinement_sets_pdf_text():
     _apply_refinement(e, words)
     assert e["bbox_source"] == "pdf_text"
     assert e["shape_bbox"]["w"] == 9.0
-    # x/w are the tight glyph union; y is dropped by 0.22*line-height (0.22*0.2 =
-    # 0.044) to land on the rasterised glyphs; height is unchanged.
-    assert e["bbox"] == {"x": 1.0, "y": 1.044, "w": 1.4, "h": 0.2, "units": "inches"}
+    # x/w are the tight glyph union; pypdfium2 tight boxes are already the ink
+    # extent (SHIFT_FRAC=0.0), so y is the glyph-union top unchanged; h unchanged.
+    assert e["bbox"] == {"x": 1.0, "y": 1.0, "w": 1.4, "h": 0.2, "units": "inches"}
     assert len(e["line_bboxes"]) == 1
     assert e["bbox"]["w"] < e["shape_bbox"]["w"]
 
@@ -156,17 +156,9 @@ def test_refine_index_pure_no_pdf_words(monkeypatch):
         }],
     }
 
-    class _Page:
-        width, height = 960.0, 540.0
-        def extract_words(self):
-            return []
-
-    class _PDF:
-        pages = [_Page()]
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-
-    monkeypatch.setattr(rt.pdfplumber, "open", lambda _p: _PDF())
+    # one page, no words -> every refinable text element falls back to shape.
+    monkeypatch.setattr(rt, "_iter_pdf_pages",
+                        lambda _p: iter([(960.0, 540.0, [])]))
     out = rt.refine_index(index, "ignored.pdf")
     e0 = out["slides"][0]["elements"][0]
     assert e0["bbox_source"] == "shape"          # refinable but no words
@@ -210,10 +202,13 @@ def test_refine_index_real_deck_tightens_text(tmp_path):
 
 def test_baseline_correct_drops_box_by_height_fraction():
     from src.refine_text import _baseline_correct
-    out = _baseline_correct({"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.30, "units": "inches"})
-    assert out["x"] == 1.0 and out["w"] == 3.0          # x/w unchanged
+    box = {"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.30, "units": "inches"}
+    out = _baseline_correct(box, shift=0.22)             # explicit size-proportional drop
+    assert out["x"] == 1.0 and out["w"] == 3.0           # x/w unchanged
     assert out["h"] == 0.30                              # height unchanged
     assert out["y"] == 2.066                            # dropped 0.22 * 0.30 = 0.066"
+    # default shift is SHIFT_FRAC (0.0 for tight glyph boxes) -> no drop
+    assert _baseline_correct(box)["y"] == 2.0
     assert _baseline_correct(None) is None
 
 
