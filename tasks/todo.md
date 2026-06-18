@@ -1,5 +1,45 @@
 # Smart Pointer — Tasks
 
+## Active milestone: Phase 0 optimization quick wins (2026-06-18)
+
+Source: `docs/optimization-research-2026-06-18.md` §6 Phase 0 + §7 critic corrections.
+Constraint: fully offline, deterministic, CPU-only. Zero new runtime deps.
+Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
+
+### Batch 1 — Determinism preconditions (do FIRST — precondition for everything)
+- [x] encoder.py: default `device='cpu'`, `torch.set_num_threads(1)`, `manual_seed(0)`,
+      `local_files_only=True` + pinned `revision`, OMP/MKL/HF-offline env defaults
+- [x] matcher.py: bump `CACHE_VERSION` -> `v3-cpu-deterministic` (forces rebuild on CPU)
+- [x] delete 9 stale `out/embeddings_*.pkl`; rebuilt on CPU
+- [x] VERIFY: `pytest -q` green (159) + grounding eval **38/40, flicker 0** (was 38/40 floor 36)
+
+### Batch 2 — Pure quick wins (no grounding impact, low risk)
+- [x] asr_normalize.py: `_CompiledNormalizer` cache (byte-identical output)
+- [x] audio.py + tts.py: new `src/pcm.py` — lazy `audioop` + scipy/numpy fallback (Py3.13 time-bomb)
+- [x] viewer.py: debounce `<Configure>` + BILINEAR-during-drag, LANCZOS on settle
+- [x] audio.py: `sd.InputStream(dtype='int16')` mic capture + float32 fallback
+- [~] render.py: SKIPPED — no caller knows the slide count, so the param would be dead code
+- [x] parser.py: deleted dead nbsp no-op — parser acceptance test confirms output unchanged
+
+### Batch 3 — Slightly bigger
+- [x] matcher.py: `.npz` + JSON sidecar + age eviction (replaced pickle ACE format)
+- [x] matcher.py: 1-entry query encode cache (behavior-preserving)
+- [x] simulate_to_video.py: raw-RGB ffmpeg pipe + `-threads 1` — verified end-to-end (640x360, 160f, valid MP4)
+- [ ] tests/conftest.py: session-scoped encoder + FakeEncoder fixture — DEFERRED (test-speed nicety)
+
+### Review (2026-06-18)
+- 8 files touched + 1 new (`src/pcm.py`). Suite: 159 passed throughout. No new lint errors.
+- Determinism contract now enforced in the LIVE path: CPU-only, single-thread, offline-pinned encoder.
+- Two items intentionally not shipped: render `_count_slides` (would be dead code) and conftest
+  FakeEncoder (pure test-speed; no production impact). Both noted, not silently dropped.
+
+### Deferred to Phase 1 (NOT this turn — needs env/manifest changes or re-tune)
+- torch CPU-wheel reinstall (env mutation — confirm with user)
+- bge-large → bge-small swap (forces threshold re-tune)
+- pyproject + uv lock; enrichment determinism + wiring fix
+
+---
+
 ## Active milestone: Stage 1 — Parser → index.json
 
 Goal: from `test_deck.pptx`, produce `out/index.json` that satisfies the Stage 1
