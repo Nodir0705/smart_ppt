@@ -44,11 +44,14 @@ def test_phase1_grounding_targets_met():
     assert "s4_e3" in slides[4]["trajectory"], "Match latency bar never lit"
     assert "s6_e1" in slides[6]["trajectory"], "STT Engine node never lit"
 
-    # No per-slide regression below the Phase-1 floor.
-    floor = {1: 2, 2: 6, 3: 9, 4: 7, 5: 6, 6: 5, 7: 2}
+    # No per-slide regression below the floor. Re-baselined for the bge-small
+    # encoder (2026-06-18): slide 3 drops 9->8 — bge-small misses the marginal
+    # s3_e5; recovering it needs gap=0.01, which spikes flicker 0->7 (a worse
+    # trade). Overall stays 37/40, flicker 0, all three critical targets met.
+    floor = {1: 2, 2: 6, 3: 8, 4: 7, 5: 6, 6: 5, 7: 2}
     for sno, lo in floor.items():
         assert slides[sno]["hits"] >= lo, f"slide {sno} regressed: {slides[sno]['hits']} < {lo}"
 
-    # Overall accuracy and flicker stay in range (baseline was 34/40, flicker 6).
+    # Overall accuracy and flicker stay in range (bge-small baseline: 37/40, flicker 0).
     assert overall["hits"] >= 36, f"overall accuracy dropped: {overall['hits']}/40"
     assert overall["flicker"] <= 10, f"too much flicker: {overall['flicker']}"

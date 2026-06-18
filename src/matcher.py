@@ -276,7 +276,7 @@ class Matcher:
 class PolicyConfig:
     """Tunables for emit/hold decisions."""
 
-    threshold: float = 0.55       # minimum cosine sim to consider any emission
+    threshold: float = 0.65       # minimum cosine sim to consider any emission (bge-small: its cosines run ~0.05-0.10 higher than bge-large, so the bar is raised to keep filler-rejection equivalent)
     gap: float = 0.03             # best must beat runner-up by at least this (on effective score)
     stickiness: int = 1           # consecutive frames needed before switching active element (raise to 2–3 for streaming partials)
     clear_after_n_low: int = 8    # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps so group stickiness survives)
