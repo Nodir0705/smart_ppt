@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.chart_detect import detect_bars, detect_line_points
+from src.chart_detect import detect_axis_labels, detect_bars, detect_line_points
 
 TEAL = (28, 114, 147)
 GREY = (120, 128, 140)
@@ -119,3 +119,27 @@ class TestLinePoints:
 
     def test_none_on_blank(self):
         assert detect_line_points(_canvas(), (0, 0, 600, 400), 4) is None
+
+
+class TestAxisLabels:
+    def test_finds_labels_and_ignores_axis_line_and_legend(self):
+        img = _canvas()
+        GREY = (110, 120, 135)
+        baseline = 300
+        centers = [100, 250, 400, 550]
+        # full-width axis line just below the baseline (must be ignored)
+        img[baseline + 2:baseline + 4, 40:560] = (90, 90, 90)
+        # a short grey label glyph-block under each category
+        for cx in centers:
+            img[baseline + 12:baseline + 28, cx - 12:cx + 12] = GREY
+        # a centred "legend" further down under the middle category (must be ignored)
+        img[baseline + 70:baseline + 90, 320:480] = GREY
+
+        boxes = detect_axis_labels(img, (0, 0, 600, 400), centers, baseline, step=150)
+        assert len(boxes) == 4
+        for box, cx in zip(boxes, centers):
+            assert box is not None
+            assert abs((box.x + box.w / 2) - cx) <= 6   # centred on the label
+            assert box.w <= 40                           # tight to the glyph block, not the legend
+            assert box.y > baseline                      # below the baseline
+            assert box.y + box.h < baseline + 60         # the label line, not the legend row

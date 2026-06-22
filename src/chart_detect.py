@@ -200,6 +200,75 @@ def detect_line_points(image: np.ndarray, chart_px: tuple[int, int, int, int],
     return out
 
 
+def detect_axis_labels(image: np.ndarray, chart_px: tuple[int, int, int, int],
+                       centers_x: list[float], baseline_y: float, step: float
+                       ) -> list["BBox | None"]:
+    """Find each category's x-axis text label (e.g. 'STT', '0.5') in IMAGE px.
+
+    Searches a band just below the data baseline, drops the full-width axis line,
+    and tightens to the glyph cluster nearest each category centre. Returns one
+    box per centre (None where no label text is found). Lets the highlight show a
+    data point and its axis value as related.
+    """
+    x0, y0, x1, y1 = chart_px
+    crop = image[y0:y1, x0:x1].astype(np.int16)
+    H, W = crop.shape[:2]
+    top = max(0, int(baseline_y - y0))
+    bot = min(H, top + max(_MIN_BAND_PX, int(0.55 * step)))
+    if bot - top < _MIN_BAND_PX:
+        return [None] * len(centers_x)
+    band = crop[top:bot]
+    lum = band.mean(axis=2)
+    sat = band.max(axis=2) - band.min(axis=2)
+    dark = (lum < 175) & (sat < 80)            # grey/slate glyphs, not series colours
+    dark[dark.mean(axis=1) > 0.30, :] = False  # drop the full-width axis line / tick row
+
+    half = max(_MIN_BAND_PX, int(0.45 * step))
+    gap = max(2, int(0.03 * step))
+    pad = 2
+    out: list[BBox | None] = []
+    for cx in centers_x:
+        cxl = int(cx - x0)
+        lo, hi = max(0, cxl - half), min(W, cxl + half)
+        sub = dark[:, lo:hi]
+        rws = np.where(sub.any(axis=1))[0]
+        if len(rws) == 0:
+            out.append(None)
+            continue
+        # keep only the FIRST contiguous text line below the baseline — that's the
+        # axis label; anything further down (a centred legend) is a separate run
+        r0 = int(rws[0])
+        rprev = r0
+        for rr in rws[1:]:
+            if rr - rprev > gap:
+                break
+            rprev = int(rr)
+        r1 = rprev
+        line = sub[r0:r1 + 1]
+        cols = np.where(line.any(axis=0))[0]
+        if len(cols) == 0:
+            out.append(None)
+            continue
+        # split into contiguous glyph runs; keep the run nearest the centre
+        runs, s, p = [], int(cols[0]), int(cols[0])
+        for c in cols[1:]:
+            if c - p > gap:
+                runs.append((s, p))
+                s = int(c)
+            p = int(c)
+        runs.append((s, p))
+        center_local = cxl - lo
+        rs, re = min(runs, key=lambda r: abs((r[0] + r[1]) / 2 - center_local))
+        gx0, gx1 = lo + rs, lo + re
+        grows = np.where(dark[r0:r1 + 1, gx0:gx1 + 1].any(axis=1))[0]
+        gy0, gy1 = r0 + int(grows[0]), r0 + int(grows[-1])
+        out.append(BBox(
+            x=float(x0 + gx0 - pad), y=float(y0 + top + gy0 - pad),
+            w=float(gx1 - gx0 + 2 * pad), h=float(gy1 - gy0 + 2 * pad),
+        ))
+    return out
+
+
 # ---------- index-level application ----------
 
 def refine_chart_bboxes(index: dict, slides_dir: str | Path) -> dict:
@@ -245,11 +314,23 @@ def refine_chart_bboxes(index: dict, slides_dir: str | Path) -> dict:
                 boxes = None  # pie etc. keep the heuristic
             if boxes is None or len(boxes) != len(cats):
                 continue  # keep heuristic bbox
-            for cat, box in zip(cats, boxes):
+            # measure each category's x-axis label so the highlight can show the
+            # data point and its axis value as related
+            centers = [b.x + b.w / 2.0 for b in boxes]
+            baseline = max(b.y + b.h for b in boxes)
+            step = (max(centers) - min(centers)) / max(len(cats) - 1, 1) or (boxes[0].w * 2)
+            labels = detect_axis_labels(image, chart_px, centers, baseline, step)
+            for cat, box, lbl in zip(cats, boxes, labels):
                 cat["bbox"] = {
                     "x": round(box.x / dpi, 4), "y": round(box.y / dpi, 4),
                     "w": round(box.w / dpi, 4), "h": round(box.h / dpi, 4),
                     "units": "inches",
                 }
                 cat["bbox_source"] = "chart_detect"
+                if lbl is not None:
+                    cat["axis_label_bbox"] = {
+                        "x": round(lbl.x / dpi, 4), "y": round(lbl.y / dpi, 4),
+                        "w": round(lbl.w / dpi, 4), "h": round(lbl.h / dpi, 4),
+                        "units": "inches",
+                    }
     return index

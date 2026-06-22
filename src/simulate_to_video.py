@@ -112,6 +112,26 @@ def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,
     return None
 
 
+def _element_axis_label_px(raw_index: dict, slide_no: int, element_id: str,
+                           img_w: int, img_h: int) -> Bbox | None:
+    """The element's x-axis label box (chart points), in image px, or None."""
+    if element_id is None:
+        return None
+    slide_w_in = raw_index["slide_size"]["w"]
+    slide_h_in = raw_index["slide_size"]["h"]
+    for s in raw_index["slides"]:
+        if s["slide_number"] != slide_no:
+            continue
+        for el in s["elements"]:
+            if el["id"] == element_id and el.get("axis_label_bbox"):
+                lb = el["axis_label_bbox"]
+                return inches_to_image_px(
+                    (lb["x"], lb["y"], lb["w"], lb["h"]),
+                    slide_w_in, slide_h_in, img_w, img_h,
+                )
+    return None
+
+
 def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
                        raw_index: dict, events: list[tuple[float, str | None]],
                        out_path: Path, fps: int, max_width: int) -> int:
@@ -130,10 +150,14 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
         base = base.resize((max_width, new_h), Image.LANCZOS)
     img_w, img_h = base.size
 
-    # Pre-compute target bboxes from events
+    # Pre-compute target bboxes from events (data box + its x-axis label box)
     targets: list[tuple[float, Bbox | None]] = [
         (t, _element_bbox_image_px(raw_index, slide_no, eid, img_w, img_h))
         for t, eid in events
+    ]
+    label_targets: list[Bbox | None] = [
+        _element_axis_label_px(raw_index, slide_no, eid, img_w, img_h)
+        for _t, eid in events
     ]
 
     dur = _wav_duration_s(wav_path)
@@ -153,17 +177,18 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
     ]
 
     current: Bbox | None = None
+    current_label: Bbox | None = None     # static companion box on the x-axis label
     anim_start: Bbox | None = None
     anim_target: Bbox | None = None
     anim_step = 0
     event_idx = 0
 
-    # Frame-bytes memo: only the ~14% of frames where the highlight bbox changes
-    # (the 12-frame transitions) need re-rendering; the static runs between them are
+    # Frame-bytes memo: only the ~14% of frames where the highlight changes (the
+    # 12-frame transitions) need re-rendering; the static runs between them are
     # byte-identical, so render each unique frame once and re-pipe its bytes — skips
     # a full base.copy() + draw + tobytes() (~2.7MB) on every static frame.
     _UNSET = object()
-    last_current = _UNSET
+    last_state = _UNSET
     last_bytes: bytes | None = None
     rendered = 0
 
@@ -177,6 +202,7 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
                 # consume any events that should have fired by time t
                 while event_idx < len(targets) and targets[event_idx][0] <= t:
                     new_t = targets[event_idx][1]
+                    current_label = label_targets[event_idx]  # snaps with the element
                     if current is None and new_t is not None:
                         # appearing from nowhere — pop in, no animation
                         current = new_t
@@ -201,12 +227,15 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
                     if anim_step >= ANIM_FRAMES:
                         current = anim_target
 
-                if current != last_current:
+                state = (current, current_label)
+                if state != last_state:
                     frame = base.copy()
                     if current is not None:
                         _draw_highlight(frame, current)
+                    if current_label is not None:
+                        _draw_highlight(frame, current_label)
                     last_bytes = frame.tobytes()
-                    last_current = current
+                    last_state = state
                     rendered += 1
                 proc.stdin.write(last_bytes)
             proc.stdin.close()

@@ -98,9 +98,11 @@ class ViewerApp:
         for slide in self.raw_index["slides"]:
             for el in slide["elements"]:
                 bb = el["bbox"]
+                lb = el.get("axis_label_bbox")
                 self._element_by_id[el["id"]] = {
                     "slide": slide["slide_number"],
                     "bbox_in": (bb["x"], bb["y"], bb["w"], bb["h"]),
+                    "axis_label_in": (lb["x"], lb["y"], lb["w"], lb["h"]) if lb else None,
                     "text": el.get("text"),
                     "type": el["type"],
                 }
@@ -117,6 +119,7 @@ class ViewerApp:
         self._image_id: Optional[int] = None
         self._highlight_outer_id: Optional[int] = None
         self._highlight_inner_id: Optional[int] = None
+        self._axis_label_id: Optional[int] = None        # companion box on the axis label
         self._resize_job = None                          # pending settle-redraw
         self._last_draw_size: Optional[tuple[int, int]] = None  # last drawn canvas size
 
@@ -319,6 +322,9 @@ class ViewerApp:
         if self._highlight_inner_id is not None:
             self.canvas.delete(self._highlight_inner_id)
             self._highlight_inner_id = None
+        if self._axis_label_id is not None:
+            self.canvas.delete(self._axis_label_id)
+            self._axis_label_id = None
         if bbox is None:
             return
         x, y, w, h = bbox
@@ -328,6 +334,27 @@ class ViewerApp:
         self._highlight_outer_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
             outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
+        )
+        # companion box on the matching x-axis label (chart points), so the data
+        # point and its axis value read as related — static, same colour.
+        self._draw_axis_label()
+
+    def _draw_axis_label(self) -> None:
+        active = self.policy.active_id
+        el = self._element_by_id.get(active) if active else None
+        label_in = el.get("axis_label_in") if el else None
+        if not label_in or not self._image_pil:
+            return
+        img_px = inches_to_image_px(
+            label_in, self.slide_w_in, self.slide_h_in,
+            self._image_pil.width, self._image_pil.height,
+        )
+        x, y, w, h = self._fit.image_bbox_to_canvas(img_px)
+        if w <= 0 or h <= 0:
+            return
+        self._axis_label_id = self.canvas.create_rectangle(
+            x, y, x + w, y + h,
+            outline=HIGHLIGHT_OUTER_COLOUR, width=max(1, HIGHLIGHT_OUTER_WIDTH - 1),
         )
 
     def _update_status(self) -> None:
