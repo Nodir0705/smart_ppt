@@ -61,7 +61,7 @@ class MicSource:
     queue from the consumer thread. `stop()` is safe to call from anywhere.
     """
 
-    def __init__(self, sample_rate: int = 16000, chunk_ms: int = 200, device: int | str | None = None) -> None:
+    def __init__(self, sample_rate: int = 16000, chunk_ms: int = 100, device: int | str | None = None) -> None:
         self.sample_rate = sample_rate
         self.chunk_ms = chunk_ms
         self.device = device

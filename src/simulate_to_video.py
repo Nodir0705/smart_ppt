@@ -46,7 +46,7 @@ HALO = (40, 40, 40)
 HIGHLIGHT_HALO_WIDTH = 3
 
 # animation parameters — same as viewer
-ANIM_FRAMES = 12
+ANIM_FRAMES = 8   # highlight glide frames (~0.27s @30fps; snappier, was 12)
 ANIM_FPS = 30  # frames-per-second of the output video
 
 

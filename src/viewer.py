@@ -38,8 +38,8 @@ from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
 
 
 # ---- highlight animation parameters ----
-ANIM_MS = 180
-ANIM_FRAMES = 12
+ANIM_MS = 100      # highlight glide duration (snappier; was 180)
+ANIM_FRAMES = 10
 HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # dark outline box around the active element
 HIGHLIGHT_OUTER_WIDTH = 3
 
@@ -56,7 +56,7 @@ class ViewerApp:
         mic: bool = False,
         wav: Optional[Path] = None,
         grammar_bias: bool = False,
-        match_throttle_ms: int = 200,
+        match_throttle_ms: int = 90,
     ) -> None:
         import tkinter as tk
         from PIL import Image, ImageTk
