@@ -50,7 +50,10 @@ class PlotInset:
     right: float
 
 
-# Fractions of chart bbox reserved for title (top), axis labels (bottom/left), padding (right)
+# Fractions of chart bbox reserved for title (top), axis labels (bottom/left), padding (right).
+# These are only the FALLBACK estimate: for column charts the bbox is normally
+# measured from the rendered PNG by chart_detect; this heuristic is used when that
+# measurement isn't available (no render) or fails, and for pie/line charts.
 _DEFAULT_INSETS: dict[str, PlotInset] = {
     "bar":     PlotInset(top=0.18, bottom=0.10, left=0.10, right=0.03),
     "line":    PlotInset(top=0.15, bottom=0.18, left=0.13, right=0.10),
@@ -72,14 +75,36 @@ def plot_area(chart_bbox: BBox, chart_type: str) -> BBox:
 
 # ---------- bar / column ----------
 
-def bar_subregions(chart_bbox: BBox, n_categories: int) -> list[BBox]:
-    """Vertical strips across the plot area, one per category."""
+def bar_subregions(chart_bbox: BBox, n_categories: int,
+                   values: list[float] | None = None,
+                   min_h_frac: float = 0.04) -> list[BBox]:
+    """One sub-bbox per category column.
+
+    When `values` is given, each box is VALUE-PROPORTIONAL and anchored to the
+    x-axis baseline: its height is `(value / max_value) * plot_height`, so the
+    tallest bar fills the plot and short bars get short boxes (instead of every
+    bar inheriting the full plot height). `min_h_frac` floors the height so a
+    near-zero bar still gets a visible highlight at its baseline position.
+
+    With no `values` (or a non-positive max), it falls back to full-height
+    strips — the original behaviour — so callers without data are unaffected.
+    """
     if n_categories <= 0:
         return []
     plot = plot_area(chart_bbox, "bar")
     step = plot.w / n_categories
-    return [BBox(x=plot.x + i * step, y=plot.y, w=step, h=plot.h)
-            for i in range(n_categories)]
+    baseline_y = plot.y + plot.h  # bottom of the plot area = the x-axis
+    vmax = max(values) if values else 0.0
+    out: list[BBox] = []
+    for i in range(n_categories):
+        x = plot.x + i * step
+        if vmax > 0 and values is not None and i < len(values):
+            frac = max(values[i], 0.0) / vmax
+            bar_h = max(frac * plot.h, min_h_frac * plot.h)
+        else:
+            bar_h = plot.h  # no value -> full-height strip (back-compat)
+        out.append(BBox(x=x, y=baseline_y - bar_h, w=step, h=bar_h))
+    return out
 
 
 # ---------- line ----------
@@ -175,4 +200,4 @@ def subregions_for_chart(chart_bbox: BBox, chart_type: str,
         return pie_subregions(chart_bbox, values or [1.0] * n_categories)
     if ct in ("line", "scatter"):
         return line_subregions(chart_bbox, n_categories)
-    return bar_subregions(chart_bbox, n_categories)
+    return bar_subregions(chart_bbox, n_categories, values)

@@ -276,12 +276,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="path to .pptx (default: index['deck'])")
     ap.add_argument("--pdf-dir", default="out",
                     help="where to cache the soffice PDF")
+    ap.add_argument("--slides", default="out/slides",
+                    help="rendered slide PNGs, used to measure column-chart bars")
     args = ap.parse_args(argv)
 
     index = json.loads(Path(args.input).read_text())
     deck = args.deck or index["deck"]
     pdf_path = deck_pdf(deck, args.pdf_dir)
     refined = refine_index(index, pdf_path)
+
+    # measure column-chart bars from the rendered slides (falls back to the
+    # chart_geom heuristic per-chart when a PNG is missing or unmeasurable)
+    if Path(args.slides).exists():
+        from .chart_detect import refine_chart_bboxes
+        refine_chart_bboxes(refined, args.slides)
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(refined, indent=2))
@@ -290,7 +299,9 @@ def main(argv: list[str] | None = None) -> int:
             if e.get("bbox_source") == "pdf_text")
     total = sum(1 for s in refined["slides"] for e in s["elements"]
                 if _is_refinable(e))
-    print(f"refined {n}/{total} text elements → {args.out}")
+    nb = sum(1 for s in refined["slides"] for e in s["elements"]
+             if e.get("bbox_source") == "chart_detect")
+    print(f"refined {n}/{total} text elements, {nb} chart bars → {args.out}")
     return 0
 
 

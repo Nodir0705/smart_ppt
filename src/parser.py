@@ -46,6 +46,7 @@ class Element:
     trigger_phrases: list[str] = field(default_factory=list)
     needs_vision: bool = False
     parent_id: str | None = None
+    value: float | None = None   # numeric value (chart_category bars/slices)
 
 
 # ---------- helpers ----------
@@ -319,6 +320,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
             bbox=cat_bbox,
             trigger_phrases=cat_phrases,
             parent_id=chart_el.id,
+            value=values[i] if i < len(values) else None,
         ))
         idx += 1
     return out
@@ -478,4 +480,5 @@ def _element_to_dict(e: Element) -> dict:
         "trigger_phrases": e.trigger_phrases,
         "needs_vision": e.needs_vision,
         "parent_id": e.parent_id,
+        "value": e.value,
     }
