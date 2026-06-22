@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.chart_detect import detect_bars
+from src.chart_detect import detect_bars, detect_line_points
 
 TEAL = (28, 114, 147)
 GREY = (120, 128, 140)
@@ -77,3 +77,45 @@ def test_returns_none_when_unmeasurable():
     assert detect_bars(img, (0, 0, 600, 400), []) is None          # no values
     assert detect_bars(img, (0, 0, 600, 400), [0, 0, 0]) is None   # all zero
     assert detect_bars(img, (0, 0, 600, 400), [10, 5]) is None     # blank image -> no bars
+
+
+def _marker(img, cx, cy, color, r=6):
+    img[cy - r:cy + r, cx - r:cx + r] = color
+
+
+def _line(img, p0, p1, color):
+    (x0, y0), (x1, y1) = p0, p1
+    for t in np.linspace(0, 1, 400):
+        x = int(round(x0 + (x1 - x0) * t))
+        y = int(round(y0 + (y1 - y0) * t))
+        img[y - 1:y + 2, x - 1:x + 2] = color
+
+
+class TestLinePoints:
+    def test_two_series_box_spans_both_markers(self):
+        img = _canvas()
+        TOP, BOT = (28, 114, 147), (240, 110, 110)  # teal + coral, like the deck
+        xs = [80, 230, 380, 530]
+        top_y = [250, 180, 130, 110]   # rising series
+        bot_y = [300, 330, 360, 380]   # falling series
+        for i in range(len(xs)):
+            if i:
+                _line(img, (xs[i - 1], top_y[i - 1]), (xs[i], top_y[i]), TOP)
+                _line(img, (xs[i - 1], bot_y[i - 1]), (xs[i], bot_y[i]), BOT)
+        for i, x in enumerate(xs):
+            _marker(img, x, top_y[i], TOP)
+            _marker(img, x, bot_y[i], BOT)
+
+        boxes = detect_line_points(img, (0, 0, 600, 400), 4, legend_clip_frac=0.0)
+        assert boxes is not None and len(boxes) == 4
+        for i, (box, x) in enumerate(zip(boxes, xs)):
+            # centred on the marker column
+            assert abs((box.x + box.w / 2) - x) <= 8
+            # spans from the upper marker to the lower marker at that x
+            assert box.y <= top_y[i] + 8
+            assert box.y + box.h >= bot_y[i] - 8
+            # not a full-height strip: bounded to the data band
+            assert box.h < 400 * 0.9
+
+    def test_none_on_blank(self):
+        assert detect_line_points(_canvas(), (0, 0, 600, 400), 4) is None

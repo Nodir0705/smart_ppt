@@ -26,8 +26,8 @@ import numpy as np
 from .parser import BBox
 
 # tuning (pixel-space, robust across DPI because they're ratios or small absolutes)
-_SAT_MIN = 40          # min (max-min) channel spread to count as a coloured bar pixel
-_VAL_MIN, _VAL_MAX = 45, 248
+_SAT_MIN = 40          # min (max-min) channel spread to count as a coloured bar/line pixel
+_VAL_MIN = 45          # drop near-black axis lines/text (white is already excluded by saturation)
 _FILL_MIN = 0.55       # a real bar fills most rows top→baseline; text/gridlines don't
 _MIN_BAND_PX = 4       # ignore 1–3px speckle bands
 
@@ -38,7 +38,7 @@ def _bar_mask(crop: np.ndarray) -> np.ndarray:
     mx = c.max(axis=2)
     mn = c.min(axis=2)
     sat = mx - mn
-    return (sat >= _SAT_MIN) & (mx >= _VAL_MIN) & (mx <= _VAL_MAX)
+    return (sat >= _SAT_MIN) & (mx >= _VAL_MIN)
 
 
 def _bands(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -141,6 +141,65 @@ def detect_bars(image: np.ndarray, chart_px: tuple[int, int, int, int],
     return out
 
 
+def detect_line_points(image: np.ndarray, chart_px: tuple[int, int, int, int],
+                       n_categories: int, legend_clip_frac: float = 0.12
+                       ) -> list[BBox] | None:
+    """Detect one box per category for a line/scatter chart (in IMAGE pixels).
+
+    Each box is centred on the category's marker column and spans the vertical
+    extent of ALL series' data points there — i.e. from the top line's marker to
+    the bottom line's marker at that x. Colour-agnostic: it locates markers by
+    coloured-pixel density, so it works for any series palette. Returns None to
+    fall back to the heuristic when the chart can't be measured.
+
+    `legend_clip_frac` drops the bottom strip of the chart (where the legend's
+    series-coloured swatches live) so they aren't mistaken for data points.
+    """
+    if n_categories <= 0:
+        return None
+    x0, y0, x1, y1 = chart_px
+    crop = image[y0:y1, x0:x1]
+    if crop.size == 0:
+        return None
+    mask = _bar_mask(crop)
+    if legend_clip_frac > 0:
+        mask[int((1.0 - legend_clip_frac) * mask.shape[0]):, :] = False
+
+    xcols = np.where(mask.any(axis=0))[0]
+    if len(xcols) < 2:
+        return None
+    left, right = int(xcols[0]), int(xcols[-1])
+    if right <= left:
+        return None
+    step = (right - left) / max(n_categories - 1, 1)
+    box_half = max(_MIN_BAND_PX, int(0.13 * step))     # drawn box width
+    search_half = max(box_half, int(0.25 * step))      # wider y-extent search
+    refine = max(_MIN_BAND_PX, int(0.20 * step))       # x snap radius
+    colden = mask.sum(axis=0)
+
+    out: list[BBox] = []
+    for i in range(n_categories):
+        x_est = left + round(i * step)
+        # snap to the densest column nearby — the marker (line segments between
+        # markers anti-alias below threshold, so the marker is the density peak)
+        lo, hi = max(0, x_est - refine), min(mask.shape[1], x_est + refine + 1)
+        seg = colden[lo:hi]
+        xc = lo + int(np.argmax(seg)) if seg.size and seg.max() > 0 else x_est
+        # search a WIDER window for the vertical extent so a sibling series' marker
+        # a few px off in x (and the sloped line between points) is still captured…
+        slo, shi = max(0, xc - search_half), xc + search_half + 1
+        rows = np.where(mask[:, slo:shi].any(axis=1))[0]
+        if len(rows) == 0:
+            return None  # a missing point means the measurement is unreliable
+        out.append(BBox(
+            x=float(x0 + xc - box_half),       # …but draw the box at the narrow width
+            y=float(y0 + int(rows[0])),
+            w=float(2 * box_half),
+            h=float(int(rows[-1]) - int(rows[0])),
+        ))
+    return out
+
+
 # ---------- index-level application ----------
 
 def refine_chart_bboxes(index: dict, slides_dir: str | Path) -> dict:
@@ -159,27 +218,31 @@ def refine_chart_bboxes(index: dict, slides_dir: str | Path) -> dict:
     for slide in index["slides"]:
         sno = slide["slide_number"]
         png = slides_dir / f"slide_{sno:03d}.png"
-        # collect bar charts on this slide: chart element -> ordered category children
+        # group category children under their parent chart, keyed by chart kind
         charts = {e["id"]: e for e in slide["elements"] if e["type"] == "chart"}
-        bar_children: dict[str, list[dict]] = {}
+        children: dict[str, list[dict]] = {}
         for e in slide["elements"]:
             if e["type"] == "chart_category" and e.get("parent_id") in charts:
-                parent = charts[e["parent_id"]]
-                if classify_chart_type(parent.get("text") or "") == "bar":
-                    bar_children.setdefault(e["parent_id"], []).append(e)
-        if not bar_children or not png.exists():
+                children.setdefault(e["parent_id"], []).append(e)
+        if not children or not png.exists():
             continue
         try:
             image = np.asarray(Image.open(png).convert("RGB"))
         except Exception:
             continue
         dpi = image.shape[1] / slide_w
-        for chart_id, cats in bar_children.items():
+        for chart_id, cats in children.items():
+            kind = classify_chart_type(charts[chart_id].get("text") or "")
             cb = charts[chart_id]["bbox"]
             chart_px = (int(cb["x"] * dpi), int(cb["y"] * dpi),
                         int((cb["x"] + cb["w"]) * dpi), int((cb["y"] + cb["h"]) * dpi))
-            values = [c.get("value") or 0.0 for c in cats]
-            boxes = detect_bars(image, chart_px, values)
+            if kind == "bar":
+                values = [c.get("value") or 0.0 for c in cats]
+                boxes = detect_bars(image, chart_px, values)
+            elif kind in ("line", "scatter"):
+                boxes = detect_line_points(image, chart_px, len(cats))
+            else:
+                boxes = None  # pie etc. keep the heuristic
             if boxes is None or len(boxes) != len(cats):
                 continue  # keep heuristic bbox
             for cat, box in zip(cats, boxes):
