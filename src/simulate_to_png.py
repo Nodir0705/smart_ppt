@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = narration_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
 
-    print("loading models (BGE + Vosk)…")
+    print("loading models (BGE + STT)…")
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)

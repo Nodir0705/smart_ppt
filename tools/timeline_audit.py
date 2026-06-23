@@ -96,7 +96,7 @@ def run(index_path, only=None, normalize=None):
     manifest = json.loads((ROOT / "out" / "narration" / "manifest.json").read_text())
     gt = {s["slide"]: s["expected"] for s in json.loads(FIXTURE.read_text())["slides"]}
 
-    print(f"loading models (BGE + Vosk)…  index={index_path}", flush=True)
+    print(f"loading models (BGE + STT)…  index={index_path}", flush=True)
     enc = load_default_encoder()
     idx = Index(Path(index_path), enc)
     matcher = Matcher(idx, enc)

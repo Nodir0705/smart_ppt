@@ -290,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.only is not None:
         manifest = [m for m in manifest if m["slide"] == args.only]
 
-    print("loading models (BGE + Vosk)…")
+    print("loading models (BGE + STT)…")
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
