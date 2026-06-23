@@ -30,6 +30,7 @@ dependencies = [
     "huggingface-hub==0.36.2",
     "safetensors==0.5.3",
     "vosk==0.3.45",
+    "sherpa-onnx==1.13.3",
     "piper-tts==1.4.2",
     "sounddevice==0.5.5",
     "soundfile==0.13.1",

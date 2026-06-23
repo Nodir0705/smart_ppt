@@ -26,7 +26,7 @@ from src.audio import PlaybackSource
 from src.encoder import load_default_encoder
 from src.live import LiveTranscriber
 from src.matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from src.stt import RollingBuffer, VoskEngine, hotwords_from_index
+from src.stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "expected_highlights.json"
@@ -100,7 +100,7 @@ def run(index_path, only=None, normalize=None):
     enc = load_default_encoder()
     idx = Index(Path(index_path), enc)
     matcher = Matcher(idx, enc)
-    engine = VoskEngine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000)
 
     tot_hits = tot_steps = tot_flicker = 0
     per_slide: dict[int, dict] = {}

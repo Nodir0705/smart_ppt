@@ -1,5 +1,21 @@
 # Smart Pointer — Tasks
 
+## Active: productionize sherpa-onnx streaming STT (2026-06-23)
+
+Prototype verdict: standard streaming zipformer en = ~25% faster word cadence
+(0.30 vs 0.40s median; 0.70 vs 1.0s worst-case) at EQUAL grounding (37/40),
+flicker 2 vs 0. Offline/CPU/deterministic (int8, num_threads=1, greedy). Adopt
+as default with Vosk fallback.
+
+- [ ] Vendor int8 model → ~/.cache/sherpa-onnx/... (done, 68MB) + fetch script + .gitignore
+- [ ] src/stt.py: SherpaEngine(STTEngine) — deterministic, offline, endpoint detection
+- [ ] src/stt.py: load_default_stt_engine() factory — sherpa if model present, else Vosk
+- [ ] Wire viewer._ensure_engine, tools/timeline_audit, simulate_to_video to the factory
+- [ ] Pin sherpa-onnx in pyproject + requirements
+- [ ] VALIDATE: grounding eval hits the 3 targets (s4_e2/s4_e3/s6_e1) + ≥37/40 + determinism (run twice, identical)
+- [ ] Address flicker 2 (stickiness) if cheap; else accept (≤10 tolerance)
+- [ ] Regenerate demo; commit
+
 ## Active milestone: Phase 0 optimization quick wins (2026-06-18)
 
 Source: `docs/optimization-research-2026-06-18.md` §6 Phase 0 + §7 critic corrections.

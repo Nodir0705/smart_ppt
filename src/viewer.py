@@ -369,11 +369,11 @@ class ViewerApp:
 
     # ---------- audio + STT ----------
     def _ensure_engine(self, sample_rate: int = 16000):
-        from .stt import VoskEngine, hotwords_from_index
+        from .stt import load_default_stt_engine, hotwords_from_index
         if getattr(self, "_engine", None) is not None:
             return self._engine
-        print(f"loading Vosk model…")
-        self._engine = VoskEngine(sample_rate=sample_rate, grammar=self._grammar_bias)
+        print("loading STT model…")
+        self._engine = load_default_stt_engine(sample_rate=sample_rate, grammar=self._grammar_bias)
         self._hotwords = hotwords_from_index(self.raw_index)
         return self._engine
 

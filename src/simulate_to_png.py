@@ -23,7 +23,7 @@ from .encoder import load_default_encoder
 from .geom import inches_to_image_px
 from .live import LiveTranscriber
 from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, VoskEngine, hotwords_from_index
+from .stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
 
 
 HALO = (40, 40, 40)
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
-    engine = VoskEngine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
 
     summary: list[dict] = []

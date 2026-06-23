@@ -38,7 +38,7 @@ from .encoder import load_default_encoder
 from .geom import Bbox, FitTransform, ease_in_out_cubic, inches_to_image_px, lerp_bbox
 from .live import LiveTranscriber
 from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, VoskEngine, hotwords_from_index
+from .stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
-    engine = VoskEngine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
     # same deterministic ASR alias normalization the live app uses
     from .asr_normalize import build_alias_map, normalize as _norm
