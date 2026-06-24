@@ -81,6 +81,17 @@ def test_corpus_no_silent_drops(tmp_path):
                 )
 
 
+def test_rotated_shape_bbox_is_aabb(tmp_path):
+    # a 6x1in box rotated 90deg -> AABB should swap to ~1x6 (tall, narrow)
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["rotated_shape"].path)
+    el = next(e for s in index["slides"] for e in s["elements"]
+              if (e.get("text") or "").startswith("Rotated"))
+    b = el["bbox"]
+    assert b["h"] > b["w"], f"rotation not applied: w={b['w']:.2f} h={b['h']:.2f}"
+    assert abs(b["w"] - 1.0) < 0.05 and abs(b["h"] - 6.0) < 0.05, b
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

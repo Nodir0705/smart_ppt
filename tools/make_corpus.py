@@ -173,6 +173,21 @@ def _build_kpi_callouts(out_dir: Path) -> CorpusDeck:
                       note="3 numeric callouts -> each 'stat' (not diagram_label)")
 
 
+def _build_rotated_shape(out_dir: Path) -> CorpusDeck:
+    """A wide-short text box rotated 90°. Its highlight must cover the rotated
+    extent (tall-narrow AABB), not the unrotated wide-short box."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    tb = s.shapes.add_textbox(Inches(2), Inches(3), Inches(6), Inches(1))
+    tb.text_frame.text = "Rotated banner"
+    tb.rotation = 90
+    path = out_dir / "rotated_shape.pptx"
+    prs.save(str(path))
+    return CorpusDeck("rotated_shape", str(path),
+                      expected_texts=["Rotated banner"],
+                      note="90deg-rotated box -> AABB dims swap (w<h)")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -191,6 +206,7 @@ _BUILDERS = [
     _build_grouped_shapes,
     _build_image_alt_text,
     _build_kpi_callouts,
+    _build_rotated_shape,
     _build_empty_slide,
 ]
 

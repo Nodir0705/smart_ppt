@@ -113,14 +113,29 @@ def _iter_flat(shapes, transform=_IDENTITY):
             yield shape, transform
 
 
+def _rotated_aabb(x: float, y: float, w: float, h: float, deg: float) -> BBox:
+    """Axis-aligned bounding box of a w×h rect rotated `deg`° about its centre —
+    so a rotated shape's highlight covers its actual rendered extent, not the
+    unrotated box."""
+    import math
+    cx, cy = x + w / 2.0, y + h / 2.0
+    th = math.radians(deg)
+    c, s = abs(math.cos(th)), abs(math.sin(th))
+    nw = w * c + h * s
+    nh = w * s + h * c
+    return BBox(x=cx - nw / 2.0, y=cy - nh / 2.0, w=nw, h=nh)
+
+
 def _transformed_bbox(shape, transform) -> BBox:
     ax, ay, bx, by = transform
-    return BBox(
-        x=_emu_to_in(ax + bx * shape.left),
-        y=_emu_to_in(ay + by * shape.top),
-        w=_emu_to_in(bx * shape.width),
-        h=_emu_to_in(by * shape.height),
-    )
+    x = _emu_to_in(ax + bx * shape.left)
+    y = _emu_to_in(ay + by * shape.top)
+    w = _emu_to_in(bx * shape.width)
+    h = _emu_to_in(by * shape.height)
+    rot = getattr(shape, "rotation", 0.0) or 0.0
+    if rot % 360 == 0:
+        return BBox(x=x, y=y, w=w, h=h)
+    return _rotated_aabb(x, y, w, h, rot)
 
 
 def _shape_text(shape) -> str:
