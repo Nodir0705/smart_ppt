@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,10 +76,25 @@ def best_index(preferred: str | Path | None = None, out_dir: str | Path = "out")
     if preferred:
         return Path(preferred)
     out = Path(out_dir)
-    for name in ("index.scoped.json", "index.refined.json", "index.json"):
+    order = ("index.scoped.json", "index.refined.json", "index.json")
+    for i, name in enumerate(order):
         p = out / name
-        if p.exists():
-            return p
+        if not p.exists():
+            continue
+        # Warn if a more-basic sibling is newer than the chosen file: that means
+        # the deck/parse was rebuilt but the richer stage wasn't re-run, so the
+        # chosen index is stale. Rebuild with `python3 -m src.build_index`.
+        chosen_mtime = p.stat().st_mtime
+        for upstream in order[i + 1:]:
+            up = out / upstream
+            if up.exists() and up.stat().st_mtime > chosen_mtime:
+                print(
+                    f"warning: {p} is older than {up} — it may be stale; "
+                    f"rebuild with `python3 -m src.build_index <deck.pptx>`",
+                    file=sys.stderr,
+                )
+                break
+        return p
     return out / "index.json"
 
 
