@@ -94,8 +94,8 @@ def _build_title_and_bullets(out_dir: Path) -> CorpusDeck:
 
 def _build_grouped_shapes(out_dir: Path) -> CorpusDeck:
     """Three text boxes inside a GROUP — SmartArt/process diagrams look like this.
-    The parser walks slide.shapes only and never recurses GROUP, so these texts
-    currently vanish: a documented gap, hence known_gap (harness xfails)."""
+    The parser now recurses GROUP shapes and maps each child from group child-
+    space into slide coordinates, so all three must survive."""
     prs = Presentation()
     s = _blank_slide(prs)
     g = s.shapes.add_group_shape()
@@ -106,7 +106,7 @@ def _build_grouped_shapes(out_dir: Path) -> CorpusDeck:
     path = out_dir / "grouped_shapes.pptx"
     prs.save(str(path))
     return CorpusDeck("grouped_shapes", str(path), expected_texts=texts,
-                      known_gap="parser does not recurse GROUP shapes (Phase C)",
+                      expected_min_elements=3,
                       note="SmartArt-like grouped textboxes")
 
 

@@ -64,6 +64,66 @@ def _shape_bbox(shape) -> BBox:
     )
 
 
+# ---------- group flattening ----------
+#
+# python-pptx walks `slide.shapes` only, so shapes nested inside a GROUP (every
+# SmartArt diagram, and any author-grouped cluster) are never seen and vanish
+# from the index. We recurse groups and map each child from the group's child
+# coordinate space (chOff/chExt) into slide EMU via an affine transform, composed
+# through nesting. A `_Transform` is (ax, ay, bx, by): slide = a + b * raw_emu.
+
+_IDENTITY = (0.0, 0.0, 1.0, 1.0)
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
+def _group_xfrm(group_shape):
+    """Return (off, ext, chOff, chExt) as (x, y) EMU tuples for a group's child
+    coordinate transform. The group's own xfrm is the one carrying chOff."""
+    xfrms = group_shape._element.findall(".//" + _A_NS + "xfrm")
+    xfrm = next((x for x in xfrms if x.find(_A_NS + "chOff") is not None), None)
+    if xfrm is None:  # malformed group — treat as identity (no scaling)
+        return (0, 0), (1, 1), (0, 0), (1, 1)
+
+    def _xy(tag, ax, ay):
+        e = xfrm.find(_A_NS + tag)
+        return (int(e.get(ax)), int(e.get(ay)))
+
+    return (_xy("off", "x", "y"), _xy("ext", "cx", "cy"),
+            _xy("chOff", "x", "y"), _xy("chExt", "cx", "cy"))
+
+
+def _compose(parent, group_shape):
+    """Compose the parent→slide transform with a group's child→group transform."""
+    off, ext, choff, chext = _group_xfrm(group_shape)
+    pax, pay, pbx, pby = parent
+    # the group's box mapped into slide space by the parent transform
+    g_x, g_y = pax + pbx * off[0], pay + pby * off[1]
+    g_w, g_h = pbx * ext[0], pby * ext[1]
+    sx = g_w / chext[0] if chext[0] else 1.0
+    sy = g_h / chext[1] if chext[1] else 1.0
+    return (g_x - choff[0] * sx, g_y - choff[1] * sy, sx, sy)
+
+
+def _iter_flat(shapes, transform=_IDENTITY):
+    """Yield (leaf_shape, transform) for every shape, recursing into groups so
+    nested shapes surface with a transform that maps them to slide coordinates."""
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_flat(shape.shapes, _compose(transform, shape))
+        else:
+            yield shape, transform
+
+
+def _transformed_bbox(shape, transform) -> BBox:
+    ax, ay, bx, by = transform
+    return BBox(
+        x=_emu_to_in(ax + bx * shape.left),
+        y=_emu_to_in(ay + by * shape.top),
+        w=_emu_to_in(bx * shape.width),
+        h=_emu_to_in(by * shape.height),
+    )
+
+
 def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
@@ -340,12 +400,13 @@ def _classify_text_shape(shape, slide_w: float, slide_h: float) -> str:
 # ---------- main per-slide parse ----------
 
 def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[Element]:
-    # 1) inventory shapes
+    # 1) inventory shapes (groups flattened to their leaf shapes, with each
+    #    leaf's bbox mapped from group child-space into slide coordinates)
     shapes_meta: list[dict] = []
-    for shape in slide.shapes:
+    for shape, tf in _iter_flat(slide.shapes):
         shapes_meta.append({
             "shape": shape,
-            "bbox": _shape_bbox(shape),
+            "bbox": _transformed_bbox(shape, tf),
             "text": _shape_text(shape),
             "is_picture": shape.shape_type == MSO_SHAPE_TYPE.PICTURE,
             "is_table": getattr(shape, "has_table", False),
