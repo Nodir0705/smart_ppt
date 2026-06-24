@@ -38,7 +38,7 @@ from .encoder import load_default_encoder
 from .geom import Bbox, FitTransform, ease_in_out_cubic, inches_to_image_px, lerp_bbox
 from .live import LiveTranscriber
 from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
+from .stt import RollingBuffer, STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
@@ -56,7 +56,7 @@ def _wav_duration_s(path: Path) -> float:
 
 
 def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
-                   engine: VoskEngine, matcher: Matcher,
+                   engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], tail_words: int = 8,
                    normalizer=None) -> list[tuple[float, str | None]]:
     """Run the full pipeline against a muted PlaybackSource; return a list of

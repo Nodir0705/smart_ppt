@@ -79,8 +79,8 @@ class ViewerApp:
         self.slide_h_in = self.raw_index["slide_size"]["h"]
 
         # encoder + matcher (heavy — load before window so first phrase is fast)
-        print("loading encoder (BGE-large) — this takes ~3s…")
         self.encoder = load_default_encoder()
+        print(f"loaded encoder ({self.encoder.model_name})")
         self.index = Index(index_path, self.encoder)
         self.matcher = Matcher(self.index, self.encoder)
         # deterministic post-STT alias normalizer (fixes acronym mishearings)
@@ -450,7 +450,7 @@ class ViewerApp:
         if not text.strip():
             return
         # Use only the last N words so the matcher tracks the speaker's
-        # *current* phrase, not the whole utterance Vosk has been growing.
+        # *current* phrase, not the whole utterance STT has been growing.
         buf = getattr(self, "_buffer", None)
         if buf is not None:
             text = buf.tail(8) or text
@@ -484,10 +484,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--threshold", type=float, default=PolicyConfig.threshold)
     ap.add_argument("--gap", type=float, default=PolicyConfig.gap)
     ap.add_argument("--stick", type=int, default=PolicyConfig.stickiness)
-    ap.add_argument("--mic", action="store_true", help="capture live audio from the default mic via Vosk")
-    ap.add_argument("--wav", type=Path, default=None, help="replay a 16-bit mono WAV through Vosk")
+    ap.add_argument("--mic", action="store_true", help="capture live audio from the default mic via STT")
+    ap.add_argument("--wav", type=Path, default=None, help="replay a 16-bit mono WAV through STT")
     ap.add_argument("--grammar-bias", action="store_true",
-                    help="constrain Vosk to deck vocabulary only (use when speaker stays strictly on-topic)")
+                    help="constrain the recognizer to deck vocabulary only (Vosk fallback engine; use when speaker stays strictly on-topic)")
     args = ap.parse_args(argv)
 
     from .matcher import best_index

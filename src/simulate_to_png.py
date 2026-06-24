@@ -23,7 +23,7 @@ from .encoder import load_default_encoder
 from .geom import inches_to_image_px
 from .live import LiveTranscriber
 from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
+from .stt import RollingBuffer, STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 HALO = (40, 40, 40)
@@ -62,7 +62,7 @@ def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
 
 
 def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
-                   raw_index: dict, engine: VoskEngine, matcher: Matcher,
+                   raw_index: dict, engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], out_path: Path,
                    tail_words: int = 8) -> dict:
     policy = MatchPolicy(matcher, PolicyConfig())
