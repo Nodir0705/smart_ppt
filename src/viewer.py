@@ -57,6 +57,7 @@ class ViewerApp:
         wav: Optional[Path] = None,
         grammar_bias: bool = False,
         match_throttle_ms: int = 90,
+        device: int | str | None = None,
     ) -> None:
         import tkinter as tk
         from PIL import Image, ImageTk
@@ -69,6 +70,7 @@ class ViewerApp:
         self._index_path = index_path
         self._mic = mic
         self._wav = wav
+        self._device = device
         self._grammar_bias = grammar_bias
         self._match_throttle_ms = match_throttle_ms
         self._last_match_at = 0.0
@@ -378,6 +380,10 @@ class ViewerApp:
         return self._engine
 
     def _start_audio(self) -> None:
+        self._audio_restarted = False
+        self._build_and_start_transcriber()
+
+    def _build_and_start_transcriber(self) -> None:
         from .audio import FileSource, MicSource
         from .live import LiveTranscriber
         from .stt import RollingBuffer
@@ -385,12 +391,39 @@ class ViewerApp:
         if self._wav is not None:
             source = FileSource(str(self._wav))
         else:
-            source = MicSource(sample_rate=16000)
+            source = MicSource(sample_rate=16000, device=self._device)
         engine = self._ensure_engine(source.sample_rate)
         buffer = RollingBuffer(window_seconds=4.0)
         self._buffer = buffer
         self._transcriber = LiveTranscriber(source, engine, buffer, hotwords=getattr(self, "_hotwords", None))
-        self._transcriber.start_in_thread(self._on_stt_update)
+        self._transcriber.start_in_thread(self._on_stt_update, on_error=self._on_audio_error)
+
+    def _on_audio_error(self, exc: Exception) -> None:
+        """Surface a dead STT/audio thread on the status line (was a silent
+        freeze) and attempt ONE mic restart. Runs on the worker thread, so it
+        marshals back to the Tk main loop via `after`."""
+        def handle():
+            msg = f"{type(exc).__name__}: {exc}"
+            # only mic can meaningfully restart; replay/file ending is terminal
+            if self._wav is None and not getattr(self, "_audio_restarted", False):
+                self._audio_restarted = True
+                self.status_var.set(f"audio error ({msg}) — restarting mic…")
+                old = getattr(self, "_transcriber", None)
+                if old is not None:
+                    try:
+                        old.stop()
+                    except Exception:
+                        pass
+                try:
+                    self._build_and_start_transcriber()
+                except Exception as e2:
+                    self.status_var.set(f"mic restart failed: {e2}")
+            else:
+                self.status_var.set(f"audio stopped: {msg}")
+        try:
+            self.root.after(0, handle)
+        except Exception:
+            pass
 
     def start_playlist(self, items: list[dict], inter_slide_pause_s: float = 0.6) -> None:
         """Walk a list of {'slide': N, 'wav': path} entries; play each WAV
@@ -488,7 +521,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wav", type=Path, default=None, help="replay a 16-bit mono WAV through STT")
     ap.add_argument("--grammar-bias", action="store_true",
                     help="constrain the recognizer to deck vocabulary only (Vosk fallback engine; use when speaker stays strictly on-topic)")
+    ap.add_argument("--device", default=None,
+                    help="mic input device (index or name substring); default system input")
+    ap.add_argument("--list-devices", action="store_true",
+                    help="list available audio input devices and exit")
     args = ap.parse_args(argv)
+
+    if args.list_devices:
+        from .audio import list_input_devices
+        devs = list_input_devices()
+        if not devs:
+            print("no audio input devices found")
+        for d in devs:
+            print(f"  [{d['index']}] {d['name']}  "
+                  f"({d['channels']} ch, {d['default_samplerate']} Hz)")
+        return 0
+
+    # --device accepts an integer index or a name substring
+    device: int | str | None = args.device
+    if isinstance(device, str) and device.isdigit():
+        device = int(device)
 
     from .matcher import best_index
     index_path = best_index(args.index)
@@ -506,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
         threshold=args.threshold, gap=args.gap, stickiness=args.stick,
         start_slide=args.slide,
         mic=args.mic, wav=args.wav, grammar_bias=args.grammar_bias,
+        device=device,
     )
     app.run()
     return 0

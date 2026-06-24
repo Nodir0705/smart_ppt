@@ -48,6 +48,8 @@ stale-index warning is printed — rebuild with `build_index`.
 
 ```bash
 python3 -m src.viewer --mic                    # live: highlight tracks the mic
+python3 -m src.viewer --list-devices           # list input devices, then:
+python3 -m src.viewer --mic --device 2         # pick a mic by index or name substring
 python3 -m src.viewer --wav recording.wav      # replay a 16-bit mono WAV
 python3 -m src.simulate                        # TTS-narrated end-to-end demo
 python3 -m src.simulate_to_video               # render the demo as MP4s

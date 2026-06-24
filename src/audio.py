@@ -21,6 +21,27 @@ from typing import Iterator
 from .pcm import resample  # offline PCM resample (audioop-backed, 3.13-safe)
 
 
+# ---------- device enumeration ----------
+
+def list_input_devices() -> list[dict]:
+    """Return the available audio *input* devices as a list of plain dicts
+    ``{index, name, channels, default_samplerate}``. UI/diagnostic only — never
+    in the grounding decision loop, so non-determinism of device order is fine.
+    """
+    import sounddevice as sd
+
+    devices = []
+    for i, d in enumerate(sd.query_devices()):
+        if d.get("max_input_channels", 0) > 0:
+            devices.append({
+                "index": i,
+                "name": d.get("name", "?"),
+                "channels": d["max_input_channels"],
+                "default_samplerate": int(d.get("default_samplerate", 0)),
+            })
+    return devices
+
+
 # ---------- file source ----------
 
 class FileSource:
