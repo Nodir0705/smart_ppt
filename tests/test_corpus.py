@@ -92,6 +92,27 @@ def test_rotated_shape_bbox_is_aabb(tmp_path):
     assert abs(b["w"] - 1.0) < 0.05 and abs(b["h"] - 6.0) < 0.05, b
 
 
+def test_parse_deck_isolates_a_failing_slide(tmp_path, monkeypatch, caplog):
+    # A malformed slide must warn + yield an empty slide, not abort the deck.
+    import src.parser as P
+    deck = {d.name: d for d in build_corpus(tmp_path)}["title_and_bullets"]
+    real = P._parse_slide
+
+    def boom(slide, i, w, h):
+        if i == 1:
+            raise ValueError("synthetic parse failure")
+        return real(slide, i, w, h)
+
+    monkeypatch.setattr(P, "_parse_slide", boom)
+    with caplog.at_level("WARNING"):
+        index = P.parse_deck(deck.path)  # must NOT raise
+
+    assert index["slides"], "deck aborted instead of isolating the bad slide"
+    assert index["slides"][0]["slide_number"] == 1
+    assert index["slides"][0]["elements"] == []  # failed slide → empty, numbered
+    assert any("failed to parse" in r.message for r in caplog.records)
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

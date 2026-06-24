@@ -6,12 +6,14 @@ module emits.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field, asdict
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
+_log = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
 ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
@@ -601,7 +603,15 @@ def parse_deck(path: str) -> dict:
     slide_h = _emu_to_in(prs.slide_height)
     out_slides = []
     for i, slide in enumerate(prs.slides, start=1):
-        elements = _parse_slide(slide, i, slide_w, slide_h)
+        try:
+            elements = _parse_slide(slide, i, slide_w, slide_h)
+        except Exception:
+            # One malformed slide must not abort a whole (e.g. 100-slide) deck.
+            # Emit an empty slide so numbering — and the refine page-count
+            # invariant — stay intact, and surface the failure as a warning.
+            _log.warning("slide %d failed to parse; emitting empty slide", i,
+                         exc_info=True)
+            elements = []
         out_slides.append({
             "slide_number": i,
             "elements": [_element_to_dict(e) for e in elements],
