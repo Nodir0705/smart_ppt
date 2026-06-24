@@ -113,6 +113,21 @@ def _build_grouped_shapes(out_dir: Path) -> CorpusDeck:
                       note="SmartArt-like grouped textboxes")
 
 
+def _build_centered_title_slide(out_dir: Path) -> CorpusDeck:
+    """A title-slide layout: its CENTER_TITLE placeholder sits mid-page (y>1.2),
+    where the geometry heuristic misclassifies it as body. Authoritative
+    placeholder-type detection must still type it 'title'."""
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[0])  # Title Slide (centred title)
+    s.shapes.title.text = "Keynote Opening"
+    path = out_dir / "centered_title.pptx"
+    prs.save(str(path))
+    return CorpusDeck("centered_title", str(path),
+                      expected_texts=["Keynote Opening"],
+                      expected_types=["title"],
+                      note="centred title placeholder -> 'title' (heuristic would say body)")
+
+
 def _build_image_alt_text(out_dir: Path) -> CorpusDeck:
     """A picture with author alt text — otherwise text-less raster content the
     presenter can still point at ("show the architecture diagram"). The parser
@@ -172,6 +187,7 @@ def _build_empty_slide(out_dir: Path) -> CorpusDeck:
 _BUILDERS = [
     _build_multiline_body,
     _build_title_and_bullets,
+    _build_centered_title_slide,
     _build_grouped_shapes,
     _build_image_alt_text,
     _build_kpi_callouts,

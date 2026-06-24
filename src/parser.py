@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field, asdict
 
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
 
 EMU_PER_INCH = 914400
@@ -427,8 +427,26 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     return out
 
 
+def _is_title_placeholder(shape) -> bool:
+    """True when the shape is an authoritative title placeholder, regardless of
+    where it sits — handles centred title-slide layouts the y<1.2 heuristic
+    misses (and any repositioned title)."""
+    if not getattr(shape, "is_placeholder", False):
+        return False
+    try:
+        return shape.placeholder_format.type in (
+            PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE,
+        )
+    except (KeyError, ValueError, AttributeError):
+        return False
+
+
 def _classify_text_shape(shape, slide_w: float, slide_h: float) -> str:
     """Title / bullet / body / caption from position and content."""
+    # Authoritative placeholder type wins; the geometry heuristic is the fallback
+    # for plain text boxes (which carry no placeholder metadata).
+    if _is_title_placeholder(shape):
+        return "title"
     bbox = _shape_bbox(shape)
     paras = _paragraphs(shape)
     if bbox.y < 1.2 and bbox.w > slide_w * 0.5 and len(paras) <= 2:
