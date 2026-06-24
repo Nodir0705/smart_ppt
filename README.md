@@ -61,7 +61,14 @@ python3 -m src.preview --slide 6 --phrase "the matcher" --out /tmp/p.png   # hea
 ```bash
 pytest -q                                      # fast suite (model-free where possible)
 SMARTPPT_RUN_EVAL=1 pytest -q tests/test_grounding_eval.py   # opt-in grounding eval (needs soffice + audio)
+python3 -m tools.make_corpus                   # generate a diverse deck corpus (corpus/)
 ```
+
+`tests/test_corpus.py` regenerates a small, programmatically-built deck corpus
+(`tools/make_corpus.py`) and asserts the parser drops no author-intended element
+— the generalization regression net for decks beyond `test_deck.pptx`. Decks
+targeting a known parser gap (e.g. grouped/SmartArt shapes) are flagged so the
+test fails loudly once the gap is fixed.
 
 ## Environment switches
 
