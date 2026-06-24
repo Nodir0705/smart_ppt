@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, asdict
-from typing import Iterable
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Emu
 
 
 EMU_PER_INCH = 914400
@@ -371,7 +369,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
     consumed: set[int] = set()
     # 3a) emit merged pairs first (in original container order for stable ids)
     seen_pairs: set[tuple[int, int]] = set()
-    for i, meta in enumerate(shapes_meta):
+    for i, _meta in enumerate(shapes_meta):
         if i not in paired_idx:
             continue
         pair = paired_idx[i]

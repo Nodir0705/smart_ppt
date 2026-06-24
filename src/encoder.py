@@ -25,7 +25,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-from typing import Protocol, Iterable
+from typing import Protocol
 
 import numpy as np
 

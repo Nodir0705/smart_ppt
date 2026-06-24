@@ -59,3 +59,12 @@ filterwarnings = [
 
 [tool.ruff]
 target-version = "py310"
+
+[tool.ruff.lint]
+# High-signal correctness families only (pyflakes + bugbear). Style/format
+# families (E line-length, I import-order, UP modernisation) are intentionally
+# left off for now to avoid churn — adopt incrementally.
+select = ["F", "B"]
+# B905 (zip-without-explicit-strict): the autofix is a behaviour-preserving
+# no-op and adding strict= needs per-site length-equality judgement; skip.
+ignore = ["B905"]
