@@ -31,6 +31,9 @@ class CorpusDeck:
     path: str
     # pointable strings that MUST appear in some parsed element (text or trigger)
     expected_texts: list[str] = field(default_factory=list)
+    # element types that MUST be present among parsed elements (multiset subset);
+    # empty means "don't assert types"
+    expected_types: list[str] = field(default_factory=list)
     # expected element count is exact when >=0; -1 means "don't assert a count"
     expected_min_elements: int = 1
     # a documented parser gap this deck targets (harness xfails on it)
@@ -132,6 +135,29 @@ def _build_image_alt_text(out_dir: Path) -> CorpusDeck:
                       note="picture with alt text -> pointable without a VLM")
 
 
+def _build_kpi_callouts(out_dir: Path) -> CorpusDeck:
+    """Three numeric KPI callouts: an empty box with a number centred inside it,
+    x3. The old slide-wide rule (>=3 pairs => diagram_label) mislabelled these as
+    diagram labels; per-pair classification types each numeric callout 'stat'."""
+    from pptx.enum.shapes import MSO_SHAPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    nums = ["99%", "1.2 s", "4 GB"]
+    for i, n in enumerate(nums):
+        x = 0.7 + i * 3.2
+        box = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                 Inches(x), Inches(2.2), Inches(2.6), Inches(1.8))
+        box.text_frame.clear()  # ensure the container itself is empty-text
+        tb = s.shapes.add_textbox(Inches(x + 0.5), Inches(2.8), Inches(1.6), Inches(0.7))
+        tb.text_frame.text = n
+    path = out_dir / "kpi_callouts.pptx"
+    prs.save(str(path))
+    return CorpusDeck("kpi_callouts", str(path), expected_texts=nums,
+                      expected_types=["stat", "stat", "stat"],
+                      note="3 numeric callouts -> each 'stat' (not diagram_label)")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -148,6 +174,7 @@ _BUILDERS = [
     _build_title_and_bullets,
     _build_grouped_shapes,
     _build_image_alt_text,
+    _build_kpi_callouts,
     _build_empty_slide,
 ]
 

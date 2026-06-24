@@ -71,6 +71,15 @@ def test_corpus_no_silent_drops(tmp_path):
             f"{d.name}: expected >= {d.expected_min_elements} elements, got {n_elements}"
         )
 
+        if d.expected_types:
+            from collections import Counter
+            got = Counter(e["type"] for s in index["slides"] for e in s["elements"])
+            need = Counter(d.expected_types)
+            for typ, count in need.items():
+                assert got[typ] >= count, (
+                    f"{d.name}: expected >= {count} '{typ}' elements, got {got[typ]}"
+                )
+
 
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.

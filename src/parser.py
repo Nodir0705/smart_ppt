@@ -15,7 +15,6 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 EMU_PER_INCH = 914400
 ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
-DIAGRAM_LABEL_MIN_PAIRS = 3    # ≥ N merged box-pairs on a slide → diagram_label, else stat
 
 
 # ---------- data classes ----------
@@ -176,6 +175,17 @@ def _norm(s: str) -> str:
 
 def _strip_punct(s: str) -> str:
     return re.sub(r"[^\w\s<>+%./-]", "", s)
+
+
+# A "[symbol] number unit" stat callout, e.g. "< 1 ms", "20 %", "3.5 GB".
+# Mirrors group_scope.stat_phrases so a pair classified "stat" here gets spoken
+# stat phrases there. Used to type each merged pair by its OWN text instead of a
+# slide-wide pair-count guess.
+_STAT_TEXT_RE = re.compile(r"^\s*[<>≤≥~]?\s*\d+(?:\.\d+)?\s*[a-zA-Z%]+\s*$")
+
+
+def _is_stat_text(text: str) -> bool:
+    return bool(_STAT_TEXT_RE.match(text or ""))
 
 
 def _phrases_for_text(text: str) -> list[str]:
@@ -452,7 +462,6 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
     for ci, ti in pairs:
         paired_idx[ci] = (ci, ti)
         paired_idx[ti] = (ci, ti)
-    merged_type = "diagram_label" if len(pairs) >= DIAGRAM_LABEL_MIN_PAIRS else "stat"
 
     # 3) emit elements
     elements: list[Element] = []
@@ -476,6 +485,11 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
         container = shapes_meta[ci]
         text_shape = shapes_meta[ti]
         text = text_shape["text"]
+        # Classify each pair by its OWN text: a "[symbol] number unit" callout is
+        # a stat (gets spoken stat phrases downstream); anything else is a diagram
+        # label. Replaces the slide-wide ">=3 pairs" guess that mislabelled both
+        # KPI slides (3 numeric callouts -> diagram_label) and 2-node diagrams.
+        merged_type = "stat" if _is_stat_text(text) else "diagram_label"
         elements.append(Element(
             id=next_id(),
             type=merged_type,
