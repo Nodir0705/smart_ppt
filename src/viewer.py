@@ -34,7 +34,7 @@ from typing import Optional
 
 from .encoder import load_default_encoder
 from .geom import Bbox, FitTransform, ease_in_out_cubic, inches_to_image_px, lerp_bbox
-from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
+from .matcher import Index, Matcher, PolicyConfig
 
 
 # ---- highlight animation parameters ----
@@ -85,15 +85,14 @@ class ViewerApp:
         print(f"loaded encoder ({self.encoder.model_name})")
         self.index = Index(index_path, self.encoder)
         self.matcher = Matcher(self.index, self.encoder)
-        # deterministic post-STT alias normalizer (fixes acronym mishearings)
-        from .asr_normalize import build_alias_map, normalize as _norm
-        _alias = build_alias_map(self.raw_index)
-        normalizer = (lambda t: _norm(t, _alias)) if _alias else None
-        self.policy = MatchPolicy(
-            self.matcher,
-            PolicyConfig(threshold=threshold, gap=gap, stickiness=stickiness),
-            normalizer=normalizer,
+        # The headless decision core (policy + buffer + deck alias normalizer),
+        # shared with the PNG/video simulators so all three ground identically.
+        from .live_controller import LiveController
+        self._controller = LiveController(
+            self.matcher, self.raw_index, slide_no=start_slide,
+            policy_config=PolicyConfig(threshold=threshold, gap=gap, stickiness=stickiness),
         )
+        self.policy = self._controller.policy  # alias: reset()/step()/active_id still work
 
         # element lookup: id → (slide_no, bbox_inches, text, type)
         self._element_by_id: dict[str, dict] = {}
@@ -386,14 +385,14 @@ class ViewerApp:
     def _build_and_start_transcriber(self) -> None:
         from .audio import FileSource, MicSource
         from .live import LiveTranscriber
-        from .stt import RollingBuffer
 
         if self._wav is not None:
             source = FileSource(str(self._wav))
         else:
             source = MicSource(sample_rate=16000, device=self._device)
         engine = self._ensure_engine(source.sample_rate)
-        buffer = RollingBuffer(window_seconds=4.0)
+        # the controller owns the rolling buffer the audio thread feeds
+        buffer = self._controller.buffer
         self._buffer = buffer
         self._transcriber = LiveTranscriber(source, engine, buffer, hotwords=getattr(self, "_hotwords", None))
         self._transcriber.start_in_thread(self._on_stt_update, on_error=self._on_audio_error)
@@ -447,7 +446,10 @@ class ViewerApp:
                 self.root.after(0, lambda sn=item["slide"]: self._set_slide(sn))
                 time.sleep(0.3)  # let the slide render
                 source = PlaybackSource(str(item["wav"]))
+                # fresh buffer per slide; point the shared controller at it so
+                # _run_match (which reads controller.buffer) tracks this slide
                 buffer = RollingBuffer(window_seconds=4.0)
+                self._controller.buffer = buffer
                 self._buffer = buffer
                 transcriber = LiveTranscriber(source, self._engine, buffer,
                                               hotwords=getattr(self, "_hotwords", None))
@@ -480,19 +482,17 @@ class ViewerApp:
         self.root.after(50, self._drain_stt_queue)
 
     def _run_match(self, text: str) -> None:
-        if not text.strip():
+        # The controller windows the buffer tail and runs the shared policy; it
+        # tracks the speaker's *current* phrase, not the whole growing utterance.
+        self._controller.slide_no = self.slide_no
+        ev = self._controller.feed(text)
+        if ev is None:
             return
-        # Use only the last N words so the matcher tracks the speaker's
-        # *current* phrase, not the whole utterance STT has been growing.
-        buf = getattr(self, "_buffer", None)
-        if buf is not None:
-            text = buf.tail(8) or text
-        res, active_id, why = self.policy.step(text, self.slide_no)
-        line = f"heard={text!r}  best={res.element_id or '-'} score={res.score:.3f} → {why}"
-        if active_id:
-            el = self._element_by_id.get(active_id, {})
-            line += f"   active={active_id} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(active_id)
+        line = f"heard={ev.tail!r}  best={ev.element_id or '-'} score={ev.score:.3f} → {ev.why}"
+        if ev.active_id:
+            el = self._element_by_id.get(ev.active_id, {})
+            line += f"   active={ev.active_id} {(el.get('text') or '')[:40]!r}"
+            self._set_target_from_element(ev.active_id)
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)

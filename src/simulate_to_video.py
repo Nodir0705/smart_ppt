@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import tempfile
 import time
@@ -35,10 +34,11 @@ from PIL import Image, ImageDraw
 
 from .audio import PlaybackSource
 from .encoder import load_default_encoder
-from .geom import Bbox, FitTransform, ease_in_out_cubic, inches_to_image_px, lerp_bbox
+from .geom import Bbox, ease_in_out_cubic, inches_to_image_px, lerp_bbox
 from .live import LiveTranscriber
-from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, STTEngine, load_default_stt_engine, hotwords_from_index
+from .live_controller import LiveController
+from .matcher import Index, Matcher
+from .stt import STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
@@ -62,8 +62,9 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
     """Run the full pipeline against a muted PlaybackSource; return a list of
     (timestamp_seconds, active_element_id) transitions paced by audio time.
     """
-    policy = MatchPolicy(matcher, PolicyConfig(), normalizer=normalizer)
-    buf = RollingBuffer(window_seconds=4.0)
+    controller = LiveController(matcher, raw_index, normalizer=normalizer,
+                                tail_words=tail_words, slide_no=slide_no)
+    buf = controller.buffer
     src = PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
 
@@ -73,13 +74,12 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
 
     def on_update(text, partial):
         nonlocal last_active
-        tail = buf.tail(tail_words)
-        if not tail:
+        ev = controller.feed()
+        if ev is None:
             return
-        _res, active, _why = policy.step(tail, slide_no)
-        if active != last_active:
-            events.append((time.monotonic() - t0, active))
-            last_active = active
+        if ev.active_id != last_active:
+            events.append((time.monotonic() - t0, ev.active_id))
+            last_active = ev.active_id
 
     transcriber.run(on_update=on_update)
     return events
@@ -296,10 +296,6 @@ def main(argv: list[str] | None = None) -> int:
     matcher = Matcher(idx, enc)
     engine = load_default_stt_engine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
-    # same deterministic ASR alias normalization the live app uses
-    from .asr_normalize import build_alias_map, normalize as _norm
-    _alias = build_alias_map(raw_index)
-    normalizer = (lambda t: _norm(t, _alias)) if _alias else None
 
     slide_videos: list[Path] = []
     for item in manifest:
@@ -308,8 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         out_mp4 = out_dir / f"slide_{sno:03d}.mp4"
         print(f"\nslide {sno}: {wav.name}")
         print("  running simulation…")
-        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords,
-                                normalizer=normalizer)
+        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords)
         for t, eid in events:
             print(f"    t={t:5.1f}s  active={eid}")
         print(f"  rendering + encoding @ {args.fps} fps → {out_mp4.name}")
