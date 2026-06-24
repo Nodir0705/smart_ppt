@@ -130,6 +130,39 @@ def _shape_text(shape) -> str:
     return (shape.text_frame.text or "").strip()
 
 
+_IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
+_GENERIC_NAME_RE = re.compile(r"^(picture|image|graphic|object|content placeholder)\s*\d*$", re.I)
+
+
+def _clean_alt_text(raw: str) -> str:
+    """Keep author-meaningful alt text; drop junk that PowerPoint/exporters put
+    in `descr`/`title` — file paths, bare image filenames, and generic
+    auto-names like 'Picture 1' — which would only add noise triggers."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if "/" in s or "\\" in s:          # a file path, not a description
+        return ""
+    if _IMG_EXT_RE.search(s):          # a bare image filename
+        return ""
+    if _GENERIC_NAME_RE.match(s):      # auto-generated placeholder name
+        return ""
+    return s
+
+
+def _alt_text(shape) -> str:
+    """Author-written alt text for a shape (its `cNvPr` `descr`, else `title`).
+
+    For pictures this is the only deterministic, offline handle on otherwise
+    text-less raster content. Namespace-agnostic: matches the `cNvPr` element by
+    local name so it works across picture/shape/group non-visual property types.
+    """
+    for cnv in shape._element.iter():
+        if cnv.tag.endswith("}cNvPr"):
+            return _clean_alt_text(cnv.get("descr") or cnv.get("title") or "")
+    return ""
+
+
 def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
 
@@ -465,13 +498,16 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
             elements.extend(_expand_chart(shape, slide_no, len(elements)))
             continue
         if meta["is_picture"]:
+            # Author alt text makes an otherwise text-less image pointable
+            # (deterministic, offline). Fall back to needs_vision when absent.
+            alt = _alt_text(shape)
             elements.append(Element(
                 id=next_id(),
                 type="image",
-                text=None,
+                text=alt or None,
                 bbox=bbox,
-                trigger_phrases=[],
-                needs_vision=True,
+                trigger_phrases=_phrases_for_text(alt),
+                needs_vision=not alt,
             ))
             continue
         if not text and _is_zero_dim(bbox):

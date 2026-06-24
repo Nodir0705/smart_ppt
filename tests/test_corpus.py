@@ -12,8 +12,24 @@ us to retire the `known_gap` marker — a self-updating regression net.
 
 from __future__ import annotations
 
-from src.parser import parse_deck
+import pytest
+
+from src.parser import _clean_alt_text, parse_deck
 from tools.make_corpus import build_corpus
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Architecture diagram", "Architecture diagram"),  # real alt text kept
+    ("Logo", "Logo"),
+    ("/home/x/photo.png", ""),                          # file path rejected
+    ("C:\\img\\a.PNG", ""),
+    ("photo.jpg", ""),                                   # bare filename rejected
+    ("Picture 1", ""),                                   # auto-name rejected
+    ("image", ""),
+    ("  ", ""),
+])
+def test_clean_alt_text_rejects_junk(raw, expected):
+    assert _clean_alt_text(raw) == expected
 
 
 def _element_texts(index: dict) -> list[str]:

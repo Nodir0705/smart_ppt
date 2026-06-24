@@ -110,6 +110,28 @@ def _build_grouped_shapes(out_dir: Path) -> CorpusDeck:
                       note="SmartArt-like grouped textboxes")
 
 
+def _build_image_alt_text(out_dir: Path) -> CorpusDeck:
+    """A picture with author alt text — otherwise text-less raster content the
+    presenter can still point at ("show the architecture diagram"). The parser
+    reads cNvPr descr/title so the alt text becomes pointable triggers."""
+    import io
+
+    from PIL import Image
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    buf = io.BytesIO()
+    Image.new("RGB", (320, 240), (90, 130, 180)).save(buf, "PNG")
+    buf.seek(0)
+    pic = s.shapes.add_picture(buf, Inches(2), Inches(2), Inches(4), Inches(3))
+    alt = "Architecture diagram of the live pipeline"
+    pic._element.nvPicPr.cNvPr.set("descr", alt)
+    path = out_dir / "image_alt_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("image_alt_text", str(path), expected_texts=[alt],
+                      note="picture with alt text -> pointable without a VLM")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -125,6 +147,7 @@ _BUILDERS = [
     _build_multiline_body,
     _build_title_and_bullets,
     _build_grouped_shapes,
+    _build_image_alt_text,
     _build_empty_slide,
 ]
 
