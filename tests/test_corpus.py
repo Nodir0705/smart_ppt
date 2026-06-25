@@ -165,6 +165,24 @@ def test_stacked_chart_segments_stack_within_category(tmp_path):
     assert q3_base["bbox"]["h"] > base["h"]
 
 
+def test_multiseries_scoped_phrases_are_speakable(tmp_path):
+    # scope_index builds chart_category phrases from the element label; the
+    # multi-series label is "Cat — Series", which must not leak the em-dash (STT
+    # never says it) or produce "... bar chart chart".
+    from src.group_scope import scope_index
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    for name in ("grouped_bar", "stacked_bar"):
+        index = parse_deck(decks[name].path)
+        scope_index(index)
+        phrases = [p for s in index["slides"] for e in s["elements"]
+                   if e["type"] == "chart_category" for p in e["trigger_phrases"]]
+        assert phrases, f"{name}: no scoped phrases"
+        assert not [p for p in phrases if "—" in p], f"{name}: em-dash leaked into a phrase"
+        assert not [p for p in phrases if "chart chart" in p], f"{name}: double 'chart'"
+        # the series name still reaches a phrase for disambiguation
+        assert any("revenue" in p or "base" in p for p in phrases)
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

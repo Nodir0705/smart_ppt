@@ -222,17 +222,25 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
 
             # ------ scoped phrases for chart_category ------
             if elem.get("type") == "chart_category":
-                label = (elem.get("text") or "").strip().lower()
+                raw = (elem.get("text") or "").strip()
+                series = (elem.get("series") or "").strip().lower()
+                # multi-series labels are "Category — Series"; scope on the clean
+                # category so phrases stay speakable (no em-dash), folding the
+                # series in as a disambiguator.
+                category = (raw.split(" — ", 1)[0] if series else raw).lower()
+                who = f"{category} {series}".strip() if series else category
                 parent_elem = elem_by_id.get(parent_id) if parent_id else None
                 noun = chart_noun(parent_elem.get("text", "") if parent_elem else "") if parent_elem else "item"
                 group_label = elem.get("group_label") or ""
+                # avoid "... bar chart chart" when group_label already ends in chart
+                gl_suffix = "" if group_label.endswith("chart") else " chart"
 
-                if label and noun:
-                    _add_phrase(phrases, f"the {label} {noun}")
-                if label and group_label:
-                    _add_phrase(phrases, f"{label} {group_label}")
-                if label and noun and group_label:
-                    _add_phrase(phrases, f"the {label} {noun} in the {group_label} chart")
+                if who and noun:
+                    _add_phrase(phrases, f"the {who} {noun}")
+                if who and group_label:
+                    _add_phrase(phrases, f"{who} {group_label}")
+                if who and noun and group_label:
+                    _add_phrase(phrases, f"the {who} {noun} in the {group_label}{gl_suffix}")
 
             # ------ acronym expansion ------
             text = elem.get("text") or ""
