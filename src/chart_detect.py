@@ -301,6 +301,10 @@ def refine_chart_bboxes(index: dict, slides_dir: str | Path) -> dict:
             continue
         dpi = image.shape[1] / slide_w
         for chart_id, cats in children.items():
+            # multi-series clustered charts have side-by-side sub-columns the
+            # single-band detector can't assign; keep their heuristic geometry
+            if charts[chart_id].get("multi_series"):
+                continue
             kind = classify_chart_type(charts[chart_id].get("text") or "")
             cb = charts[chart_id]["bbox"]
             chart_px = (int(cb["x"] * dpi), int(cb["y"] * dpi),

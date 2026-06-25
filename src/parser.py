@@ -46,6 +46,8 @@ class Element:
     needs_vision: bool = False
     parent_id: str | None = None
     value: float | None = None   # numeric value (chart_category bars/slices)
+    series: str | None = None    # series name (multi-series chart categories)
+    multi_series: bool = False   # chart element flag → chart_detect skips it
 
 
 # ---------- helpers ----------
@@ -392,9 +394,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     point strip) via `chart_geom.subregions_for_chart`, so saying "the STT
     bar" highlights just the STT column instead of the whole chart.
     """
-    from .chart_geom import subregions_for_chart
-
-    from .chart_geom import classify_chart_type
+    from .chart_geom import classify_chart_type, subregions_for_chart
 
     bbox = _shape_bbox(shape)
     chart = shape.chart
@@ -415,14 +415,22 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
         )]
 
     categories: list[str] = []
-    values: list[float] = []
+    series_list: list[tuple[str, list[float]]] = []  # (name, values) per series
     try:
         categories = [str(c) for c in chart.plots[0].categories]
-        if chart.plots[0].series:
-            values = [float(v or 0) for v in chart.plots[0].series[0].values]
+        for se in chart.plots[0].series:
+            series_list.append((se.name, [float(v or 0) for v in se.values]))
     except Exception:
         categories = []
-        values = []
+        series_list = []
+
+    # Clustered multi-series bar: one DISTINCT sub-column per (category, series).
+    is_clustered_bar = ct_simple == "bar" and "STACKED" not in chart_type.upper()
+    if len(series_list) > 1 and is_clustered_bar and categories:
+        return _expand_clustered_chart(slide_no, start_idx, bbox, chart_type,
+                                       categories, series_list)
+
+    values = series_list[0][1] if series_list else []
     sub_bboxes = subregions_for_chart(bbox, chart_type, len(categories), values)
     # what to call each item: bar | slice | point
     noun = {"pie": "slice", "line": "point", "scatter": "point"}.get(ct_simple, "bar")
@@ -456,6 +464,50 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
             value=values[i] if i < len(values) else None,
         ))
         idx += 1
+    return out
+
+
+def _expand_clustered_chart(slide_no, start_idx, bbox, chart_type, categories,
+                            series_list):
+    """Clustered multi-series bar: 1 chart + one chart_category per
+    (category, series), each with a distinct side-by-side sub-column bbox and
+    series-named triggers so "the revenue bar in Q2" resolves to that column."""
+    from .chart_geom import grouped_bar_subregions
+
+    series_values = [sv for _, sv in series_list]
+    sub = grouped_bar_subregions(bbox, series_values)
+    chart_el = Element(
+        id=f"s{slide_no}_e{start_idx}",
+        type="chart",
+        text=chart_type,
+        bbox=bbox,
+        trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
+        multi_series=True,
+    )
+    out: list[Element] = [chart_el]
+    idx = start_idx + 1
+    k = 0
+    for ci, cat in enumerate(categories):
+        for sj, (sname, sv) in enumerate(series_list):
+            sn = (sname or f"series {sj + 1}").strip()
+            phrases = _phrases_for_text(cat)
+            for p in (f"the {cat.lower()} bar in {sn.lower()}",
+                      f"the {sn.lower()} {cat.lower()} bar",
+                      f"{sn.lower()} {cat.lower()}"):
+                if p not in phrases:
+                    phrases.append(p)
+            out.append(Element(
+                id=f"s{slide_no}_e{idx}",
+                type="chart_category",
+                text=f"{cat} — {sn}",
+                bbox=sub[k] if k < len(sub) else bbox,
+                trigger_phrases=phrases,
+                parent_id=chart_el.id,
+                value=sv[ci] if ci < len(sv) else None,
+                series=sn,
+            ))
+            idx += 1
+            k += 1
     return out
 
 
@@ -639,7 +691,7 @@ def parse_deck(path: str) -> dict:
 
 
 def _element_to_dict(e: Element) -> dict:
-    return {
+    d = {
         "id": e.id,
         "type": e.type,
         "text": e.text,
@@ -649,3 +701,9 @@ def _element_to_dict(e: Element) -> dict:
         "parent_id": e.parent_id,
         "value": e.value,
     }
+    # additive, multi-series only — keeps single-series output byte-identical
+    if e.series is not None:
+        d["series"] = e.series
+    if e.multi_series:
+        d["multi_series"] = True
+    return d

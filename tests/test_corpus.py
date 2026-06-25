@@ -123,6 +123,28 @@ def test_unsupported_chart_is_needs_vision_not_fabricated(tmp_path):
     assert cats == [], f"radar fabricated {len(cats)} category bars"
 
 
+def test_grouped_chart_has_distinct_subcolumns(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["grouped_bar"].path)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    chart = next(e for e in els if e["type"] == "chart")
+    cats = [e for e in els if e["type"] == "chart_category"]
+
+    assert chart["multi_series"] is True
+    assert len(cats) == 6, "expected 3 categories x 2 series"
+    # distinct, non-overlapping sub-columns in category-major x order
+    xs = [c["bbox"]["x"] for c in cats]
+    assert xs == sorted(xs) and len(set(xs)) == 6
+    for a, b in zip(cats, cats[1:]):
+        assert a["bbox"]["x"] + a["bbox"]["w"] <= b["bbox"]["x"] + 1e-6, "sub-columns overlap"
+    # value-proportional height: Revenue 30 (tallest) > Cost 5 (shortest)
+    h = {(c["text"]): c["bbox"]["h"] for c in cats}
+    assert h["Q3 — Revenue"] > h["Q1 — Cost"]
+    # series name reaches the triggers (disambiguation handle)
+    rev = next(c for c in cats if c["series"] == "Revenue" and "Q2" in c["text"])
+    assert any("revenue" in p for p in rev["trigger_phrases"])
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

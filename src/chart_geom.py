@@ -111,6 +111,39 @@ def bar_subregions(chart_bbox: BBox, n_categories: int,
     return out
 
 
+def grouped_bar_subregions(chart_bbox: BBox,
+                           series_values: list[list[float]],
+                           min_h_frac: float = 0.04) -> list[BBox]:
+    """Distinct sub-column per (category, series) for a clustered bar chart.
+
+    Within each category's column slot (width `step`), the `n_series` bars sit
+    side by side, each `step / n_series` wide and value-proportional to the
+    GLOBAL max (so heights are comparable across the whole chart). Returned in
+    category-major order: cat0[s0, s1, …], cat1[s0, s1, …], … — matching how a
+    clustered column chart renders. Empty when there are no series/categories.
+    """
+    n_series = len(series_values)
+    n_categories = len(series_values[0]) if n_series else 0
+    if n_series == 0 or n_categories == 0:
+        return []
+    plot = plot_area(chart_bbox, "bar")
+    step = plot.w / n_categories
+    sub_w = step / n_series
+    baseline_y = plot.y + plot.h
+    vmax = max((v for sv in series_values for v in sv), default=0.0)
+    out: list[BBox] = []
+    for ci in range(n_categories):
+        for sj in range(n_series):
+            val = series_values[sj][ci] if ci < len(series_values[sj]) else 0.0
+            if vmax > 0:
+                bar_h = max(max(val, 0.0) / vmax * plot.h, min_h_frac * plot.h)
+            else:
+                bar_h = plot.h
+            x = plot.x + ci * step + sj * sub_w
+            out.append(BBox(x=x, y=baseline_y - bar_h, w=sub_w, h=bar_h))
+    return out
+
+
 # ---------- line ----------
 
 def line_subregions(chart_bbox: BBox, n_categories: int,
