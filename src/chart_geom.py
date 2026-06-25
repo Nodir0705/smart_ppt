@@ -144,6 +144,43 @@ def grouped_bar_subregions(chart_bbox: BBox,
     return out
 
 
+def stacked_bar_subregions(chart_bbox: BBox,
+                           series_values: list[list[float]],
+                           min_h_frac: float = 0.02) -> list[BBox]:
+    """Vertical segment per (category, series) for a STACKED bar chart.
+
+    Each category is one full-width column whose total height is proportional to
+    that category's stack total vs the largest stack. Within it, series stack
+    from the baseline up (series 0 at the bottom), each segment proportional to
+    its share of the stack. Category-major order: cat0[s0, s1, …], cat1[…], … —
+    so a given series sits at the same stack position across categories.
+    """
+    n_series = len(series_values)
+    n_categories = len(series_values[0]) if n_series else 0
+    if n_series == 0 or n_categories == 0:
+        return []
+    plot = plot_area(chart_bbox, "bar")
+    step = plot.w / n_categories
+    baseline_y = plot.y + plot.h
+    totals = [sum(max(series_values[s][ci], 0.0) for s in range(n_series))
+              for ci in range(n_categories)]
+    gmax = max(totals, default=0.0)
+    out: list[BBox] = []
+    for ci in range(n_categories):
+        col_h = (totals[ci] / gmax * plot.h) if gmax > 0 else plot.h
+        below = 0.0  # cumulative height of segments already placed (from baseline)
+        for sj in range(n_series):
+            val = max(series_values[sj][ci], 0.0) if ci < len(series_values[sj]) else 0.0
+            if totals[ci] > 0:
+                seg_h = max(val / totals[ci] * col_h, min_h_frac * plot.h)
+            else:
+                seg_h = col_h / n_series
+            y_top = baseline_y - below - seg_h
+            out.append(BBox(x=plot.x + ci * step, y=y_top, w=step, h=seg_h))
+            below += seg_h
+    return out
+
+
 # ---------- line ----------
 
 def line_subregions(chart_bbox: BBox, n_categories: int,

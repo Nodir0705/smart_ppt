@@ -211,6 +211,28 @@ def _build_grouped_bar_chart(out_dir: Path) -> CorpusDeck:
                       note="clustered 2-series -> 6 distinct sub-column elements")
 
 
+def _build_stacked_bar_chart(out_dir: Path) -> CorpusDeck:
+    """A stacked 2-series column chart. Each (category, series) must get a
+    distinct vertical segment stacked within its category column."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    data = CategoryChartData()
+    data.categories = ["Q1", "Q2", "Q3"]
+    data.add_series("Base", (10, 20, 30))
+    data.add_series("Bonus", (5, 8, 12))
+    s.shapes.add_chart(XL_CHART_TYPE.COLUMN_STACKED,
+                       Inches(1), Inches(1), Inches(7), Inches(4.5), data)
+    path = out_dir / "stacked_bar.pptx"
+    prs.save(str(path))
+    return CorpusDeck("stacked_bar", str(path),
+                      expected_texts=["Base", "Bonus", "Q2"],
+                      expected_types=["chart"] + ["chart_category"] * 6,
+                      note="stacked 2-series -> 6 distinct vertical segments")
+
+
 def _build_radar_chart(out_dir: Path) -> CorpusDeck:
     """A radar chart — no sound per-category bar/slice geometry. The parser must
     emit a single needs_vision chart element, not fabricated category bars."""
@@ -251,6 +273,7 @@ _BUILDERS = [
     _build_rotated_shape,
     _build_radar_chart,
     _build_grouped_bar_chart,
+    _build_stacked_bar_chart,
     _build_empty_slide,
 ]
 

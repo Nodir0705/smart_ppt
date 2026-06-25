@@ -145,6 +145,26 @@ def test_grouped_chart_has_distinct_subcolumns(tmp_path):
     assert any("revenue" in p for p in rev["trigger_phrases"])
 
 
+def test_stacked_chart_segments_stack_within_category(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["stacked_bar"].path)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    assert next(e for e in els if e["type"] == "chart")["multi_series"] is True
+    cats = [e for e in els if e["type"] == "chart_category"]
+    assert len(cats) == 6
+
+    # within a category the two segments share x and stack contiguously (the
+    # upper series' bottom == the lower series' top), no overlap
+    q1 = [c for c in cats if c["text"].startswith("Q1")]
+    base, bonus = q1[0]["bbox"], q1[1]["bbox"]   # category-major: Base then Bonus
+    assert abs(base["x"] - bonus["x"]) < 1e-6
+    assert base["y"] > bonus["y"]                 # Base lower on screen than Bonus
+    assert abs((bonus["y"] + bonus["h"]) - base["y"]) < 1e-6, "segments not contiguous"
+    # taller stack for the larger category total (Q3 total 42 > Q1 total 15)
+    q3_base = next(c for c in cats if c["text"] == "Q3 — Base")
+    assert q3_base["bbox"]["h"] > base["h"]
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

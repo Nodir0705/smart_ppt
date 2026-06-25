@@ -424,11 +424,18 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
         categories = []
         series_list = []
 
-    # Clustered multi-series bar: one DISTINCT sub-column per (category, series).
-    is_clustered_bar = ct_simple == "bar" and "STACKED" not in chart_type.upper()
-    if len(series_list) > 1 and is_clustered_bar and categories:
-        return _expand_clustered_chart(slide_no, start_idx, bbox, chart_type,
-                                       categories, series_list)
+    # Multi-series bar: one DISTINCT sub-region per (category, series) —
+    # side-by-side sub-columns when clustered, stacked vertical segments when
+    # stacked. Both give every series its own pointable geometry.
+    if ct_simple == "bar" and len(series_list) > 1 and categories:
+        from .chart_geom import grouped_bar_subregions, stacked_bar_subregions
+        series_values = [sv for _, sv in series_list]
+        if "STACKED" in chart_type.upper():
+            sub = stacked_bar_subregions(bbox, series_values)
+        else:
+            sub = grouped_bar_subregions(bbox, series_values)
+        return _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type,
+                                         categories, series_list, sub)
 
     values = series_list[0][1] if series_list else []
     sub_bboxes = subregions_for_chart(bbox, chart_type, len(categories), values)
@@ -467,15 +474,11 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     return out
 
 
-def _expand_clustered_chart(slide_no, start_idx, bbox, chart_type, categories,
-                            series_list):
-    """Clustered multi-series bar: 1 chart + one chart_category per
-    (category, series), each with a distinct side-by-side sub-column bbox and
-    series-named triggers so "the revenue bar in Q2" resolves to that column."""
-    from .chart_geom import grouped_bar_subregions
-
-    series_values = [sv for _, sv in series_list]
-    sub = grouped_bar_subregions(bbox, series_values)
+def _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type, categories,
+                              series_list, sub):
+    """Multi-series bar: 1 chart + one chart_category per (category, series),
+    each with its own distinct sub-region bbox (`sub`, in category-major order)
+    and series-named triggers so "the revenue bar in Q2" resolves to it."""
     chart_el = Element(
         id=f"s{slide_no}_e{start_idx}",
         type="chart",
