@@ -25,7 +25,9 @@ from .parser import BBox
 # ---------- chart-type classification ----------
 
 def classify_chart_type(chart_type_repr: str) -> str:
-    """Map python-pptx chart_type strings to one of: bar, pie, line, scatter."""
+    """Map python-pptx chart_type strings to: bar, pie, line, scatter, or
+    'unsupported' (radar/bubble/stock/surface — no sound per-category geometry,
+    so the caller marks the chart needs_vision instead of fabricating bars)."""
     s = chart_type_repr.upper()
     if "PIE" in s or "DOUGHNUT" in s:
         return "pie"
@@ -33,11 +35,13 @@ def classify_chart_type(chart_type_repr: str) -> str:
         return "line"
     if "BAR" in s or "COLUMN" in s:
         return "bar"
-    if "SCATTER" in s:
-        return "scatter"
+    if "SCATTER" in s or "BUBBLE" in s:
+        return "scatter" if "SCATTER" in s else "unsupported"
     if "AREA" in s:
         return "line"
-    return "bar"  # safest default
+    if any(k in s for k in ("RADAR", "STOCK", "SURFACE")):
+        return "unsupported"
+    return "bar"  # safest default for unrecognised column/bar-like types
 
 
 # ---------- plot-area inset estimation ----------

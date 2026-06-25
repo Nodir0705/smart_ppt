@@ -394,9 +394,26 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     """
     from .chart_geom import subregions_for_chart
 
+    from .chart_geom import classify_chart_type
+
     bbox = _shape_bbox(shape)
     chart = shape.chart
     chart_type = str(chart.chart_type)
+    ct_simple = classify_chart_type(chart_type)
+
+    # Radar/bubble/stock/surface and combo (multi-plot) charts have no sound
+    # per-category bar/slice geometry — emit one needs_vision chart element
+    # rather than fabricating misleading sub-regions.
+    if ct_simple == "unsupported" or len(chart.plots) > 1:
+        return [Element(
+            id=f"s{slide_no}_e{start_idx}",
+            type="chart",
+            text=chart_type,
+            bbox=bbox,
+            trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
+            needs_vision=True,
+        )]
+
     categories: list[str] = []
     values: list[float] = []
     try:
@@ -406,9 +423,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     except Exception:
         categories = []
         values = []
-    from .chart_geom import classify_chart_type
     sub_bboxes = subregions_for_chart(bbox, chart_type, len(categories), values)
-    ct_simple = classify_chart_type(chart_type)
     # what to call each item: bar | slice | point
     noun = {"pie": "slice", "line": "point", "scatter": "point"}.get(ct_simple, "bar")
 

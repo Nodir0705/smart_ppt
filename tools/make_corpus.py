@@ -188,6 +188,25 @@ def _build_rotated_shape(out_dir: Path) -> CorpusDeck:
                       note="90deg-rotated box -> AABB dims swap (w<h)")
 
 
+def _build_radar_chart(out_dir: Path) -> CorpusDeck:
+    """A radar chart — no sound per-category bar/slice geometry. The parser must
+    emit a single needs_vision chart element, not fabricated category bars."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    data = CategoryChartData()
+    data.categories = ["Speed", "Power", "Range", "Cost"]
+    data.add_series("Model A", (8, 6, 7, 5))
+    s.shapes.add_chart(XL_CHART_TYPE.RADAR, Inches(1), Inches(1), Inches(6), Inches(4.5), data)
+    path = out_dir / "radar_chart.pptx"
+    prs.save(str(path))
+    return CorpusDeck("radar_chart", str(path), expected_texts=[],
+                      expected_types=["chart"], expected_min_elements=1,
+                      note="radar -> single needs_vision chart, no fabricated bars")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -207,6 +226,7 @@ _BUILDERS = [
     _build_image_alt_text,
     _build_kpi_callouts,
     _build_rotated_shape,
+    _build_radar_chart,
     _build_empty_slide,
 ]
 

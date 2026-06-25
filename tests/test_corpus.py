@@ -113,6 +113,16 @@ def test_parse_deck_isolates_a_failing_slide(tmp_path, monkeypatch, caplog):
     assert any("failed to parse" in r.message for r in caplog.records)
 
 
+def test_unsupported_chart_is_needs_vision_not_fabricated(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["radar_chart"].path)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    charts = [e for e in els if e["type"] == "chart"]
+    cats = [e for e in els if e["type"] == "chart_category"]
+    assert len(charts) == 1 and charts[0]["needs_vision"] is True
+    assert cats == [], f"radar fabricated {len(cats)} category bars"
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")
