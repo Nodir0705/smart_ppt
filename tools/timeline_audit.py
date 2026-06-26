@@ -66,7 +66,16 @@ def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
 
 
 def score_slide(expected_steps, trajectory_ids):
-    """Ordered recall with alternates. Returns (hits, total, missed_steps)."""
+    """Ordered recall with alternates, plus precision.
+
+    Returns (hits, total, missed_steps, relevant, false):
+      - hits/total: ordered-recall (did each expected step get highlighted, in
+        order, allowing alternates).
+      - relevant/false: precision side — distinct highlighted ids that ARE vs
+        are NOT in the slide's acceptable set (anything the narration refers to).
+        `false` counts highlights on elements the narration never mentioned, the
+        failure ordered-recall is blind to.
+    """
     # dedup consecutive
     actual = []
     for x in trajectory_ids:
@@ -88,7 +97,11 @@ def score_slide(expected_steps, trajectory_ids):
             ptr = found_at + 1
         else:
             missed.append(step)
-    return hits, len(expected_steps), missed
+    acceptable = set().union(*expected_steps) if expected_steps else set()
+    distinct = set(actual)
+    relevant = sum(1 for x in distinct if x in acceptable)
+    false = len(distinct) - relevant
+    return hits, len(expected_steps), missed, relevant, false
 
 
 def run(index_path, only=None, normalize=None):
@@ -103,6 +116,7 @@ def run(index_path, only=None, normalize=None):
     engine = load_default_stt_engine(sample_rate=16000)
 
     tot_hits = tot_steps = tot_flicker = 0
+    tot_relevant = tot_false = 0
     per_slide: dict[int, dict] = {}
     for item in manifest:
         sno = item["slide"]
@@ -111,19 +125,29 @@ def run(index_path, only=None, normalize=None):
         events, flicker = record_trajectory(sno, item["wav"], raw, engine, matcher,
                                              normalize=normalize)
         traj = [e[1] for e in events]
-        hits, steps, missed = score_slide(gt[sno], traj)
+        hits, steps, missed, relevant, false = score_slide(gt[sno], traj)
         tot_hits += hits
         tot_steps += steps
         tot_flicker += flicker
+        tot_relevant += relevant
+        tot_false += false
         per_slide[sno] = {"hits": hits, "steps": steps, "missed": missed,
-                          "flicker": flicker, "trajectory": [x for x in traj if x]}
+                          "flicker": flicker, "relevant": relevant, "false": false,
+                          "trajectory": [x for x in traj if x]}
         flag = "" if hits == steps else f"   MISSED {missed}"
-        print(f"slide {sno}: {hits}/{steps}  flicker={flicker}{flag}")
+        fflag = f"   FALSE={false}" if false else ""
+        print(f"slide {sno}: {hits}/{steps}  flicker={flicker}{fflag}{flag}")
         print(f"          trajectory: {[x for x in traj]}")
     acc = tot_hits / tot_steps if tot_steps else 0.0
-    print(f"\nOVERALL: {tot_hits}/{tot_steps} = {acc:.3f}   total_flicker={tot_flicker}")
+    total_hl = tot_relevant + tot_false
+    precision = tot_relevant / total_hl if total_hl else 1.0
+    print(f"\nOVERALL: recall {tot_hits}/{tot_steps} = {acc:.3f}   "
+          f"precision {tot_relevant}/{total_hl} = {precision:.3f}   "
+          f"false_highlights={tot_false}   total_flicker={tot_flicker}")
     return {"slides": per_slide,
-            "overall": {"hits": tot_hits, "steps": tot_steps, "flicker": tot_flicker}}
+            "overall": {"hits": tot_hits, "steps": tot_steps, "flicker": tot_flicker,
+                        "relevant": tot_relevant, "false": tot_false,
+                        "precision": precision}}
 
 
 def audit(index_path, normalize_index=True):

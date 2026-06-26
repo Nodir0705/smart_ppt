@@ -52,6 +52,12 @@ def test_phase1_grounding_targets_met():
     for sno, lo in floor.items():
         assert slides[sno]["hits"] >= lo, f"slide {sno} regressed: {slides[sno]['hits']} < {lo}"
 
-    # Overall accuracy and flicker stay in range (bge-small baseline: 37/40, flicker 0).
-    assert overall["hits"] >= 36, f"overall accuracy dropped: {overall['hits']}/40"
-    assert overall["flicker"] <= 10, f"too much flicker: {overall['flicker']}"
+    # Headline metric is now three first-class numbers so tuning can't trade one
+    # for another silently. Baseline (bge-small + scoped): recall 37/40,
+    # precision 37/38 (1 false highlight on s6), flicker 2.
+    assert overall["hits"] >= 36, f"recall dropped: {overall['hits']}/40"
+    # precision: false highlights are elements the narration never named — recall
+    # is blind to them, so guard them explicitly.
+    assert overall["false"] <= 2, f"too many false highlights: {overall['false']}"
+    assert overall["precision"] >= 0.95, f"precision dropped: {overall['precision']:.3f}"
+    assert overall["flicker"] <= 4, f"too much flicker: {overall['flicker']}"
