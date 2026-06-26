@@ -1,4 +1,4 @@
-from src.group_scope import chart_noun, group_label_for_chart, scope_index, load_expansions
+from src.group_scope import chart_noun, group_label_for_chart, scope_index
 
 
 def test_chart_noun():

@@ -12,8 +12,6 @@ Two layers:
 
 from __future__ import annotations
 
-import os
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -246,12 +244,9 @@ class TestPolicy:
 # ---------- end-to-end semantic acceptance (slow) ----------
 
 @pytest.fixture(scope="module")
-def loaded():
-    if os.environ.get("SKIP_SEMANTIC"):
-        pytest.skip("SKIP_SEMANTIC set")
-    from src.encoder import load_default_encoder
+def loaded(real_encoder):
     from src.matcher import Index, Matcher
-    enc = load_default_encoder()
+    enc = real_encoder
     idx = Index(ROOT / "out" / "index.json", enc)
     return Matcher(idx, enc), idx
 
@@ -282,8 +277,8 @@ class TestSemanticAcceptance:
         matcher, _ = loaded
         # generic discourse markers should not lock onto any one element strongly
         r = matcher.match("as you can see in this diagram", 6)
-        # either score is below threshold, OR gap to runner-up is tiny
-        assert (r.score < 0.55) or ((r.score - r.runner_up_score) < 0.05), (
+        # either score is below the live threshold, OR gap to runner-up is tiny
+        assert (r.score < PolicyConfig.threshold) or ((r.score - r.runner_up_score) < 0.05), (
             f"filler scored too strongly: {r.score:.3f} vs ru {r.runner_up_score:.3f} on {r.text!r}")
 
     def test_cross_slide_isolation(self, loaded):

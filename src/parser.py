@@ -6,18 +6,17 @@ module emits.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field, asdict
-from typing import Iterable
 
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Emu
+from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
+_log = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
 ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
-DIAGRAM_LABEL_MIN_PAIRS = 3    # ≥ N merged box-pairs on a slide → diagram_label, else stat
 
 
 # ---------- data classes ----------
@@ -46,6 +45,9 @@ class Element:
     trigger_phrases: list[str] = field(default_factory=list)
     needs_vision: bool = False
     parent_id: str | None = None
+    value: float | None = None   # numeric value (chart_category bars/slices)
+    series: str | None = None    # series name (multi-series chart categories)
+    multi_series: bool = False   # chart element flag → chart_detect skips it
 
 
 # ---------- helpers ----------
@@ -65,10 +67,118 @@ def _shape_bbox(shape) -> BBox:
     )
 
 
+# ---------- group flattening ----------
+#
+# python-pptx walks `slide.shapes` only, so shapes nested inside a GROUP (every
+# SmartArt diagram, and any author-grouped cluster) are never seen and vanish
+# from the index. We recurse groups and map each child from the group's child
+# coordinate space (chOff/chExt) into slide EMU via an affine transform, composed
+# through nesting. A `_Transform` is (ax, ay, bx, by): slide = a + b * raw_emu.
+
+_IDENTITY = (0.0, 0.0, 1.0, 1.0)
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
+def _group_xfrm(group_shape):
+    """Return (off, ext, chOff, chExt) as (x, y) EMU tuples for a group's child
+    coordinate transform. The group's own xfrm is the one carrying chOff."""
+    xfrms = group_shape._element.findall(".//" + _A_NS + "xfrm")
+    xfrm = next((x for x in xfrms if x.find(_A_NS + "chOff") is not None), None)
+    if xfrm is None:  # malformed group — treat as identity (no scaling)
+        return (0, 0), (1, 1), (0, 0), (1, 1)
+
+    def _xy(tag, ax, ay):
+        e = xfrm.find(_A_NS + tag)
+        return (int(e.get(ax)), int(e.get(ay)))
+
+    return (_xy("off", "x", "y"), _xy("ext", "cx", "cy"),
+            _xy("chOff", "x", "y"), _xy("chExt", "cx", "cy"))
+
+
+def _compose(parent, group_shape):
+    """Compose the parent→slide transform with a group's child→group transform."""
+    off, ext, choff, chext = _group_xfrm(group_shape)
+    pax, pay, pbx, pby = parent
+    # the group's box mapped into slide space by the parent transform
+    g_x, g_y = pax + pbx * off[0], pay + pby * off[1]
+    g_w, g_h = pbx * ext[0], pby * ext[1]
+    sx = g_w / chext[0] if chext[0] else 1.0
+    sy = g_h / chext[1] if chext[1] else 1.0
+    return (g_x - choff[0] * sx, g_y - choff[1] * sy, sx, sy)
+
+
+def _iter_flat(shapes, transform=_IDENTITY):
+    """Yield (leaf_shape, transform) for every shape, recursing into groups so
+    nested shapes surface with a transform that maps them to slide coordinates."""
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_flat(shape.shapes, _compose(transform, shape))
+        else:
+            yield shape, transform
+
+
+def _rotated_aabb(x: float, y: float, w: float, h: float, deg: float) -> BBox:
+    """Axis-aligned bounding box of a w×h rect rotated `deg`° about its centre —
+    so a rotated shape's highlight covers its actual rendered extent, not the
+    unrotated box."""
+    import math
+    cx, cy = x + w / 2.0, y + h / 2.0
+    th = math.radians(deg)
+    c, s = abs(math.cos(th)), abs(math.sin(th))
+    nw = w * c + h * s
+    nh = w * s + h * c
+    return BBox(x=cx - nw / 2.0, y=cy - nh / 2.0, w=nw, h=nh)
+
+
+def _transformed_bbox(shape, transform) -> BBox:
+    ax, ay, bx, by = transform
+    x = _emu_to_in(ax + bx * shape.left)
+    y = _emu_to_in(ay + by * shape.top)
+    w = _emu_to_in(bx * shape.width)
+    h = _emu_to_in(by * shape.height)
+    rot = getattr(shape, "rotation", 0.0) or 0.0
+    if rot % 360 == 0:
+        return BBox(x=x, y=y, w=w, h=h)
+    return _rotated_aabb(x, y, w, h, rot)
+
+
 def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
     return (shape.text_frame.text or "").strip()
+
+
+_IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
+_GENERIC_NAME_RE = re.compile(r"^(picture|image|graphic|object|content placeholder)\s*\d*$", re.I)
+
+
+def _clean_alt_text(raw: str) -> str:
+    """Keep author-meaningful alt text; drop junk that PowerPoint/exporters put
+    in `descr`/`title` — file paths, bare image filenames, and generic
+    auto-names like 'Picture 1' — which would only add noise triggers."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if "/" in s or "\\" in s:          # a file path, not a description
+        return ""
+    if _IMG_EXT_RE.search(s):          # a bare image filename
+        return ""
+    if _GENERIC_NAME_RE.match(s):      # auto-generated placeholder name
+        return ""
+    return s
+
+
+def _alt_text(shape) -> str:
+    """Author-written alt text for a shape (its `cNvPr` `descr`, else `title`).
+
+    For pictures this is the only deterministic, offline handle on otherwise
+    text-less raster content. Namespace-agnostic: matches the `cNvPr` element by
+    local name so it works across picture/shape/group non-visual property types.
+    """
+    for cnv in shape._element.iter():
+        if cnv.tag.endswith("}cNvPr"):
+            return _clean_alt_text(cnv.get("descr") or cnv.get("title") or "")
+    return ""
 
 
 def _is_zero_dim(bbox: BBox) -> bool:
@@ -79,12 +189,22 @@ def _norm(s: str) -> str:
     """Lowercased, whitespace-collapsed, punctuation-stripped (light)."""
     s = s.lower().strip()
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"[ ]", " ", s)  # nbsp
     return s
 
 
 def _strip_punct(s: str) -> str:
     return re.sub(r"[^\w\s<>+%./-]", "", s)
+
+
+# A "[symbol] number unit" stat callout, e.g. "< 1 ms", "20 %", "3.5 GB".
+# Mirrors group_scope.stat_phrases so a pair classified "stat" here gets spoken
+# stat phrases there. Used to type each merged pair by its OWN text instead of a
+# slide-wide pair-count guess.
+_STAT_TEXT_RE = re.compile(r"^\s*[<>≤≥~]?\s*\d+(?:\.\d+)?\s*[a-zA-Z%]+\s*$")
+
+
+def _is_stat_text(text: str) -> bool:
+    return bool(_STAT_TEXT_RE.match(text or ""))
 
 
 def _phrases_for_text(text: str) -> list[str]:
@@ -274,23 +394,51 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     point strip) via `chart_geom.subregions_for_chart`, so saying "the STT
     bar" highlights just the STT column instead of the whole chart.
     """
-    from .chart_geom import subregions_for_chart
+    from .chart_geom import classify_chart_type, subregions_for_chart
 
     bbox = _shape_bbox(shape)
     chart = shape.chart
     chart_type = str(chart.chart_type)
+    ct_simple = classify_chart_type(chart_type)
+
+    # Radar/bubble/stock/surface and combo (multi-plot) charts have no sound
+    # per-category bar/slice geometry — emit one needs_vision chart element
+    # rather than fabricating misleading sub-regions.
+    if ct_simple == "unsupported" or len(chart.plots) > 1:
+        return [Element(
+            id=f"s{slide_no}_e{start_idx}",
+            type="chart",
+            text=chart_type,
+            bbox=bbox,
+            trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
+            needs_vision=True,
+        )]
+
     categories: list[str] = []
-    values: list[float] = []
+    series_list: list[tuple[str, list[float]]] = []  # (name, values) per series
     try:
         categories = [str(c) for c in chart.plots[0].categories]
-        if chart.plots[0].series:
-            values = [float(v or 0) for v in chart.plots[0].series[0].values]
+        for se in chart.plots[0].series:
+            series_list.append((se.name, [float(v or 0) for v in se.values]))
     except Exception:
         categories = []
-        values = []
-    from .chart_geom import classify_chart_type
+        series_list = []
+
+    # Multi-series bar: one DISTINCT sub-region per (category, series) —
+    # side-by-side sub-columns when clustered, stacked vertical segments when
+    # stacked. Both give every series its own pointable geometry.
+    if ct_simple == "bar" and len(series_list) > 1 and categories:
+        from .chart_geom import grouped_bar_subregions, stacked_bar_subregions
+        series_values = [sv for _, sv in series_list]
+        if "STACKED" in chart_type.upper():
+            sub = stacked_bar_subregions(bbox, series_values)
+        else:
+            sub = grouped_bar_subregions(bbox, series_values)
+        return _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type,
+                                         categories, series_list, sub)
+
+    values = series_list[0][1] if series_list else []
     sub_bboxes = subregions_for_chart(bbox, chart_type, len(categories), values)
-    ct_simple = classify_chart_type(chart_type)
     # what to call each item: bar | slice | point
     noun = {"pie": "slice", "line": "point", "scatter": "point"}.get(ct_simple, "bar")
 
@@ -320,13 +468,72 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
             bbox=cat_bbox,
             trigger_phrases=cat_phrases,
             parent_id=chart_el.id,
+            value=values[i] if i < len(values) else None,
         ))
         idx += 1
     return out
 
 
+def _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type, categories,
+                              series_list, sub):
+    """Multi-series bar: 1 chart + one chart_category per (category, series),
+    each with its own distinct sub-region bbox (`sub`, in category-major order)
+    and series-named triggers so "the revenue bar in Q2" resolves to it."""
+    chart_el = Element(
+        id=f"s{slide_no}_e{start_idx}",
+        type="chart",
+        text=chart_type,
+        bbox=bbox,
+        trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
+        multi_series=True,
+    )
+    out: list[Element] = [chart_el]
+    idx = start_idx + 1
+    k = 0
+    for ci, cat in enumerate(categories):
+        for sj, (sname, sv) in enumerate(series_list):
+            sn = (sname or f"series {sj + 1}").strip()
+            phrases = _phrases_for_text(cat)
+            for p in (f"the {cat.lower()} bar in {sn.lower()}",
+                      f"the {sn.lower()} {cat.lower()} bar",
+                      f"{sn.lower()} {cat.lower()}"):
+                if p not in phrases:
+                    phrases.append(p)
+            out.append(Element(
+                id=f"s{slide_no}_e{idx}",
+                type="chart_category",
+                text=f"{cat} — {sn}",
+                bbox=sub[k] if k < len(sub) else bbox,
+                trigger_phrases=phrases,
+                parent_id=chart_el.id,
+                value=sv[ci] if ci < len(sv) else None,
+                series=sn,
+            ))
+            idx += 1
+            k += 1
+    return out
+
+
+def _is_title_placeholder(shape) -> bool:
+    """True when the shape is an authoritative title placeholder, regardless of
+    where it sits — handles centred title-slide layouts the y<1.2 heuristic
+    misses (and any repositioned title)."""
+    if not getattr(shape, "is_placeholder", False):
+        return False
+    try:
+        return shape.placeholder_format.type in (
+            PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE,
+        )
+    except (KeyError, ValueError, AttributeError):
+        return False
+
+
 def _classify_text_shape(shape, slide_w: float, slide_h: float) -> str:
     """Title / bullet / body / caption from position and content."""
+    # Authoritative placeholder type wins; the geometry heuristic is the fallback
+    # for plain text boxes (which carry no placeholder metadata).
+    if _is_title_placeholder(shape):
+        return "title"
     bbox = _shape_bbox(shape)
     paras = _paragraphs(shape)
     if bbox.y < 1.2 and bbox.w > slide_w * 0.5 and len(paras) <= 2:
@@ -341,12 +548,13 @@ def _classify_text_shape(shape, slide_w: float, slide_h: float) -> str:
 # ---------- main per-slide parse ----------
 
 def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[Element]:
-    # 1) inventory shapes
+    # 1) inventory shapes (groups flattened to their leaf shapes, with each
+    #    leaf's bbox mapped from group child-space into slide coordinates)
     shapes_meta: list[dict] = []
-    for shape in slide.shapes:
+    for shape, tf in _iter_flat(slide.shapes):
         shapes_meta.append({
             "shape": shape,
-            "bbox": _shape_bbox(shape),
+            "bbox": _transformed_bbox(shape, tf),
             "text": _shape_text(shape),
             "is_picture": shape.shape_type == MSO_SHAPE_TYPE.PICTURE,
             "is_table": getattr(shape, "has_table", False),
@@ -359,7 +567,6 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
     for ci, ti in pairs:
         paired_idx[ci] = (ci, ti)
         paired_idx[ti] = (ci, ti)
-    merged_type = "diagram_label" if len(pairs) >= DIAGRAM_LABEL_MIN_PAIRS else "stat"
 
     # 3) emit elements
     elements: list[Element] = []
@@ -370,7 +577,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
     consumed: set[int] = set()
     # 3a) emit merged pairs first (in original container order for stable ids)
     seen_pairs: set[tuple[int, int]] = set()
-    for i, meta in enumerate(shapes_meta):
+    for i, _meta in enumerate(shapes_meta):
         if i not in paired_idx:
             continue
         pair = paired_idx[i]
@@ -383,6 +590,11 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
         container = shapes_meta[ci]
         text_shape = shapes_meta[ti]
         text = text_shape["text"]
+        # Classify each pair by its OWN text: a "[symbol] number unit" callout is
+        # a stat (gets spoken stat phrases downstream); anything else is a diagram
+        # label. Replaces the slide-wide ">=3 pairs" guess that mislabelled both
+        # KPI slides (3 numeric callouts -> diagram_label) and 2-node diagrams.
+        merged_type = "stat" if _is_stat_text(text) else "diagram_label"
         elements.append(Element(
             id=next_id(),
             type=merged_type,
@@ -405,13 +617,16 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
             elements.extend(_expand_chart(shape, slide_no, len(elements)))
             continue
         if meta["is_picture"]:
+            # Author alt text makes an otherwise text-less image pointable
+            # (deterministic, offline). Fall back to needs_vision when absent.
+            alt = _alt_text(shape)
             elements.append(Element(
                 id=next_id(),
                 type="image",
-                text=None,
+                text=alt or None,
                 bbox=bbox,
-                trigger_phrases=[],
-                needs_vision=True,
+                trigger_phrases=_phrases_for_text(alt),
+                needs_vision=not alt,
             ))
             continue
         if not text and _is_zero_dim(bbox):
@@ -458,7 +673,15 @@ def parse_deck(path: str) -> dict:
     slide_h = _emu_to_in(prs.slide_height)
     out_slides = []
     for i, slide in enumerate(prs.slides, start=1):
-        elements = _parse_slide(slide, i, slide_w, slide_h)
+        try:
+            elements = _parse_slide(slide, i, slide_w, slide_h)
+        except Exception:
+            # One malformed slide must not abort a whole (e.g. 100-slide) deck.
+            # Emit an empty slide so numbering — and the refine page-count
+            # invariant — stay intact, and surface the failure as a warning.
+            _log.warning("slide %d failed to parse; emitting empty slide", i,
+                         exc_info=True)
+            elements = []
         out_slides.append({
             "slide_number": i,
             "elements": [_element_to_dict(e) for e in elements],
@@ -471,7 +694,7 @@ def parse_deck(path: str) -> dict:
 
 
 def _element_to_dict(e: Element) -> dict:
-    return {
+    d = {
         "id": e.id,
         "type": e.type,
         "text": e.text,
@@ -479,4 +702,11 @@ def _element_to_dict(e: Element) -> dict:
         "trigger_phrases": e.trigger_phrases,
         "needs_vision": e.needs_vision,
         "parent_id": e.parent_id,
+        "value": e.value,
     }
+    # additive, multi-series only — keeps single-series output byte-identical
+    if e.series is not None:
+        d["series"] = e.series
+    if e.multi_series:
+        d["multi_series"] = True
+    return d

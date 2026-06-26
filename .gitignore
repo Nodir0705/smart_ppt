@@ -5,3 +5,6 @@ __pycache__/
 .ruff_cache/
 graphify-out/
 .graphify*
+
+# generated deck corpus (tools/make_corpus.py)
+corpus/

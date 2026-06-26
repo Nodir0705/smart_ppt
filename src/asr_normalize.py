@@ -122,6 +122,50 @@ def load_aliases(path: str | Path) -> dict[str, str]:
     return {k.lower(): v.lower() for k, v in raw.items()}
 
 
+class _CompiledNormalizer:
+    """Pre-compiled alias matcher for one alias_map.
+
+    The combined look-around regex depends only on the alias_map's keys, so it
+    is built once per map instead of on every frame (the live loop normalizes
+    every STT partial). Output is byte-identical to the inline version.
+    """
+
+    __slots__ = ("alias_map", "_pattern")
+
+    def __init__(self, alias_map: dict[str, str]) -> None:
+        self.alias_map = alias_map  # strong ref keeps id() stable while cached
+        # Sort variants by length descending so longer matches take priority.
+        sorted_variants = sorted(alias_map.keys(), key=len, reverse=True)
+        # Variants may contain spaces (e.g. "s t t"), so \b is unreliable at
+        # space boundaries; use look-arounds: not preceded/followed by a word char.
+        self._pattern = re.compile(
+            "|".join(r"(?<!\w)" + re.escape(v) + r"(?!\w)" for v in sorted_variants),
+            re.IGNORECASE,
+        )
+
+    def __call__(self, text: str) -> str:
+        result = self._pattern.sub(
+            lambda m: self.alias_map[m.group(0).lower()], text
+        )
+        return _collapse_ws(result)
+
+
+# Cache compiled normalizers by alias_map identity. Each entry holds a strong
+# reference to its alias_map, so the id can't be reused while cached. In practice
+# one entry per session (the live alias_map is built once and reused).
+_NORMALIZER_CACHE: dict[int, _CompiledNormalizer] = {}
+
+
+def compile_normalizer(alias_map: dict[str, str]) -> _CompiledNormalizer:
+    """Return a reusable, pre-compiled normalizer for ``alias_map``."""
+    key = id(alias_map)
+    norm = _NORMALIZER_CACHE.get(key)
+    if norm is None or norm.alias_map is not alias_map:
+        norm = _CompiledNormalizer(alias_map)
+        _NORMALIZER_CACHE[key] = norm
+    return norm
+
+
 def normalize(text: str, alias_map: dict[str, str]) -> str:
     """Return ``text`` with alias variants replaced by their canonical form.
 
@@ -132,34 +176,11 @@ def normalize(text: str, alias_map: dict[str, str]) -> str:
       (surrounded by non-word chars or start/end of string).
     - Longest-variant-first to avoid partial replacements.
     - Collapses repeated whitespace in the result.
-    - Pure function — no I/O.
+    - Pure function — no I/O. The compiled regex is cached per alias_map.
     """
     if not alias_map:
         return _collapse_ws(text)
-
-    # Sort variants by length descending so longer matches take priority.
-    sorted_variants = sorted(alias_map.keys(), key=len, reverse=True)
-
-    # Build a single regex that matches any variant (word-boundary safe).
-    # We use re.escape on each variant and wrap with \b-like boundary anchors.
-    # Since variants may contain spaces (e.g. "s t t"), \b alone won't work
-    # reliably at space boundaries; we use a look-around approach instead:
-    # (?<!\w) ... (?!\w)  — not preceded/followed by a word character.
-    pattern_parts = [
-        r"(?<!\w)" + re.escape(v) + r"(?!\w)"
-        for v in sorted_variants
-    ]
-    combined_pattern = re.compile(
-        "|".join(pattern_parts),
-        re.IGNORECASE,
-    )
-
-    def _replace(match: re.Match) -> str:
-        matched_text = match.group(0).lower()
-        return alias_map[matched_text]
-
-    result = combined_pattern.sub(_replace, text)
-    return _collapse_ws(result)
+    return compile_normalizer(alias_map)(text)
 
 
 def _collapse_ws(text: str) -> str:

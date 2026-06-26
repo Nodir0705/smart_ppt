@@ -10,7 +10,6 @@ Layers:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -143,33 +142,33 @@ class TestMockedFullPipeline:
     should land on the expected element after each phrase finalises.
     """
 
-    def test_three_phrases_each_switch_highlight(self):
-        if os.environ.get("SKIP_SEMANTIC"):
-            pytest.skip("SKIP_SEMANTIC set")
-        from src.encoder import load_default_encoder
+    def test_three_phrases_each_switch_highlight(self, real_encoder):
         from src.matcher import Index, Matcher, MatchPolicy, PolicyConfig
 
-        enc = load_default_encoder()
+        enc = real_encoder
         idx = Index(INDEX_PATH, enc)
         matcher = Matcher(idx, enc)
         policy = MatchPolicy(matcher, PolicyConfig())
 
-        # script the same trace I use in the REPL on slide 6
+        # script the same trace I use in the REPL on slide 6. The finals are
+        # spaced > the buffer window so each one prunes its predecessor — without
+        # this, the mock stamps all finals at ~the same monotonic() time, the
+        # window never prunes, and the buffer feeds polluted multi-topic text.
         script = [
             MockScript("let me explain the", is_final=False),
-            MockScript("let me explain the matcher", is_final=True),
-            MockScript("audio comes in through the microphone", is_final=True),
-            MockScript("and finally we draw the overlay", is_final=True),
+            MockScript("let me explain the matcher", is_final=True, delay_s=1.2),
+            MockScript("audio comes in through the microphone", is_final=True, delay_s=1.2),
+            MockScript("and finally we draw the overlay", is_final=True, delay_s=1.2),
         ]
         engine = MockEngine(script)
-        buf = RollingBuffer(window_seconds=2.0)  # short window so each final dominates
+        buf = RollingBuffer(window_seconds=1.0)  # short window so each final dominates
         emitted_actives: list[str | None] = []
 
         def on_update(text: str, partial: Partial):
             if not partial.is_final:
                 return  # only step the policy on finals (simulates the throttle)
-            buf2_text = text  # buffer already reflects this final
-            _, active, _ = policy.step(buf2_text, slide_no=6)
+            tail = buf.tail(8) or text  # match the live viewer's tail-of-buffer feed
+            _, active, _ = policy.step(tail, slide_no=6)
             emitted_actives.append(active)
 
         transcriber = LiveTranscriber(_FakeAudioSource(), engine, buf)

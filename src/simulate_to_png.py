@@ -22,8 +22,9 @@ from .audio import PlaybackSource
 from .encoder import load_default_encoder
 from .geom import inches_to_image_px
 from .live import LiveTranscriber
-from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, VoskEngine, hotwords_from_index
+from .live_controller import LiveController
+from .matcher import Index, Matcher
+from .stt import STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 HALO = (40, 40, 40)
@@ -62,11 +63,11 @@ def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
 
 
 def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
-                   raw_index: dict, engine: VoskEngine, matcher: Matcher,
+                   raw_index: dict, engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], out_path: Path,
                    tail_words: int = 8) -> dict:
-    policy = MatchPolicy(matcher, PolicyConfig())
-    buf = RollingBuffer(window_seconds=4.0)
+    controller = LiveController(matcher, raw_index, tail_words=tail_words, slide_no=slide_no)
+    buf = controller.buffer
     src = PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
 
@@ -89,13 +90,12 @@ def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
 
     def on_update(text, partial):
         nonlocal last_active
-        tail = buf.tail(tail_words)
-        if not tail:
+        ev = controller.feed()
+        if ev is None:
             return
-        _res, active, _why = policy.step(tail, slide_no)
-        if active and active != last_active:
-            visits.append((time.monotonic() - t0, active))
-            last_active = active
+        if ev.active_id and ev.active_id != last_active:
+            visits.append((time.monotonic() - t0, ev.active_id))
+            last_active = ev.active_id
 
     transcriber.run(on_update=on_update)
 
@@ -145,11 +145,11 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = narration_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
 
-    print("loading models (BGE + Vosk)…")
+    print("loading models (BGE + STT)…")
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
-    engine = VoskEngine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
 
     summary: list[dict] = []

@@ -1,5 +1,94 @@
 # Smart Pointer — Tasks
 
+## Active: productionize sherpa-onnx streaming STT (2026-06-23)
+
+Prototype verdict: standard streaming zipformer en = ~25% faster word cadence
+(0.30 vs 0.40s median; 0.70 vs 1.0s worst-case) at EQUAL grounding (37/40),
+flicker 2 vs 0. Offline/CPU/deterministic (int8, num_threads=1, greedy). Adopt
+as default with Vosk fallback.
+
+- [ ] Vendor int8 model → ~/.cache/sherpa-onnx/... (done, 68MB) + fetch script + .gitignore
+- [ ] src/stt.py: SherpaEngine(STTEngine) — deterministic, offline, endpoint detection
+- [ ] src/stt.py: load_default_stt_engine() factory — sherpa if model present, else Vosk
+- [ ] Wire viewer._ensure_engine, tools/timeline_audit, simulate_to_video to the factory
+- [ ] Pin sherpa-onnx in pyproject + requirements
+- [ ] VALIDATE: grounding eval hits the 3 targets (s4_e2/s4_e3/s6_e1) + ≥37/40 + determinism (run twice, identical)
+- [ ] Address flicker 2 (stickiness) if cheap; else accept (≤10 tolerance)
+- [ ] Regenerate demo; commit
+
+## Active milestone: Phase 0 optimization quick wins (2026-06-18)
+
+Source: `docs/optimization-research-2026-06-18.md` §6 Phase 0 + §7 critic corrections.
+Constraint: fully offline, deterministic, CPU-only. Zero new runtime deps.
+Branch: `feat/phase0-quick-wins`. Baseline: 159 passed, 1 skipped (15.7s).
+
+### Batch 1 — Determinism preconditions (do FIRST — precondition for everything)
+- [x] encoder.py: default `device='cpu'`, `torch.set_num_threads(1)`, `manual_seed(0)`,
+      `local_files_only=True` + pinned `revision`, OMP/MKL/HF-offline env defaults
+- [x] matcher.py: bump `CACHE_VERSION` -> `v3-cpu-deterministic` (forces rebuild on CPU)
+- [x] delete 9 stale `out/embeddings_*.pkl`; rebuilt on CPU
+- [x] VERIFY: `pytest -q` green (159) + grounding eval **38/40, flicker 0** (was 38/40 floor 36)
+
+### Batch 2 — Pure quick wins (no grounding impact, low risk)
+- [x] asr_normalize.py: `_CompiledNormalizer` cache (byte-identical output)
+- [x] audio.py + tts.py: new `src/pcm.py` — lazy `audioop` + scipy/numpy fallback (Py3.13 time-bomb)
+- [x] viewer.py: debounce `<Configure>` + BILINEAR-during-drag, LANCZOS on settle
+- [x] audio.py: `sd.InputStream(dtype='int16')` mic capture + float32 fallback
+- [~] render.py: SKIPPED — no caller knows the slide count, so the param would be dead code
+- [x] parser.py: deleted dead nbsp no-op — parser acceptance test confirms output unchanged
+
+### Batch 3 — Slightly bigger
+- [x] matcher.py: `.npz` + JSON sidecar + age eviction (replaced pickle ACE format)
+- [x] matcher.py: 1-entry query encode cache (behavior-preserving)
+- [x] simulate_to_video.py: raw-RGB ffmpeg pipe + `-threads 1` — verified end-to-end (640x360, 160f, valid MP4)
+- [ ] tests/conftest.py: session-scoped encoder + FakeEncoder fixture — DEFERRED (test-speed nicety)
+
+### Review (2026-06-18)
+- 8 files touched + 1 new (`src/pcm.py`). Suite: 159 passed throughout. No new lint errors.
+- Determinism contract now enforced in the LIVE path: CPU-only, single-thread, offline-pinned encoder.
+- Two items intentionally not shipped: render `_count_slides` (would be dead code) and conftest
+  FakeEncoder (pure test-speed; no production impact). Both noted, not silently dropped.
+
+### Phase 1 (in progress)
+- [x] bge-large → bge-small-en-v1.5 swap: **11x faster** live encode (114.6 → 10.1 ms/query
+      CPU 1-thread), 1.3G → 383M weights. Re-tuned `PolicyConfig.threshold` 0.55 → **0.65**
+      (bge-small cosines run ~0.05-0.10 higher). Grounding **37/40, flicker 0** (lost s3_e5).
+      Test re-baselines: slide-3 floor 9→8; filler test tracks threshold; mock switch test
+      frozen-time bug fixed (delay_s + tail(8)). 159 passed.
+- [~] torch CPU-wheel reinstall: BLOCKED — this is the **shared system Python** (`/usr`, 635 pkgs;
+      OCR project shares torch+CUDA). Mutating it would strip GPU from other projects. Safe path =
+      isolated venv (rank 2). **Awaiting user decision** on building the venv.
+- [x] enrichment wiring fix (rank 8): **DELETED** the dead ~7GB VLM+LLM branch (enrich_vlm.py,
+      enrich_llm.py, test_enrich.py, dead out/index.* outputs). It wrote index.vlm/enriched.json
+      but group_scope builds scoped from refined, bypassing both → dead output every run. Also
+      redundant (parser already explodes chart categories into pointable elements) and off-ethos
+      (nondeterministic, GPU-leaning). Zero grounding impact (37/40). 121 passed.
+- [ ] footprint torch CPU-wheel — SKIPPED by user decision (shared system python; bge-small already
+      won the 10x model-weight footprint)
+- [x] dependency manifest (rank 2): pyproject.toml + requirements.txt, pinned working set,
+      requires-python>=3.10,<3.13, folded pytest+ruff config (pytest.ini removed). 121 passed.
+- [x] conftest FakeEncoder (rank 10): session-scoped real encoder + model-free FakeEncoder.
+- [x] pypdfium2 (rank 7): refine_text.py swapped pdfplumber → pypdfium2 TIGHT glyph boxes.
+      Raster-calibrated at 150dpi → SHIFT_FRAC 0.22→0.0 (tight boxes are glyph-exact, 3.4x
+      tighter fit, equal clipping). Extraction ~142ms→8.9ms (~16x). pdfplumber removed from
+      manifest. 14 refine tests + real-deck tightness pass; 121 suite.
+### Phase 2 (2026-06-19)
+- [x] static-frame dedup: simulate_to_video memoizes frame bytes keyed by the highlight
+      bbox — renders each unique frame once (14/160 on slide 1, ~91% reused), re-pipes
+      bytes for static holds. Better than the report's concat-demuxer idea (no segment-
+      boundary fragility). Output unchanged. 121 passed.
+- [~] warm LibreOffice (unoserver): NOT DONE — assessed as net-negative. Adds a daemon +
+      new dependency for a win the mtime cache already blunts (cold soffice only hits when
+      the deck CHANGES, which is rare for a grounding tool pointed at a finished deck).
+      Violates the offline/minimal-deps ethos. Report rated it "not high" value. Recommend skip.
+- [~] ONNX OnnxEncoder / faster-whisper / GGUF: MOOT or unrequested — ONNX encoder only
+      pays off if the ~700MB torch footprint is a hard constraint (user skipped footprint);
+      GGUF/VLM were for enrichment (deleted); faster-whisper is offline-narration-only, not asked.
+
+### Optimization program COMPLETE — only net-negative/moot items remain.
+
+---
+
 ## Active milestone: Stage 1 — Parser → index.json
 
 Goal: from `test_deck.pptx`, produce `out/index.json` that satisfies the Stage 1

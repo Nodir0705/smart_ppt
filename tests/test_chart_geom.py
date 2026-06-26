@@ -91,6 +91,27 @@ class TestBarSubregions:
     def test_zero_categories(self):
         assert bar_subregions(CHART, 0) == []
 
+    def test_value_proportional_heights_anchored_to_baseline(self):
+        # test-deck column values: STT dwarfs the rest
+        regions = bar_subregions(CHART, 4, values=[180, 1, 16, 4])
+        plot = plot_area(CHART, "bar")
+        baseline = plot.y + plot.h
+        # every bar sits ON the x-axis baseline (grows upward)
+        for r in regions:
+            assert math.isclose(r.y + r.h, baseline, abs_tol=1e-6)
+            assert _contains(CHART, r)
+        # tallest value fills the plot; taller value -> taller box
+        assert math.isclose(regions[0].h, plot.h, abs_tol=1e-6)      # STT == full plot
+        assert regions[0].h > regions[2].h > regions[3].h           # STT > Render > Sync
+        # a near-zero bar is floored to a small visible height, not full height
+        assert regions[1].h < 0.2 * plot.h
+
+    def test_no_values_keeps_full_height_strips(self):
+        # back-compat: without values, strips still span the whole plot height
+        plot = plot_area(CHART, "bar")
+        for r in bar_subregions(CHART, 4):
+            assert math.isclose(r.h, plot.h, abs_tol=1e-9)
+
 
 class TestLineSubregions:
     def test_five_evenly_spaced_centers(self):

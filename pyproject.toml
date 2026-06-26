@@ -1,0 +1,70 @@
+# smartppt — Smart Pointer: offline, deterministic, CPU-only live presentation grounding.
+#
+# The runtime is fully offline + CPU-only by design (src/encoder.py forces CPU,
+# single-thread, and HF_HUB_OFFLINE). The sentence-embedding model
+# (BAAI/bge-small-en-v1.5) is fetched ONCE into the Hugging Face cache and is NOT
+# a pip dependency — pin its revision via src/encoder.py (_REVISIONS).
+#
+# Versions below are the verified-working set on the current host.
+#   torch/numpy caveat: torch 2.3.1 officially predates numpy-2.0 support (added
+#   in torch 2.4.1). The pinned pair works here, but for a clean offline reinstall
+#   either pin numpy<2 or bump to torch>=2.4.1.
+#   CPU-only footprint (no CUDA libs): install the CPU wheel explicitly —
+#     pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cpu
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartppt"
+version = "0.1.0"
+description = "Smart Pointer — offline, deterministic, CPU-only live presentation grounding"
+requires-python = ">=3.10,<3.13"   # audioop removed in 3.13 (PEP 594); see src/pcm.py
+dependencies = [
+    "numpy==2.2.6",
+    "scipy==1.14.0",
+    "torch==2.3.1",
+    "transformers==4.51.3",
+    "tokenizers==0.21.2",
+    "huggingface-hub==0.36.2",
+    "safetensors==0.5.3",
+    "vosk==0.3.45",
+    "sherpa-onnx==1.13.3",
+    "piper-tts==1.4.2",
+    "sounddevice==0.5.5",
+    "soundfile==0.13.1",
+    "pypdfium2==5.6.0",
+    "python-pptx==1.0.2",
+    "pillow==10.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "ruff==0.11.8",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests that load the embedding model (~3s startup with bge-small)",
+]
+filterwarnings = [
+    "ignore::UserWarning:matplotlib",
+    "ignore::DeprecationWarning:audioop",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# High-signal correctness families only (pyflakes + bugbear). Style/format
+# families (E line-length, I import-order, UP modernisation) are intentionally
+# left off for now to avoid churn — adopt incrementally.
+select = ["F", "B"]
+# B905 (zip-without-explicit-strict): the autofix is a behaviour-preserving
+# no-op and adding strict= needs per-site length-equality judgement; skip.
+ignore = ["B905"]

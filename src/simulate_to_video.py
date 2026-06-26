@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import tempfile
 import time
@@ -35,10 +34,11 @@ from PIL import Image, ImageDraw
 
 from .audio import PlaybackSource
 from .encoder import load_default_encoder
-from .geom import Bbox, FitTransform, ease_in_out_cubic, inches_to_image_px, lerp_bbox
+from .geom import Bbox, ease_in_out_cubic, inches_to_image_px, lerp_bbox
 from .live import LiveTranscriber
-from .matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from .stt import RollingBuffer, VoskEngine, hotwords_from_index
+from .live_controller import LiveController
+from .matcher import Index, Matcher
+from .stt import STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
@@ -46,7 +46,7 @@ HALO = (40, 40, 40)
 HIGHLIGHT_HALO_WIDTH = 3
 
 # animation parameters — same as viewer
-ANIM_FRAMES = 12
+ANIM_FRAMES = 8   # highlight glide frames (~0.27s @30fps; snappier, was 12)
 ANIM_FPS = 30  # frames-per-second of the output video
 
 
@@ -56,14 +56,15 @@ def _wav_duration_s(path: Path) -> float:
 
 
 def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
-                   engine: VoskEngine, matcher: Matcher,
+                   engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], tail_words: int = 8,
                    normalizer=None) -> list[tuple[float, str | None]]:
     """Run the full pipeline against a muted PlaybackSource; return a list of
     (timestamp_seconds, active_element_id) transitions paced by audio time.
     """
-    policy = MatchPolicy(matcher, PolicyConfig(), normalizer=normalizer)
-    buf = RollingBuffer(window_seconds=4.0)
+    controller = LiveController(matcher, raw_index, normalizer=normalizer,
+                                tail_words=tail_words, slide_no=slide_no)
+    buf = controller.buffer
     src = PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
 
@@ -73,13 +74,12 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
 
     def on_update(text, partial):
         nonlocal last_active
-        tail = buf.tail(tail_words)
-        if not tail:
+        ev = controller.feed()
+        if ev is None:
             return
-        _res, active, _why = policy.step(tail, slide_no)
-        if active != last_active:
-            events.append((time.monotonic() - t0, active))
-            last_active = active
+        if ev.active_id != last_active:
+            events.append((time.monotonic() - t0, ev.active_id))
+            last_active = ev.active_id
 
     transcriber.run(on_update=on_update)
     return events
@@ -112,13 +112,36 @@ def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,
     return None
 
 
-def _render_video_frames(slide_no: int, wav_path: Path, slides_dir: Path,
-                         raw_index: dict, events: list[tuple[float, str | None]],
-                         frames_dir: Path, fps: int, max_width: int) -> int:
-    """Render all frames for one slide into `frames_dir/00001.png … `.
+def _element_axis_label_px(raw_index: dict, slide_no: int, element_id: str,
+                           img_w: int, img_h: int) -> Bbox | None:
+    """The element's x-axis label box (chart points), in image px, or None."""
+    if element_id is None:
+        return None
+    slide_w_in = raw_index["slide_size"]["w"]
+    slide_h_in = raw_index["slide_size"]["h"]
+    for s in raw_index["slides"]:
+        if s["slide_number"] != slide_no:
+            continue
+        for el in s["elements"]:
+            if el["id"] == element_id and el.get("axis_label_bbox"):
+                lb = el["axis_label_bbox"]
+                return inches_to_image_px(
+                    (lb["x"], lb["y"], lb["w"], lb["h"]),
+                    slide_w_in, slide_h_in, img_w, img_h,
+                )
+    return None
 
-    Returns the number of frames written. Frames are at `max_width` × h
-    (preserving aspect) so the encoded MP4 isn't enormous.
+
+def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
+                       raw_index: dict, events: list[tuple[float, str | None]],
+                       out_path: Path, fps: int, max_width: int) -> int:
+    """Render highlight frames and stream them straight into ffmpeg.
+
+    Frames (RGB, `max_width` × h, aspect-preserved) are generated in Python and
+    piped to ffmpeg as raw rgb24 over stdin — no per-frame PNG encode and no
+    temp directory (the old path wrote ~3,300 PNGs per slide, ~86% identical).
+    x264 is pinned to `-threads 1` because its multi-threaded output is not
+    byte-deterministic. Returns the number of frames written.
     """
     png_path = slides_dir / f"slide_{slide_no:03d}.png"
     base = Image.open(png_path).convert("RGB")
@@ -127,75 +150,105 @@ def _render_video_frames(slide_no: int, wav_path: Path, slides_dir: Path,
         base = base.resize((max_width, new_h), Image.LANCZOS)
     img_w, img_h = base.size
 
-    # Pre-compute target bboxes from events
+    # Pre-compute target bboxes from events (data box + its x-axis label box)
     targets: list[tuple[float, Bbox | None]] = [
         (t, _element_bbox_image_px(raw_index, slide_no, eid, img_w, img_h))
         for t, eid in events
+    ]
+    label_targets: list[Bbox | None] = [
+        _element_axis_label_px(raw_index, slide_no, eid, img_w, img_h)
+        for _t, eid in events
     ]
 
     dur = _wav_duration_s(wav_path)
     n_frames = int(dur * fps) + 1
     frame_dt = 1.0 / fps
 
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{img_w}x{img_h}",
+        "-framerate", str(fps), "-i", "-",          # frames from stdin
+        "-i", str(wav_path),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
+        "-threads", "1",                              # deterministic x264 output
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest", "-movflags", "+faststart",
+        str(out_path),
+    ]
+
     current: Bbox | None = None
+    current_label: Bbox | None = None     # static companion box on the x-axis label
     anim_start: Bbox | None = None
     anim_target: Bbox | None = None
     anim_step = 0
     event_idx = 0
 
-    for i in range(n_frames):
-        t = i * frame_dt
+    # Frame-bytes memo: only the ~14% of frames where the highlight changes (the
+    # 12-frame transitions) need re-rendering; the static runs between them are
+    # byte-identical, so render each unique frame once and re-pipe its bytes — skips
+    # a full base.copy() + draw + tobytes() (~2.7MB) on every static frame.
+    _UNSET = object()
+    last_state = _UNSET
+    last_bytes: bytes | None = None
+    rendered = 0
 
-        # consume any events that should have fired by time t
-        while event_idx < len(targets) and targets[event_idx][0] <= t:
-            new_t = targets[event_idx][1]
-            if current is None and new_t is not None:
-                # appearing from nowhere — pop in, no animation
-                current = new_t
-                anim_target = new_t
-                anim_step = ANIM_FRAMES  # done
-            elif new_t is None:
-                current = None
-                anim_target = None
-                anim_step = ANIM_FRAMES
-            else:
-                # animate from current to new_t
-                anim_start = current
-                anim_target = new_t
-                anim_step = 0
-            event_idx += 1
+    # stderr -> temp file so a chatty ffmpeg can't deadlock the stdin pipe.
+    with tempfile.TemporaryFile() as errf:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errf)
+        try:
+            for i in range(n_frames):
+                t = i * frame_dt
 
-        # advance animation
-        if anim_target is not None and anim_step < ANIM_FRAMES and anim_start is not None:
-            anim_step += 1
-            eased = ease_in_out_cubic(anim_step / ANIM_FRAMES)
-            current = lerp_bbox(anim_start, anim_target, eased)
-            if anim_step >= ANIM_FRAMES:
-                current = anim_target
+                # consume any events that should have fired by time t
+                while event_idx < len(targets) and targets[event_idx][0] <= t:
+                    new_t = targets[event_idx][1]
+                    current_label = label_targets[event_idx]  # snaps with the element
+                    if current is None and new_t is not None:
+                        # appearing from nowhere — pop in, no animation
+                        current = new_t
+                        anim_target = new_t
+                        anim_step = ANIM_FRAMES  # done
+                    elif new_t is None:
+                        current = None
+                        anim_target = None
+                        anim_step = ANIM_FRAMES
+                    else:
+                        # animate from current to new_t
+                        anim_start = current
+                        anim_target = new_t
+                        anim_step = 0
+                    event_idx += 1
 
-        frame = base.copy()
-        if current is not None:
-            _draw_highlight(frame, current)
-        frame.save(frames_dir / f"{i:05d}.png")
+                # advance animation
+                if anim_target is not None and anim_step < ANIM_FRAMES and anim_start is not None:
+                    anim_step += 1
+                    eased = ease_in_out_cubic(anim_step / ANIM_FRAMES)
+                    current = lerp_bbox(anim_start, anim_target, eased)
+                    if anim_step >= ANIM_FRAMES:
+                        current = anim_target
+
+                state = (current, current_label)
+                if state != last_state:
+                    frame = base.copy()
+                    if current is not None:
+                        _draw_highlight(frame, current)
+                    if current_label is not None:
+                        _draw_highlight(frame, current_label)
+                    last_bytes = frame.tobytes()
+                    last_state = state
+                    rendered += 1
+                proc.stdin.write(last_bytes)
+            proc.stdin.close()
+            print(f"  rendered {rendered}/{n_frames} unique frames "
+                  f"({n_frames - rendered} static frames reused)")
+        except BrokenPipeError:
+            pass  # ffmpeg died early — surfaced via returncode/stderr below
+        ret = proc.wait()
+        if ret != 0:
+            errf.seek(0)
+            raise RuntimeError(f"ffmpeg failed:\n{errf.read().decode(errors='replace')[-2000:]}")
 
     return n_frames
-
-
-def _encode_video(frames_dir: Path, wav_path: Path, out_path: Path, fps: int) -> None:
-    cmd = [
-        "ffmpeg", "-y",
-        "-framerate", str(fps),
-        "-i", str(frames_dir / "%05d.png"),
-        "-i", str(wav_path),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed:\n{r.stderr[-2000:]}")
 
 
 def _concat_videos(parts: list[Path], out_path: Path) -> None:
@@ -237,16 +290,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.only is not None:
         manifest = [m for m in manifest if m["slide"] == args.only]
 
-    print("loading models (BGE + Vosk)…")
+    print("loading models (BGE + STT)…")
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
-    engine = VoskEngine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000)
     hotwords = hotwords_from_index(raw_index)
-    # same deterministic ASR alias normalization the live app uses
-    from .asr_normalize import build_alias_map, normalize as _norm
-    _alias = build_alias_map(raw_index)
-    normalizer = (lambda t: _norm(t, _alias)) if _alias else None
 
     slide_videos: list[Path] = []
     for item in manifest:
@@ -255,19 +304,15 @@ def main(argv: list[str] | None = None) -> int:
         out_mp4 = out_dir / f"slide_{sno:03d}.mp4"
         print(f"\nslide {sno}: {wav.name}")
         print("  running simulation…")
-        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords,
-                                normalizer=normalizer)
+        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords)
         for t, eid in events:
             print(f"    t={t:5.1f}s  active={eid}")
-        with tempfile.TemporaryDirectory(prefix="smartppt_frames_") as td:
-            frames_dir = Path(td)
-            print(f"  rendering frames @ {args.fps} fps…")
-            n = _render_video_frames(
-                sno, wav, slides_dir, raw_index, events,
-                frames_dir, args.fps, args.max_width,
-            )
-            print(f"  encoding {n} frames + audio → {out_mp4.name}")
-            _encode_video(frames_dir, wav, out_mp4, args.fps)
+        print(f"  rendering + encoding @ {args.fps} fps → {out_mp4.name}")
+        n = _render_and_encode(
+            sno, wav, slides_dir, raw_index, events,
+            out_mp4, args.fps, args.max_width,
+        )
+        print(f"  streamed {n} frames")
         slide_videos.append(out_mp4)
         print(f"  ✓ {out_mp4} ({out_mp4.stat().st_size//1024} KB)")
 

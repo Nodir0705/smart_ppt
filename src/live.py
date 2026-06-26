@@ -45,16 +45,28 @@ class LiveTranscriber:
             self.buffer.push(partial)
             on_update(self.buffer.text, partial)
 
-    def start_in_thread(self, on_update: Callable[[str, Partial], None]) -> None:
-        """Run `run()` on a daemon thread. Returns immediately."""
+    def start_in_thread(
+        self,
+        on_update: Callable[[str, Partial], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> None:
+        """Run `run()` on a daemon thread. Returns immediately.
+
+        If the pump dies (e.g. the mic stream drops), `on_error(exc)` is invoked
+        from the worker thread so the host can surface it / restart; without a
+        handler the traceback is printed (the old behaviour) so it isn't silent.
+        """
         if self._thread is not None:
             return
         def _target():
             try:
                 self.run(on_update)
             except Exception as e:  # surface but don't crash the host
-                import traceback
-                traceback.print_exception(type(e), e, e.__traceback__)
+                if on_error is not None:
+                    on_error(e)
+                else:
+                    import traceback
+                    traceback.print_exception(type(e), e, e.__traceback__)
         self._thread = threading.Thread(target=_target, daemon=True, name="LiveTranscriber")
         self._thread.start()
 

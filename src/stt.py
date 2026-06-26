@@ -23,10 +23,12 @@ Hotwords:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator, Protocol
 
 
@@ -255,3 +257,96 @@ class VoskEngine:
         tail = json.loads(rec.FinalResult()).get("text", "")
         if tail:
             yield Partial(text=tail, is_final=True)
+
+
+# ---------- sherpa-onnx engine (offline, streaming, lower-latency) ----------
+
+# Vendored model dir (mirrors Vosk's ~/.cache pattern). Override with
+# SMARTPPT_SHERPA_MODEL. Fetch with scripts/fetch_sherpa_model.sh.
+SHERPA_MODEL_DIR = Path(
+    os.environ.get("SMARTPPT_SHERPA_MODEL")
+    or Path.home() / ".cache" / "sherpa-onnx" / "sherpa-onnx-streaming-zipformer-en-2023-06-26"
+)
+_SHERPA_SUFFIX = "-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
+
+
+def _sherpa_model_present(model_dir: Path = SHERPA_MODEL_DIR) -> bool:
+    return (model_dir / "tokens.txt").exists() and (
+        model_dir / f"encoder{_SHERPA_SUFFIX}"
+    ).exists()
+
+
+class SherpaEngine:
+    """Offline streaming STT via sherpa-onnx (streaming zipformer transducer).
+
+    Lower per-word latency than the Vosk small model (~0.30s vs ~0.40s median word
+    cadence on the deck) at equal grounding accuracy. Fully offline (local int8
+    model, onnxruntime CPU) and deterministic: single-threaded greedy decoding,
+    no sampling — same audio yields the same transcript. Endpoint detection lets
+    a finished utterance finalise and reset, mirroring Vosk's partial/final flow.
+    """
+
+    def __init__(self, sample_rate: int = 16000, model_dir: Path | None = None) -> None:
+        import sherpa_onnx  # local import — heavy, optional dependency
+
+        self.sample_rate = sample_rate
+        md = Path(model_dir) if model_dir else SHERPA_MODEL_DIR
+        s = _SHERPA_SUFFIX
+        self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
+            tokens=str(md / "tokens.txt"),
+            encoder=str(md / f"encoder{s}"),
+            decoder=str(md / f"decoder{s}"),
+            joiner=str(md / f"joiner{s}"),
+            num_threads=1,                      # deterministic CPU decode
+            sample_rate=sample_rate,
+            feature_dim=80,
+            decoding_method="greedy_search",    # no sampling -> reproducible
+            provider="cpu",
+            enable_endpoint_detection=True,
+            rule1_min_trailing_silence=2.4,
+            rule2_min_trailing_silence=1.2,
+            rule3_min_utterance_length=300,
+        )
+
+    def transcribe_stream(
+        self,
+        audio_chunks: Iterator[bytes],
+        hotwords: list[str] | None = None,
+    ) -> Iterator[Partial]:
+        import numpy as np
+
+        del hotwords  # the matcher's embedding handles deck-term robustness
+        rec = self._rec
+        stream = rec.create_stream()
+        last = ""
+        for chunk in audio_chunks:
+            if not chunk:
+                continue
+            samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+            stream.accept_waveform(self.sample_rate, samples)
+            while rec.is_ready(stream):
+                rec.decode_stream(stream)
+            text = rec.get_result(stream).lower()  # match Vosk's lowercase contract
+            if rec.is_endpoint(stream):
+                if text:
+                    yield Partial(text=text, is_final=True)
+                rec.reset(stream)
+                last = ""
+            elif text and text != last:
+                yield Partial(text=text, is_final=False)
+                last = text
+
+
+def load_default_stt_engine(sample_rate: int = 16000, grammar: bool = False):
+    """Return the best available offline STT engine.
+
+    Prefers the lower-latency sherpa-onnx streaming model when it's installed and
+    the model is present; otherwise falls back to Vosk. `grammar` forces Vosk
+    (its deck-vocabulary constraint mode has no sherpa equivalent here).
+    """
+    if not grammar and _sherpa_model_present():
+        try:
+            return SherpaEngine(sample_rate=sample_rate)
+        except Exception as e:  # missing dep / bad model -> fall back, don't crash
+            print(f"[stt] sherpa-onnx unavailable ({e}); falling back to Vosk")
+    return VoskEngine(sample_rate=sample_rate, grammar=grammar)

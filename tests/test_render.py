@@ -47,8 +47,7 @@ class TestRender:
         assert first_mtimes == second_mtimes, "cache miss — files were re-rendered"
 
     def test_cache_invalidates_when_deck_newer(self, tmp_path):
-        from PIL import Image
-        pngs1 = render_deck(DECK, tmp_path)
+        render_deck(DECK, tmp_path)  # warm the cache; result unused
         # touch the deck forward in time
         future = time.time() + 10
         # we can't really mutate test_deck.pptx mtime safely; instead copy it and use the copy
