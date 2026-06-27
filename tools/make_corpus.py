@@ -343,6 +343,31 @@ def _build_unicode_text(out_dir: Path) -> CorpusDeck:
                       note="non-ASCII (em-dash/€/accents) preserved verbatim")
 
 
+def _build_image_baked_text(out_dir: Path) -> CorpusDeck:
+    """A picture with text rendered INTO the raster and NO alt text. Today the
+    parser has no OCR, so the words are unreachable — this is a documented gap
+    (Phase C: tesseract fallback). Marked known_gap: when OCR lands and the text
+    starts surviving, the harness fails so we retire the marker."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    img = Image.new("RGB", (400, 200), (255, 255, 255))
+    ImageDraw.Draw(img).text((20, 80), "NET REVENUE", fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    s.shapes.add_picture(buf, Inches(2), Inches(2), Inches(4), Inches(2))  # no alt
+    path = out_dir / "image_baked_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("image_baked_text", str(path),
+                      expected_texts=["NET REVENUE"],
+                      known_gap="no OCR: text baked into a raster is unreachable",
+                      note="image w/ rendered text, no alt -> needs tesseract OCR")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -370,6 +395,7 @@ _BUILDERS = [
     _build_table,
     _build_duplicate_text,
     _build_unicode_text,
+    _build_image_baked_text,
     _build_empty_slide,
 ]
 
