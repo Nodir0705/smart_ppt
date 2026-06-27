@@ -78,6 +78,28 @@ def _build_multiline_body(out_dir: Path) -> CorpusDeck:
                       note="multi-paragraph body; should not lose any line")
 
 
+def _build_wrapping_paragraph(out_dir: Path) -> CorpusDeck:
+    """ONE long paragraph in a narrow box, so it soft-wraps across several visual
+    lines WITHOUT paragraph breaks. The parser keeps it as a single element; the
+    refine step is what splits it into per-line `line_bboxes` — the data
+    line-level highlighting consumes. (Multi-PARAGRAPH bodies already split into
+    separate elements at parse time, so this wrap case is the real multi-line
+    one.) Refine needs soffice, so only the slow test exercises the geometry."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    tb = s.shapes.add_textbox(Inches(1), Inches(1.5), Inches(3.0), Inches(2.5))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    para = ("This is a single long paragraph that must wrap across several "
+            "visual lines inside one narrow text box")
+    tf.text = para
+    tf.paragraphs[0].font.size = Pt(20)
+    path = out_dir / "wrapping_paragraph.pptx"
+    prs.save(str(path))
+    return CorpusDeck("wrapping_paragraph", str(path), expected_texts=[para],
+                      note="one soft-wrapping paragraph -> multi-line line_bboxes")
+
+
 def _build_title_and_bullets(out_dir: Path) -> CorpusDeck:
     """Title placeholder + a content box of bullets — the most common layout."""
     prs = Presentation()
@@ -381,6 +403,7 @@ def _build_empty_slide(out_dir: Path) -> CorpusDeck:
 
 _BUILDERS = [
     _build_multiline_body,
+    _build_wrapping_paragraph,
     _build_title_and_bullets,
     _build_centered_title_slide,
     _build_grouped_shapes,

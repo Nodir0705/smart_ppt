@@ -219,6 +219,52 @@ def test_duplicate_text_not_deduped(tmp_path):
     assert xs == [1.0, 6.0], xs
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("soffice") is None,
+                    reason="soffice required to render the PDF text layer")
+def test_wrapping_paragraph_refines_to_stacked_line_bboxes(tmp_path):
+    """The refine step must split ONE soft-wrapping paragraph into multiple
+    per-line boxes that stack top-to-bottom without overlap and union back to
+    the element box — the contract line-level highlighting consumes.
+
+    Structural asserts only (count >= 2, monotonic y, left-aligned, contiguous
+    union) so it survives soffice font/version differences in exact wrapping.
+    """
+    from src.refine_text import refine_index
+    from src.render import deck_pdf
+
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    deck = decks["wrapping_paragraph"]
+    index = parse_deck(deck.path)
+    # one element pre-refine (no paragraph breaks to split on)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    assert len(els) == 1, f"wrap paragraph split into {len(els)} elements pre-refine"
+
+    pdf = deck_pdf(deck.path, tmp_path)
+    refine_index(index, pdf)
+    el = [e for s in index["slides"] for e in s["elements"]][0]
+    lbs = el["line_bboxes"]
+
+    assert el["bbox_source"] == "pdf_text"
+    assert len(lbs) >= 2, f"expected a multi-line wrap, got {len(lbs)} line(s)"
+    # stacked top-to-bottom, no vertical overlap between consecutive lines
+    ys = [b["y"] for b in lbs]
+    assert ys == sorted(ys), "line_bboxes not ordered top-to-bottom"
+    for a, b in zip(lbs, lbs[1:]):
+        assert a["y"] + a["h"] <= b["y"] + 1e-6, "consecutive lines overlap vertically"
+    # left-aligned: all lines start within a small x band
+    xs = [b["x"] for b in lbs]
+    assert max(xs) - min(xs) < 0.1, f"lines not left-aligned: {xs}"
+    # element bbox is the union of its line boxes
+    ux = min(xs)
+    uy = min(ys)
+    ux1 = max(b["x"] + b["w"] for b in lbs)
+    uy1 = max(b["y"] + b["h"] for b in lbs)
+    bb = el["bbox"]
+    assert abs(bb["x"] - ux) < 1e-3 and abs(bb["y"] - uy) < 1e-3
+    assert abs(bb["w"] - (ux1 - ux)) < 1e-3 and abs(bb["h"] - (uy1 - uy)) < 1e-3
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")
