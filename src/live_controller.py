@@ -27,6 +27,49 @@ class MatchEvent:
     score: float
     why: str                # "switch" | "hold" | "clear" | "noop"
     tail: str               # the windowed text actually matched
+    line_index: int | None = None   # within a soft-wrapped element, the line in focus
+    line_bbox: dict | None = None    # that line's sub-bbox (None = use the union bbox)
+
+
+def select_line(tail: str, line_texts: list[str]) -> int | None:
+    """Pick which wrapped line the speaker is currently on, or None.
+
+    A soft-wrapped paragraph is ONE element with several `line_texts`; this
+    chooses the line to highlight from the recent spoken tail. Deterministic,
+    offline, no wordlist:
+
+      score(line) = Σ over tail words w in the line of  recency(w) / df(w)
+
+    where recency = the word's 1-based position in the tail (later words — the
+    reading head — weigh more) and df = how many of the element's lines contain
+    w. Dividing by df self-cancels stopwords ("the"/"of" sit in every line, so
+    each contributes ~0) without a hand-maintained stoplist — purely from the
+    element's own text. Ties break to the LATER line (reading moves forward).
+
+    Returns None for single-line elements (nothing to sub-select) and when no
+    tail word touches any line (caller falls back to the union bbox).
+    """
+    if not line_texts or len(line_texts) < 2:
+        return None
+    words = (tail or "").lower().split()
+    if not words:
+        return None
+    line_sets = [set(lt.lower().split()) for lt in line_texts]
+    df: dict[str, int] = {}
+    for s in line_sets:
+        for w in s:
+            df[w] = df.get(w, 0) + 1
+    scores = [0.0] * len(line_texts)
+    for pos, w in enumerate(words):
+        d = df.get(w)
+        if not d:
+            continue
+        weight = (pos + 1) / d
+        for i, s in enumerate(line_sets):
+            if w in s:
+                scores[i] += weight
+    best = max(range(len(scores)), key=lambda i: (scores[i], i))
+    return best if scores[best] > 0 else None
 
 
 def _build_normalizer(raw_index: dict):
@@ -62,12 +105,30 @@ class LiveController:
         self.buffer = RollingBuffer(window_seconds=window_seconds)
         self.tail_words = tail_words
         self.slide_no = slide_no
+        # id -> (line_texts, line_bboxes) for elements that soft-wrap into >1
+        # line; only these can sub-select a line. Built once from the index.
+        self._lines_by_id: dict[str, tuple[list[str], list[dict]]] = {}
+        for slide in raw_index.get("slides", []):
+            for el in slide.get("elements", []):
+                texts = el.get("line_texts") or []
+                boxes = el.get("line_bboxes") or []
+                if len(texts) > 1 and len(texts) == len(boxes):
+                    self._lines_by_id[el["id"]] = (texts, boxes)
+        # Line-level hysteresis: remember the line chosen for the active element so
+        # a frame whose (retracted/rewritten) STT tail momentarily matches no line
+        # HOLDS the last line instead of snapping back to the union box. Reset when
+        # the active element changes. Owned here so the viewer and both simulators
+        # draw the identical rectangle (the drift LiveController exists to prevent).
+        self._line_active_id: str | None = None
+        self._line_index: int | None = None
 
     def push(self, partial: Partial) -> None:
         self.buffer.push(partial)
 
     def reset(self) -> None:
         self.policy.reset()
+        self._line_active_id = None
+        self._line_index = None
 
     def feed(self, text: str | None = None) -> MatchEvent | None:
         """Run one decision over the current buffer tail (falling back to `text`
@@ -76,7 +137,24 @@ class LiveController:
         if not tail.strip():
             return None
         res, active, why = self.policy.step(tail, self.slide_no)
+        if active != self._line_active_id:
+            self._line_active_id = active
+            self._line_index = None          # new (or no) active element → forget the line
+        line_index = line_bbox = None
+        lines = self._lines_by_id.get(active) if active else None
+        if lines is not None:
+            texts, boxes = lines
+            # Select on the NORMALIZED tail so it's in the same space as the
+            # deck's literal line_texts (e.g. STT "off line" -> "offline").
+            norm_tail = self.policy.normalizer(tail) if self.policy.normalizer else tail
+            idx = select_line(norm_tail, texts)
+            if idx is None:
+                idx = self._line_index       # hold the last line through a momentary miss
+            if idx is not None:
+                self._line_index = idx
+                line_index, line_bbox = idx, boxes[idx]
         return MatchEvent(
             active_id=active, element_id=res.element_id,
             score=res.score, why=why, tail=tail,
+            line_index=line_index, line_bbox=line_bbox,
         )

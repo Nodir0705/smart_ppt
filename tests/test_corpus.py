@@ -264,6 +264,16 @@ def test_wrapping_paragraph_refines_to_stacked_line_bboxes(tmp_path):
     assert abs(bb["x"] - ux) < 1e-3 and abs(bb["y"] - uy) < 1e-3
     assert abs(bb["w"] - (ux1 - ux)) < 1e-3 and abs(bb["h"] - (uy1 - uy)) < 1e-3
 
+    # line_texts must reconstruct CLEAN words (not char-fragmented glyph chunks),
+    # in order, and concatenate back to the original paragraph — this is the
+    # handle select_line matches the spoken tail against.
+    lts = el["line_texts"]
+    assert len(lts) == len(lbs), "line_texts not parallel to line_bboxes"
+    para = el["text"].split()
+    assert " ".join(lts).split() == para, f"line_texts != paragraph words: {lts}"
+    # at least one line carries multiple whole words (guards the char-fragment bug)
+    assert any(len(lt.split()) >= 2 for lt in lts), f"lines look fragmented: {lts}"
+
 
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
