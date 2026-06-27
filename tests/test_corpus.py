@@ -183,6 +183,42 @@ def test_multiseries_scoped_phrases_are_speakable(tmp_path):
         assert any("revenue" in p or "base" in p for p in phrases)
 
 
+def test_pie_has_distinct_value_proportional_wedges(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["pie_chart"].path)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    chart = next(e for e in els if e["type"] == "chart")
+    cats = [e for e in els if e["type"] == "chart_category"]
+    # pie has sound geometry -> computed wedges, not a needs_vision punt
+    assert chart["needs_vision"] is False
+    assert len(cats) == 4
+    # the four wedge AABBs are distinct (each slice is a different region)
+    boxes = {(round(c["bbox"]["x"], 3), round(c["bbox"]["y"], 3),
+              round(c["bbox"]["w"], 3), round(c["bbox"]["h"], 3)) for c in cats}
+    assert len(boxes) == 4, "pie wedges collapsed to identical boxes"
+
+
+def test_nested_groups_map_into_slide_space(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["nested_groups"].path)
+    els = {(e.get("text") or ""): e for s in index["slides"] for e in s["elements"]}
+    # depth-2 child: identity child-extents -> stays at its authored slide coords
+    deep = els["Deep node"]["bbox"]
+    assert abs(deep["x"] - 2.0) < 0.05 and abs(deep["y"] - 2.0) < 0.05, deep
+    mid = els["Mid node"]["bbox"]
+    assert abs(mid["x"] - 5.0) < 0.05 and abs(mid["y"] - 3.0) < 0.05, mid
+
+
+def test_duplicate_text_not_deduped(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["duplicate_text"].path)
+    live = [e for s in index["slides"] for e in s["elements"]
+            if (e.get("text") or "") == "Live"]
+    assert len(live) == 2, "identical-text boxes were collapsed"
+    xs = sorted(round(e["bbox"]["x"], 1) for e in live)
+    assert xs == [1.0, 6.0], xs
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

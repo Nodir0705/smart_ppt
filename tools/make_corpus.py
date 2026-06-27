@@ -252,6 +252,97 @@ def _build_radar_chart(out_dir: Path) -> CorpusDeck:
                       note="radar -> single needs_vision chart, no fabricated bars")
 
 
+def _build_pie_chart(out_dir: Path) -> CorpusDeck:
+    """A single-series pie. Unlike radar, pie HAS sound geometry — each slice is
+    an angular wedge — so the parser emits one value-proportional sub-region per
+    category (needs_vision False), not a needs_vision punt."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    data = CategoryChartData()
+    data.categories = ["North", "South", "East", "West"]
+    data.add_series("Share", (40, 30, 20, 10))
+    s.shapes.add_chart(XL_CHART_TYPE.PIE,
+                       Inches(1), Inches(1), Inches(6), Inches(4.5), data)
+    path = out_dir / "pie_chart.pptx"
+    prs.save(str(path))
+    return CorpusDeck("pie_chart", str(path),
+                      expected_texts=["North", "South", "East", "West"],
+                      expected_types=["chart"] + ["chart_category"] * 4,
+                      note="pie -> 4 angular-wedge sub-regions (not needs_vision)")
+
+
+def _build_nested_groups(out_dir: Path) -> CorpusDeck:
+    """A textbox nested two GROUPs deep, plus one a single GROUP deep. Exercises
+    the affine COMPOSITION through nesting — a depth-1 transform would leave the
+    deep node in the wrong place or drop it entirely."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    outer = s.shapes.add_group_shape()
+    inner = outer.shapes.add_group_shape()
+    tb = inner.shapes.add_textbox(Inches(2), Inches(2), Inches(2), Inches(1))
+    tb.text_frame.text = "Deep node"
+    tb2 = outer.shapes.add_textbox(Inches(5), Inches(3), Inches(2), Inches(1))
+    tb2.text_frame.text = "Mid node"
+    path = out_dir / "nested_groups.pptx"
+    prs.save(str(path))
+    return CorpusDeck("nested_groups", str(path),
+                      expected_texts=["Deep node", "Mid node"],
+                      expected_min_elements=2,
+                      note="group-in-group; both nodes survive in slide coords")
+
+
+def _build_table(out_dir: Path) -> CorpusDeck:
+    """A standalone 2x3 table. Every cell must become its own pointable
+    table_cell element (the test deck has a table, but only via the full deck —
+    pin the contract in isolation)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    cells = [["Region", "Q1", "Q2"], ["North", "10", "20"]]
+    t = s.shapes.add_table(2, 3, Inches(1), Inches(1), Inches(8), Inches(2)).table
+    for r, row in enumerate(cells):
+        for c, val in enumerate(row):
+            t.cell(r, c).text = val
+    path = out_dir / "table.pptx"
+    prs.save(str(path))
+    flat = [v for row in cells for v in row]
+    return CorpusDeck("table", str(path), expected_texts=flat,
+                      expected_types=["table_cell"] * 6,
+                      note="2x3 table -> one table_cell per cell")
+
+
+def _build_duplicate_text(out_dir: Path) -> CorpusDeck:
+    """Two separate boxes with IDENTICAL text. The parser must NOT dedup them to
+    one element — they are distinct pointables at distinct positions (the real
+    'three Live cells' ambiguity)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    for x in (1.0, 6.0):
+        tb = s.shapes.add_textbox(Inches(x), Inches(3), Inches(2), Inches(1))
+        tb.text_frame.text = "Live"
+    path = out_dir / "duplicate_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("duplicate_text", str(path), expected_texts=["Live"],
+                      expected_min_elements=2,
+                      note="identical text in 2 boxes -> 2 elements, not deduped")
+
+
+def _build_unicode_text(out_dir: Path) -> CorpusDeck:
+    """Non-ASCII content: em-dash, currency, accents. Parsing must preserve the
+    glyphs verbatim (normalization/encoding must not drop or mangle them)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+    tb.text_frame.text = "Profit — €5M (déjà vu)"
+    path = out_dir / "unicode_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("unicode_text", str(path),
+                      expected_texts=["Profit — €5M (déjà vu)"],
+                      note="non-ASCII (em-dash/€/accents) preserved verbatim")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -274,6 +365,11 @@ _BUILDERS = [
     _build_radar_chart,
     _build_grouped_bar_chart,
     _build_stacked_bar_chart,
+    _build_pie_chart,
+    _build_nested_groups,
+    _build_table,
+    _build_duplicate_text,
+    _build_unicode_text,
     _build_empty_slide,
 ]
 
