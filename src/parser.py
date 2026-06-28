@@ -181,6 +181,20 @@ def _alt_text(shape) -> str:
     return ""
 
 
+def _ocr_picture(shape) -> str:
+    """OCR a picture's raster (deterministic, offline) when it has no alt text.
+
+    Returns "" for unsupported/linked pictures or when OCR yields no confident
+    text — the caller then leaves the image needs_vision (no false pointable).
+    """
+    try:
+        blob = shape.image.blob
+    except Exception:
+        return ""  # linked or unsupported picture exposes no blob
+    from .ocr import ocr_image_text
+    return _clean_alt_text(ocr_image_text(blob))
+
+
 def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
 
@@ -547,7 +561,8 @@ def _classify_text_shape(shape, slide_w: float, slide_h: float) -> str:
 
 # ---------- main per-slide parse ----------
 
-def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[Element]:
+def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
+                 *, ocr: bool = False) -> list[Element]:
     # 1) inventory shapes (groups flattened to their leaf shapes, with each
     #    leaf's bbox mapped from group child-space into slide coordinates)
     shapes_meta: list[dict] = []
@@ -618,15 +633,18 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
             continue
         if meta["is_picture"]:
             # Author alt text makes an otherwise text-less image pointable
-            # (deterministic, offline). Fall back to needs_vision when absent.
-            alt = _alt_text(shape)
+            # (deterministic, offline). When absent and OCR is enabled, read text
+            # baked into the raster (tesseract). Else fall back to needs_vision.
+            label = _alt_text(shape)
+            if not label and ocr:
+                label = _ocr_picture(shape)
             elements.append(Element(
                 id=next_id(),
                 type="image",
-                text=alt or None,
+                text=label or None,
                 bbox=bbox,
-                trigger_phrases=_phrases_for_text(alt),
-                needs_vision=not alt,
+                trigger_phrases=_phrases_for_text(label),
+                needs_vision=not label,
             ))
             continue
         if not text and _is_zero_dim(bbox):
@@ -666,15 +684,25 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float) -> list[E
 
 # ---------- top-level ----------
 
-def parse_deck(path: str) -> dict:
-    """Parse a .pptx and return the index dict (see CLAUDE.md data contract)."""
+def parse_deck(path: str, *, ocr: bool = False) -> dict:
+    """Parse a .pptx and return the index dict (see CLAUDE.md data contract).
+
+    `ocr=True` reads text baked into alt-text-less pictures via tesseract
+    (offline, deterministic per tesseract+traineddata). Default off so the pure
+    parse path stays tool-free; build_index enables it when tesseract is present.
+    """
+    if ocr:
+        from .ocr import tesseract_available
+        if not tesseract_available():
+            _log.warning("ocr=True but tesseract not on PATH; images stay needs_vision")
+            ocr = False
     prs = Presentation(path)
     slide_w = _emu_to_in(prs.slide_width)
     slide_h = _emu_to_in(prs.slide_height)
     out_slides = []
     for i, slide in enumerate(prs.slides, start=1):
         try:
-            elements = _parse_slide(slide, i, slide_w, slide_h)
+            elements = _parse_slide(slide, i, slide_w, slide_h, ocr=ocr)
         except Exception:
             # One malformed slide must not abort a whole (e.g. 100-slide) deck.
             # Emit an empty slide so numbering — and the refine page-count

@@ -38,6 +38,9 @@ class CorpusDeck:
     expected_min_elements: int = 1
     # a documented parser gap this deck targets (harness xfails on it)
     known_gap: str | None = None
+    # text only reachable with the OCR step (tesseract): the pure-parse fast test
+    # skips these (it can't OCR); the slow OCR test asserts survival instead.
+    requires_ocr: bool = False
     note: str = ""
 
 
@@ -366,10 +369,9 @@ def _build_unicode_text(out_dir: Path) -> CorpusDeck:
 
 
 def _build_image_baked_text(out_dir: Path) -> CorpusDeck:
-    """A picture with text rendered INTO the raster and NO alt text. Today the
-    parser has no OCR, so the words are unreachable — this is a documented gap
-    (Phase C: tesseract fallback). Marked known_gap: when OCR lands and the text
-    starts surviving, the harness fails so we retire the marker."""
+    """A picture with text rendered INTO the raster and NO alt text. Pure parsing
+    can't reach it, but the OCR step (tesseract) recovers "NET REVENUE" — so this
+    is requires_ocr: the fast test skips it, the slow OCR test asserts survival."""
     import io
 
     from PIL import Image, ImageDraw
@@ -386,8 +388,36 @@ def _build_image_baked_text(out_dir: Path) -> CorpusDeck:
     prs.save(str(path))
     return CorpusDeck("image_baked_text", str(path),
                       expected_texts=["NET REVENUE"],
-                      known_gap="no OCR: text baked into a raster is unreachable",
-                      note="image w/ rendered text, no alt -> needs tesseract OCR")
+                      requires_ocr=True,
+                      note="image w/ rendered text, no alt -> recovered by tesseract OCR")
+
+
+def _build_image_no_text(out_dir: Path) -> CorpusDeck:
+    """A picture with visual STRUCTURE but NO text (geometric shapes) and no alt.
+    The precision guard: OCR readily hallucinates tokens on structured noise, so
+    this must yield NO pointable text — `needs_vision` stays True. (A solid fill
+    would prove nothing; shapes are what make tesseract hallucinate.)"""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    img = Image.new("RGB", (400, 300), (255, 255, 255))
+    dr = ImageDraw.Draw(img)
+    dr.rectangle([30, 30, 180, 160], outline=(0, 0, 0), width=4)
+    dr.ellipse([220, 40, 360, 180], outline=(20, 20, 20), width=5)
+    dr.line([0, 300, 400, 0], fill=(0, 0, 0), width=3)
+    dr.polygon([(100, 220), (180, 290), (40, 290)], outline=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    s.shapes.add_picture(buf, Inches(2), Inches(1.5), Inches(4), Inches(3))  # no alt
+    path = out_dir / "image_no_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("image_no_text", str(path), expected_texts=[],
+                      requires_ocr=True,
+                      note="shapes, no text -> OCR must NOT hallucinate a pointable")
 
 
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
@@ -419,6 +449,7 @@ _BUILDERS = [
     _build_duplicate_text,
     _build_unicode_text,
     _build_image_baked_text,
+    _build_image_no_text,
     _build_empty_slide,
 ]
 

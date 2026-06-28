@@ -50,6 +50,8 @@ def test_corpus_no_silent_drops(tmp_path):
     assert decks, "corpus generator produced no decks"
 
     for d in decks:
+        if getattr(d, "requires_ocr", False):
+            continue  # pure parse can't OCR; the slow OCR test covers these
         index = parse_deck(d.path)  # must not raise (covers empty/edge decks)
         texts = _element_texts(index)
         n_elements = len(texts)
@@ -98,10 +100,10 @@ def test_parse_deck_isolates_a_failing_slide(tmp_path, monkeypatch, caplog):
     deck = {d.name: d for d in build_corpus(tmp_path)}["title_and_bullets"]
     real = P._parse_slide
 
-    def boom(slide, i, w, h):
+    def boom(slide, i, w, h, *, ocr=False):
         if i == 1:
             raise ValueError("synthetic parse failure")
-        return real(slide, i, w, h)
+        return real(slide, i, w, h, ocr=ocr)
 
     monkeypatch.setattr(P, "_parse_slide", boom)
     with caplog.at_level("WARNING"):
@@ -273,6 +275,41 @@ def test_wrapping_paragraph_refines_to_stacked_line_bboxes(tmp_path):
     assert " ".join(lts).split() == para, f"line_texts != paragraph words: {lts}"
     # at least one line carries multiple whole words (guards the char-fragment bug)
     assert any(len(lt.split()) >= 2 for lt in lts), f"lines look fragmented: {lts}"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None,
+                    reason="tesseract required for the OCR fallback")
+def test_ocr_recovers_baked_image_text(tmp_path):
+    # An alt-text-less image with baked-in text is unreachable by pure parsing;
+    # ocr=True must recover it and clear needs_vision.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    deck = decks["image_baked_text"]
+    plain = parse_deck(deck.path)              # no OCR -> still needs_vision
+    img0 = [e for s in plain["slides"] for e in s["elements"] if e["type"] == "image"][0]
+    assert img0["needs_vision"] is True and not (img0.get("text") or "")
+
+    index = parse_deck(deck.path, ocr=True)
+    imgs = [e for s in index["slides"] for e in s["elements"] if e["type"] == "image"]
+    assert len(imgs) == 1
+    assert "NET REVENUE" in (imgs[0].get("text") or "").upper()
+    assert imgs[0]["needs_vision"] is False
+    assert imgs[0]["trigger_phrases"], "OCR text produced no trigger phrases"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None,
+                    reason="tesseract required for the OCR fallback")
+def test_ocr_does_not_hallucinate_on_textless_image(tmp_path):
+    # Precision guard: shapes-only image must NOT yield a pointable, even with OCR
+    # on (the conf + min-alpha filters must suppress tesseract's hallucinations).
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["image_no_text"].path, ocr=True)
+    imgs = [e for s in index["slides"] for e in s["elements"] if e["type"] == "image"]
+    assert len(imgs) == 1
+    assert not (imgs[0].get("text") or ""), f"OCR hallucinated: {imgs[0].get('text')!r}"
+    assert imgs[0]["needs_vision"] is True
+    assert imgs[0]["trigger_phrases"] == []
 
 
 def test_corpus_parse_is_deterministic(tmp_path):
