@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-01 · **Roadmap item:** #9 in `docs/improvement-research-2026-06-24.md`
 **Branch:** `feat/deck-agnostic-scoping` (off `master` after merging `feat/lexical-fusion`)
-**Constraint:** offline, deterministic, CPU-only, no neural model ([[smartppt-offline-design]]).
+**Constraint:** offline, deterministic, CPU-only, no neural model.
 
 ## Problem
 
@@ -57,7 +57,7 @@ Delete `_TITLE_KEYWORDS`. `group_label_for_chart(chart_elem, slide_title)` retur
    `{by, vs, vs., versus, per, over, across}`. `of` / `for` are excluded
    ("share of revenue" must not become "share"). Empty head → head = full.
 
-`elem["group_label"] = head`. For each `chart_category`, the three existing scoped
+`elem["group_label"] = head`. Existing `group_label_for_chart` tests are updated for the tuple return. For each `chart_category`, the three existing scoped
 templates are emitted for `head`, then again for `full` when `full != head`
 (`_add_phrase` de-dups). Bullet groups (`"bullets"`) are untouched.
 
