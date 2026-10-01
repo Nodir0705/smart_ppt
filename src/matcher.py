@@ -227,35 +227,67 @@ class Index:
 
 # ---------- matcher ----------
 
+# Per-phrase scoring window (multi-scale tail). A trigger phrase of n words is
+# scored against only the last max(PHRASE_WINDOW_MIN, n + 1) spoken words, so a
+# 2-word label isn't diluted by six older words still lingering in the tail,
+# while a long phrase still sees the whole tail. Structural, not tuned per deck.
+PHRASE_WINDOW_MIN = 4
+
+
+def phrase_window(phrase: str) -> int:
+    return max(PHRASE_WINDOW_MIN, len(phrase.split()) + 1)
+
+
 class Matcher:
+    QUERY_CACHE_SIZE = 16
+
     def __init__(self, index: Index, encoder: Encoder) -> None:
         self.index = index
         self.encoder = encoder
-        # 1-entry query cache: the live loop re-checks the same STT tail across
-        # throttle windows whenever speech is idle/repeats. encode() is pure, so
-        # returning the cached vector for an identical tail is behaviour-preserving.
-        self._last_query_text: str | None = None
-        self._last_query_vec: np.ndarray | None = None
+        # Small query cache: one step encodes several windows of the same tail,
+        # and the live loop re-checks identical tails while speech is idle.
+        # encode() is pure, so a cache hit is behaviour-preserving.
+        self._query_cache: dict[str, np.ndarray] = {}
+        # slide -> per-phrase window length, aligned with the embedding rows
+        self._windows: dict[int, np.ndarray] = {
+            sno: np.array([phrase_window(p) for r in refs for p in r.phrases], dtype=np.int64)
+            for sno, (_embs, refs) in index._by_slide.items()
+        }
 
     def _encode_query(self, spoken: str) -> np.ndarray:
-        if spoken != self._last_query_text:
-            self._last_query_vec = self.encoder.encode([spoken])[0]  # (dim,)
-            self._last_query_text = spoken
-        return self._last_query_vec
+        vec = self._query_cache.get(spoken)
+        if vec is None:
+            if len(self._query_cache) >= self.QUERY_CACHE_SIZE:
+                self._query_cache.clear()
+            vec = self._query_cache[spoken] = self.encoder.encode([spoken])[0]  # (dim,)
+        return vec
 
     def scored(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
-        """Per-element raw scores (MAX over phrases), sorted high→low.
+        """Per-element raw scores (MAX over phrases), sorted high→low: the whole
+        text against every phrase. Stable on ties so element order is preserved.
+        Empty when nothing to match."""
+        return self._scored(spoken, slide_no, windowed=False)
 
-        Stable on ties so element order is preserved. Empty when nothing to match.
-        """
+    def scored_tail(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
+        """Like ``scored`` but for a live STT tail: each phrase is scored against
+        only its own window of the most recent words (``phrase_window``), so old
+        words lingering in the tail can't dilute a short mention."""
+        return self._scored(spoken, slide_no, windowed=True)
+
+    def _scored(self, spoken: str, slide_no: int, windowed: bool) -> list[tuple[float, ElementRef]]:
         spoken = (spoken or "").strip()
         if not spoken or slide_no not in self.index._by_slide:
             return []
         embs, refs = self.index._by_slide[slide_no]
         if embs.shape[0] == 0:
             return []
-        q = self._encode_query(spoken)  # (dim,), cached for repeat tails
-        sims = embs @ q  # (n_phrases,)
+        sims = embs @ self._encode_query(spoken)  # (n_phrases,) — whole text
+        if windowed:
+            words = spoken.split()
+            win = self._windows[slide_no]
+            for k in np.unique(win[win < len(words)]):   # phrases wanting a shorter window
+                sel = win == k
+                sims[sel] = embs[sel] @ self._encode_query(" ".join(words[-int(k):]))
         per_el: list[tuple[float, ElementRef]] = []
         for ref in refs:
             if not ref.is_pointable:
@@ -301,6 +333,17 @@ class PolicyConfig:
     #     so bonuses never promote a genuinely-irrelevant element) ---
     stay_bonus: float = 0.06          # active element resists a same-group sibling (intra-group anti-flicker)
     same_group_bonus: float = 0.04    # pull attention into the active group (e.g. keep "match" in the latency chart)
+    # --- short-tail override (multi-scale tail). The full tail stays primary; the
+    #     last `short_words` words alone may name a DIFFERENT element and win, but
+    #     only on a stricter raw bar (plus the usual `gap`, on raw short scores).
+    #     Catches 1-2 word mentions ("Stage", "8 GB") that the older words in the
+    #     tail would otherwise outvote. 0 disables. ---
+    short_words: int = 2
+    short_threshold: float = 0.73
+    # --- revert guard: after switching A -> B, A may not come back for the next
+    #     `revert_guard` steps (A -> B -> A bounce is the flicker a short-scale
+    #     switch would otherwise cause while A's words linger). 0 disables. ---
+    revert_guard: int = 8
 
 
 class MatchPolicy:
@@ -311,6 +354,11 @@ class MatchPolicy:
       candidate   — element being "voted in" by recent strong matches
       cand_count  — consecutive matches for `candidate`
       low_count   — consecutive low-confidence matches (drives clear)
+      displaced   — element the last switch left; barred for `revert_guard` steps
+
+    `spoken` is the full (≤ tail_words) tail; the short-tail scale is derived
+    from it here, after normalization, so every caller gets identical
+    multi-scale decisions.
 
     Returns (emitted_id, why) where `why` is "hold" | "switch" | "clear" | "noop".
     """
@@ -325,6 +373,8 @@ class MatchPolicy:
         self._candidate: str | None = None
         self._cand_count = 0
         self._low_count = 0
+        self._displaced: str | None = None   # element the last switch moved away from
+        self._guard_left = 0                 # steps it stays barred from returning
 
     def reset(self) -> None:
         self.active_id = None
@@ -332,13 +382,42 @@ class MatchPolicy:
         self._candidate = None
         self._cand_count = 0
         self._low_count = 0
+        self._displaced = None
+        self._guard_left = 0
+
+    def _score(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
+        # the real Matcher windows the tail per phrase; scripted stubs only expose scored()
+        fn = getattr(self.matcher, "scored_tail", None) or self.matcher.scored
+        return fn(spoken, slide_no)
+
+    def _short_override(self, spoken: str, slide_no: int, res: MatchResult) -> MatchResult:
+        """Return a result for the short-tail winner when it clears the stricter
+        bar and names an element other than the full-tail best and the active one;
+        otherwise `res` unchanged."""
+        k = self.cfg.short_words
+        words = spoken.split()
+        if k <= 0 or len(words) <= k:
+            return res
+        per_el = self._score(" ".join(words[-k:]), slide_no)
+        if not per_el:
+            return res
+        best_raw, best = per_el[0]
+        ru_raw, ru_id = (per_el[1][0], per_el[1][1].id) if len(per_el) > 1 else (0.0, None)
+        if (best_raw < self.cfg.short_threshold or best_raw - ru_raw < self.cfg.gap
+                or best.id in (res.element_id, self.active_id)):
+            return res
+        out = MatchResult(element_id=best.id, type=best.type, text=best.text,
+                          score=best_raw, runner_up_score=ru_raw,
+                          runner_up_id=ru_id, slide_no=slide_no)
+        out._eff_best, out._eff_runner, out._best_group = best_raw, ru_raw, best.group  # type: ignore[attr-defined]
+        return out
 
     def _ranked(self, spoken: str, slide_no: int) -> tuple[MatchResult, list[tuple[float, ElementRef]]]:
         """Re-rank raw scores by an effective score that rewards staying on the
         current element / group. Returns (MatchResult-for-effective-best, ranked).
         `ranked` items are (raw_score, ref) sorted by EFFECTIVE score, high→low.
         """
-        per_el = self.matcher.scored(spoken, slide_no)
+        per_el = self._score(spoken, slide_no)
         if not per_el:
             return MatchResult(None, None, None, 0.0, 0.0, None, slide_no), []
 
@@ -386,10 +465,16 @@ class MatchPolicy:
         # otherwise fall back to the plain match() result (legacy / scripted stubs).
         if hasattr(self.matcher, "scored"):
             res, _ranked = self._ranked(spoken, slide_no)
+            res = self._short_override(spoken, slide_no, res)
         else:
             res = self.matcher.match(spoken, slide_no)
+        barred = False
+        if self._guard_left > 0:
+            self._guard_left -= 1
+            barred = res.element_id == self._displaced
         confident = (
-            res.element_id is not None
+            not barred
+            and res.element_id is not None
             and res.score >= self.cfg.threshold
             and (getattr(res, "_eff_best", res.score) - getattr(res, "_eff_runner", res.runner_up_score)) >= self.cfg.gap
         )
@@ -416,6 +501,8 @@ class MatchPolicy:
             self._candidate = res.element_id
             self._cand_count = 1
         if self._cand_count >= self.cfg.stickiness:
+            if self.active_id is not None and self.cfg.revert_guard > 0:
+                self._displaced, self._guard_left = self.active_id, self.cfg.revert_guard
             self.active_id = self._candidate
             self._active_group = getattr(res, "_best_group", None)
             self._candidate = None

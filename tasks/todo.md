@@ -573,3 +573,8 @@ plan `docs/superpowers/plans/2026-10-01-deck-bench.md`. Program: 1 harness → 2
 mention (table cells "Stage"/"Live", bare chart readings "STT is 180", short labels "STT Engine") — the matcher
 holds the previous element rather than switching on a single-word cue. Real weakness, not a harness artifact;
 not tuned away. Candidate follow-up once real decks confirm it.
+
+**Multi-scale tail (2026-10-01):** fixed the short-mention dilution. Per-phrase windows (`max(4, n+1)` words) +
+2-word short-tail override (raw ≥ 0.73, gap 0.03, new element only) + 8-step revert guard, all inside
+`MatchPolicy.step`; `timeline_audit` now runs through `LiveController`. 3-deck bench: hits 442→519/741,
+1+2-word 82→134/255, 6+-word 193→199/225, false 0, flicker 31→20. Hand fixture 38/40, false 1, flicker 2→1.

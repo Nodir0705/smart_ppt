@@ -56,6 +56,9 @@ def test_phase1_grounding_targets_met():
     # Headline metric is now three first-class numbers so tuning can't trade one
     # for another silently. Baseline (bge-small + scoped + off-line alias):
     # recall 38/40, precision 38/39 (1 false highlight on s6), flicker 2.
+    # Multi-scale tail (per-phrase windows + short-tail override + revert guard,
+    # 2026-10-01): recall 38/40, precision 38/39 (the 1 false moved to s3_e15
+    # "One frame" on "in a single frame" — a fixture gap), flicker 1.
     assert overall["hits"] >= 37, f"recall dropped: {overall['hits']}/40"
     # precision: false highlights are elements the narration never named — recall
     # is blind to them, so guard them explicitly.

@@ -96,6 +96,83 @@ class TestGroupPolicy:
         assert active == "B" and why == "switch"
 
 
+class TextStubMatcher:
+    """scored() keyed by the spoken text, so long and short tails differ."""
+
+    def __init__(self, table):
+        self._table = table
+
+    def scored(self, spoken, slide_no):
+        return self._table.get(spoken, [])
+
+
+class TestMultiScaleTail:
+    """Full tail is primary; the last `short_words` words may switch to a new
+    element only on the stricter `short_threshold` bar; the revert guard keeps
+    the displaced element from bouncing straight back."""
+
+    T, S, W = _ref("title", None), _ref("stage", None), _ref("when", None)
+    CFG = dict(threshold=0.65, gap=0.03, stickiness=1, short_words=2,
+               short_threshold=0.73, revert_guard=3)
+
+    def test_dilution_short_tail_names_new_element(self):
+        # 8-word tail still favours the title ("pipe line stages ..."), but the
+        # last two words clearly name the "Stage" cell -> switch.
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**self.CFG))
+        assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
+        assert pol.step("pipe line stages stage", 1)[1:] == ("stage", "switch")
+
+    def test_short_override_off_keeps_long_tail_decision(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**{**self.CFG, "short_words": 0}))
+        pol.step("pipe line stages", 1)
+        assert pol.step("pipe line stages stage", 1)[1:] == ("title", "hold")
+
+    def test_common_words_in_short_tail_do_not_switch(self):
+        # "and the" sits below the short bar -> the full tail keeps the title
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages and the": [(0.88, self.T), (0.66, self.W)],
+            "and the": [(0.70, self.W), (0.66, self.S)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        assert pol.step("pipe line stages and the", 1)[1:] == ("title", "hold")
+
+    def test_revert_guard_blocks_bounce_back_then_expires(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+            # the old words linger: the full tail swings back to the title while
+            # the short tail is weak
+            "line stages stage um": [(0.90, self.T), (0.75, self.S)],
+            "stage um": [(0.60, self.S), (0.55, self.T)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        assert pol.step("pipe line stages stage", 1)[1] == "stage"
+        for _ in range(3):   # revert_guard=3 steps: title barred
+            assert pol.step("line stages stage um", 1)[1:] == ("stage", "hold")
+        assert pol.step("line stages stage um", 1)[1:] == ("title", "switch")
+
+    def test_reset_clears_revert_guard(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        pol.step("pipe line stages stage", 1)
+        pol.reset()
+        assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
+
+
 # ---------- stub matcher for policy tests ----------
 
 class StubMatcher:
@@ -280,6 +357,27 @@ class TestSemanticAcceptance:
         # either score is below the live threshold, OR gap to runner-up is tiny
         assert (r.score < PolicyConfig.threshold) or ((r.score - r.runner_up_score) < 0.05), (
             f"filler scored too strongly: {r.score:.3f} vs ru {r.runner_up_score:.3f} on {r.text!r}")
+
+    @pytest.mark.parametrize("filler", ["and the", "so the", "of the", "it is", "this is", "to the", "in a"])
+    def test_common_word_pair_stays_below_short_bar(self, loaded, filler):
+        # the 2-word short tail must not clear the stricter short bar on filler
+        matcher, idx = loaded
+        for sno in idx.slide_numbers():
+            per_el = matcher.scored(filler, sno)
+            if per_el:
+                assert per_el[0][0] < PolicyConfig.short_threshold, (
+                    f"{filler!r} -> {per_el[0][1].text!r} {per_el[0][0]:.3f} on slide {sno}")
+
+    def test_dilution_switches_on_short_tail(self, loaded):
+        # "Pipeline Stages" (title) still dominates the full tail while the
+        # speaker reads the "Stage" header cell; the short tail must switch.
+        matcher, idx = loaded
+        by_text = {(r.text or ""): r.id for r in idx.elements_on(3)}
+        pol = MatchPolicy(matcher, PolicyConfig())
+        _, active, _ = pol.step("pipe line stages", 3)
+        assert active == by_text["Pipeline Stages"]
+        res, active, why = pol.step("pipe line stages stage", 3)
+        assert active == by_text["Stage"] and why == "switch", res
 
     def test_cross_slide_isolation(self, loaded):
         # same query, two slides → different elements

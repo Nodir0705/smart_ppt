@@ -43,8 +43,10 @@ def test_feed_windows_the_buffer_tail():
     c.push(Partial("one two three four five", is_final=True, timestamp=1.0))
     ev = c.feed()
     assert isinstance(ev, MatchEvent)
-    # only the last 3 words reach the policy/matcher
-    assert m.seen[-1].split() == ["three", "four", "five"]
+    # only the last 3 words reach the policy/matcher (first call = full tail;
+    # the policy then scores its short-tail scale, a suffix of it)
+    assert m.seen[0].split() == ["three", "four", "five"]
+    assert all(" ".join(m.seen[0].split()).endswith(s) for s in m.seen)
 
 
 def test_feed_applies_the_normalizer_before_scoring():
@@ -53,7 +55,8 @@ def test_feed_applies_the_normalizer_before_scoring():
     c = LiveController(m, {"slides": []}, normalizer=lambda t: t.replace("sink", "sync"))
     c.push(Partial("and sink is four", is_final=True, timestamp=1.0))
     c.feed()
-    assert "sync" in m.seen[-1] and "sink" not in m.seen[-1]
+    assert m.seen and all("sink" not in s for s in m.seen)
+    assert "sync" in m.seen[0]
 
 
 def test_default_normalizer_is_derived_from_the_deck():

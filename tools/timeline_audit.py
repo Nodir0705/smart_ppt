@@ -25,8 +25,9 @@ from pathlib import Path
 from src.audio import FileSource, PlaybackSource
 from src.encoder import load_default_encoder
 from src.live import LiveTranscriber
-from src.matcher import Index, Matcher, MatchPolicy, PolicyConfig
-from src.stt import RollingBuffer, load_default_stt_engine, hotwords_from_index
+from src.live_controller import LiveController
+from src.matcher import Index, Matcher
+from src.stt import load_default_stt_engine, hotwords_from_index
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "expected_highlights.json"
@@ -34,9 +35,14 @@ FIXTURE = ROOT / "tests" / "fixtures" / "expected_highlights.json"
 
 def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
                       tail_words=8, fast=False):
-    """Return (events, flicker) where events is a list of (t, active_id, tail)."""
-    policy = MatchPolicy(matcher, PolicyConfig())
-    buf = RollingBuffer(window_seconds=4.0)
+    """Return (events, flicker) where events is a list of (t, active_id, tail).
+
+    Decisions come from the same ``LiveController`` the viewer and simulators
+    use, so the audit measures exactly the live tail + policy logic.
+    """
+    ctl = LiveController(matcher, raw_index, normalizer=normalize or (lambda t: t),
+                         tail_words=tail_words, slide_no=sno)
+    buf = ctl.buffer
     if fast and not getattr(engine, "audio_clock", False):
         raise ValueError("fast replay needs an audio_clock STT engine")
     # fast: unpaced file replay; same 100 ms chunking as PlaybackSource
@@ -48,15 +54,12 @@ def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
 
     def on_update(text, partial):
         nonlocal last
-        tail = buf.tail(tail_words)
-        if normalize is not None:
-            tail = normalize(tail)
-        if not tail:
+        ev = ctl.feed()
+        if ev is None:
             return
-        _res, active, _why = policy.step(tail, sno)
-        if active != last:
-            events.append((time.monotonic() - t0, active, tail))
-            last = active
+        if ev.active_id != last:
+            events.append((time.monotonic() - t0, ev.active_id, ev.tail))
+            last = ev.active_id
 
     tr.run(on_update=on_update)
     # flicker: A -> B -> A within 2 transitions

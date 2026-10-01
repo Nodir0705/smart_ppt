@@ -4,6 +4,10 @@ The viewer, the PNG simulator, and the video simulator all run the same loop:
 
     buffer.tail(N) -> policy.step(tail, slide_no) -> react to the active element
 
+(``policy.step`` derives the multi-scale tail — per-phrase windows plus the
+short-tail override — itself, so the bench audit, which also runs through this
+class, measures exactly what the live app does.)
+
 They had drifted: the viewer and the video path built the policy *with* the
 deck's alias normalizer, but the PNG path silently omitted it, so PNG previews
 made different highlight decisions than the live app. ``LiveController`` owns
