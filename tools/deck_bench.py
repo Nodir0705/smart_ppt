@@ -33,6 +33,31 @@ GAP_MS = 900
 # variant name -> build_index kwargs; later steps (PaddleOCR, VLMs) add entries
 VARIANTS: dict[str, dict] = {"default": {}, "no-ocr": {"ocr": False}}
 
+# Negative pass: presenter filler that names NO element, so every highlight is
+# false. TUNE is what matcher thresholds may be fitted on; HOLDOUT (reported)
+# shares no content word with TUNE or with any bench/hand deck text.
+FILLER_TUNE = [
+    "Okay, so let's take a look at this one.",
+    "As you can see here, this is really important.",
+    "Now I want to move on to the next part.",
+    "And this is where things get interesting.",
+    "Let me just point out a couple of things before we continue.",
+    "So, any questions so far? Great, let's keep going.",
+]
+FILLER_HOLDOUT = [
+    "Alright, bear with me for just a moment.",
+    "You might be wondering why I bring this up.",
+    "Honestly, I think people tend to underestimate this.",
+    "Think about that, because we will revisit it later.",
+    "I hope that makes sense to everybody in the room.",
+    "So, with that said, let me carry on.",
+]
+
+
+def filler_script(slides: list[int], sentences: list[str]) -> list[dict]:
+    """Four consecutive filler sentences per slide, rotated by slide number."""
+    return [{"slide": n, "segments": sentences[n % 3: n % 3 + 4]} for n in slides]
+
 
 def _write(path: Path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,7 +91,8 @@ def totals(records: list[dict]) -> dict:
             "hits": hits, "steps": steps, "recall": hits / steps if steps else 0.0,
             "false": false,
             "precision": relevant / (relevant + false) if relevant + false else 1.0,
-            "flicker": sum(r["flicker"] for r in ok)}
+            "flicker": sum(r["flicker"] for r in ok),
+            "filler_false": sum(r.get("filler_false", 0) for r in ok)}
 
 
 def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> dict:
@@ -92,15 +118,26 @@ def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> d
     rec.update(hits=o["hits"], steps=o["steps"], relevant=o["relevant"], false=o["false"],
                precision=o["precision"], flicker=o["flicker"],
                recall=o["hits"] / o["steps"] if o["steps"] else 0.0,
-               slides=res["slides"], status="OK")
+               slides=res["slides"])
+
+    # filler pass: same slides, narration that names nothing -> expected []
+    slides = [s["slide"] for s in script]
+    _write(d / "filler_expected.json", {"slides": [{"slide": n, "expected": []} for n in slides]})
+    _write(d / "filler_manifest.json", synthesize_slides(
+        filler_script(slides, FILLER_HOLDOUT), VOICE, d / "filler_audio", GAP_MS))
+    fr = audit(d / variant / "index.scoped.json", manifest_path=d / "filler_manifest.json",
+               fixture_path=d / "filler_expected.json", fast=True, models=models)
+    rec.update(filler_false=fr["overall"]["false"],
+               filler_lit={s: v["trajectory"] for s, v in fr["slides"].items() if v["trajectory"]},
+               status="OK")
     return rec
 
 
 def _markdown(variant: str, records: list[dict], tot: dict) -> str:
     lines = [f"# Deck bench — variant `{variant}` (gap {GAP_MS} ms)", "",
              "| deck | status | recall | precision | false | flicker | slides (eval/skip) "
-             "| needs_vision | images alt/no-alt | image-only slides | build s | eval s |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| needs_vision | images alt/no-alt | image-only slides | filler false | build s | eval s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in records:
         inv = r.get("inventory", {})
         if r["status"] == "OK":
@@ -109,11 +146,12 @@ def _markdown(variant: str, records: list[dict], tot: dict) -> str:
                 f"| {r['false']} | {r['flicker']} "
                 f"| {inv['slides'] - r['skipped_slides']}/{r['skipped_slides']} "
                 f"| {inv['needs_vision']} | {inv['images_with_alt']}/{inv['images_without_alt']} "
-                f"| {inv['image_only_slides']} | {r['build_s']} | {r['eval_s']} |")
+                f"| {inv['image_only_slides']} | {r['filler_false']} | {r['build_s']} | {r['eval_s']} |")
         else:
-            lines.append(f"| {r['deck']} | {r['status']} |" + " |" * 10)
+            lines.append(f"| {r['deck']} | {r['status']} |" + " |" * 11)
     lines += ["", f"**Total:** recall {tot['hits']}/{tot['steps']} = {tot['recall']:.3f} · "
               f"precision {tot['precision']:.3f} · false {tot['false']} · flicker {tot['flicker']} · "
+              f"filler false (holdout, expected none) {tot['filler_false']} · "
               f"decks OK {tot['decks_ok']}, failed {tot['decks_failed']}", ""]
     return "\n".join(lines)
 
