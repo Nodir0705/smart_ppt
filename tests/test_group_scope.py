@@ -1,4 +1,5 @@
-from src.group_scope import chart_noun, group_label_for_chart, scope_index
+from src.group_scope import (chart_noun, derive_expansions, expansions_for,
+                             group_label_for_chart, scope_index)
 
 
 def test_chart_noun():
@@ -133,3 +134,53 @@ def test_bullets_share_one_group():
     assert els["s2_e2"]["group_id"] == "s2_e2"
     assert els["s2_e1"]["group_id"] == "s2_e1"                    # title not in bullet group
     assert "less than one millisecond" in els["s2_e0"]["trigger_phrases"]
+
+
+def _ix(*texts):
+    return {"slides": [{"slide_number": 1, "elements": [
+        {"id": f"e{i}", "type": "body", "text": t, "bbox": {}, "trigger_phrases": []}
+        for i, t in enumerate(texts)]}]}
+
+
+def test_derive_words_then_acronym_with_stopword():
+    assert derive_expansions(_ix("Speech to Text (STT) runs offline")) == {"STT": "speech to text"}
+
+
+def test_derive_skips_stopwords_and_leading_noise():
+    ix = _ix("data from the Bureau of Labor Statistics (BLS)")
+    assert derive_expansions(ix) == {"BLS": "bureau of labor statistics"}
+
+
+def test_derive_acronym_then_words():
+    assert derive_expansions(_ix("ROI (Return on Investment) doubled")) == {"ROI": "return on investment"}
+
+
+def test_derive_rejects_initials_mismatch():
+    assert derive_expansions(_ix("Machine Learning (API)")) == {}
+
+
+def test_derive_ignores_chart_type_tokens():
+    assert derive_expansions(_ix("COLUMN_CLUSTERED (51)", "PIE (5)")) == {}
+
+
+def test_derive_drops_conflicting_definitions():
+    ix = _ix("Speech to Text (STT)", "Single Track Transfer (STT)")
+    assert derive_expansions(ix) == {}
+
+
+def test_derive_same_definition_twice_is_kept():
+    ix = _ix("Speech to Text (STT)", "the Speech to Text (STT) stage")
+    assert derive_expansions(ix) == {"STT": "speech to text"}
+
+
+def test_expansions_for_file_overrides_win(tmp_path):
+    f = tmp_path / "exp.json"
+    f.write_text('{"stt": "speech-to-text"}')
+    ix = _ix("Speech to Text (STT)", "Bureau of Labor Statistics (BLS)")
+    assert expansions_for(ix, str(f)) == {"STT": "speech-to-text",
+                                          "BLS": "bureau of labor statistics"}
+
+
+def test_expansions_for_missing_file_is_derived_only(tmp_path):
+    ix = _ix("Speech to Text (STT)")
+    assert expansions_for(ix, str(tmp_path / "nope.json")) == {"STT": "speech to text"}

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.group_scope import expansions_for, scope_index
 from src.parser import _clean_alt_text, parse_deck
 from tools.make_corpus import build_corpus
 
@@ -346,3 +347,19 @@ def test_multiseries_chart_lists_every_series(tmp_path):
     index = parse_deck(decks["grouped_bar"].path)
     chart = next(e for s in index["slides"] for e in s["elements"] if e["type"] == "chart")
     assert len(chart["series_names"]) >= 2
+
+
+def test_titled_chart_acronym_scopes_without_deck_vocab(tmp_path):
+    """Group label comes from the chart's own title and STT's expansion from the
+    deck's own 'Speech to Text (STT)' — no test_deck vocabulary involved."""
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["titled_chart_acronym"].path)
+    out = scope_index(index, expansions=expansions_for(index, str(tmp_path / "none.json")))
+    els = {e.get("text"): e for s in out["slides"] for e in s["elements"]}
+    north = els["North"]
+    assert north["group_label"] == "revenue"
+    assert "the north bar in the revenue chart" in north["trigger_phrases"]
+    assert "the north bar in the revenue by region chart" in north["trigger_phrases"]
+    engine = els["STT Engine"]["trigger_phrases"]
+    assert "speech to text" in engine
+    assert "speech to text engine" in engine

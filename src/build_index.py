@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-from .group_scope import EXPANSIONS_PATH, load_expansions, scope_index
+from .group_scope import EXPANSIONS_PATH, expansions_for, scope_index
 from .parser import parse_deck
 from .refine_text import refine_index
 from .render import deck_pdf, render_deck
@@ -71,7 +71,7 @@ def build_index(
             _write(out / "index.refined.json", final)
 
     if scope:
-        final = scope_index(final, expansions=load_expansions(expansions_path))
+        final = scope_index(final, expansions=expansions_for(final, expansions_path))
         if write_intermediates:
             _write(out / "index.scoped.json", final)
 

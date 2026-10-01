@@ -115,6 +115,62 @@ def load_expansions(path: str = EXPANSIONS_PATH) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# derive_expansions  — "Speech to Text (STT)" / "STT (Speech to Text)"
+# ---------------------------------------------------------------------------
+
+_ACR_IN_PARENS_RE = re.compile(r"\(([A-Z]{2,5})\)")
+_ACR_THEN_PARENS_RE = re.compile(r"\b([A-Z]{2,5})\b\s*\(([^()]+)\)")
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+_EXPANSION_STOPWORDS = {"to", "of", "and", "the", "for"}
+
+
+def _initials_spell(words: list[str], acr: str) -> bool:
+    """True if the words' initials spell `acr` — counting every word, or only
+    the non-stopwords ("Bureau of Labor Statistics" -> BLS)."""
+    if "".join(w[0] for w in words).upper() == acr:
+        return True
+    content = [w for w in words if w.lower() not in _EXPANSION_STOPWORDS]
+    return bool(content) and "".join(w[0] for w in content).upper() == acr
+
+
+def _expansion_before(words: list[str], acr: str) -> str | None:
+    """Shortest run of trailing `words` whose initials spell `acr`."""
+    for n in range(len(acr), min(len(words), len(acr) + 3) + 1):
+        tail = words[-n:]
+        if _initials_spell(tail, acr):
+            return " ".join(tail).lower()
+    return None
+
+
+def derive_expansions(index: dict) -> dict[str, str]:
+    """Acronym -> expansion pairs the deck defines itself, deterministically.
+
+    Recognises "Words (ACR)" and "ACR (Words)" in any element's text, gated by an
+    initials check. An acronym defined two different ways is dropped as
+    ambiguous (same rule as asr_normalize.build_alias_map).
+    """
+    found: dict[str, set[str]] = {}
+    for slide in index.get("slides", []):
+        for elem in slide.get("elements", []):
+            text = elem.get("text") or ""
+            for m in _ACR_IN_PARENS_RE.finditer(text):
+                acr = m.group(1)
+                exp = _expansion_before(_WORD_RE.findall(text[:m.start()]), acr)
+                if exp:
+                    found.setdefault(acr, set()).add(exp)
+            for m in _ACR_THEN_PARENS_RE.finditer(text):
+                acr, words = m.group(1), _WORD_RE.findall(m.group(2))
+                if len(words) <= len(acr) + 3 and _initials_spell(words, acr):
+                    found.setdefault(acr, set()).add(" ".join(words).lower())
+    return {acr: next(iter(exps)) for acr, exps in sorted(found.items()) if len(exps) == 1}
+
+
+def expansions_for(index: dict, path: str = EXPANSIONS_PATH) -> dict[str, str]:
+    """Deck-derived expansions overlaid with the hand-override file (file wins)."""
+    return {**derive_expansions(index), **load_expansions(path)}
+
+
+# ---------------------------------------------------------------------------
 # scope_index
 # ---------------------------------------------------------------------------
 
@@ -295,7 +351,7 @@ def main(argv=None) -> int:
     with open(args.input, encoding="utf-8") as fh:
         index = json.load(fh)
 
-    expansions = load_expansions(args.expansions)
+    expansions = expansions_for(index, args.expansions)
 
     # Count existing phrases before
     before = sum(
