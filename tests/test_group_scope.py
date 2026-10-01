@@ -146,6 +146,10 @@ def test_derive_words_then_acronym_with_stopword():
     assert derive_expansions(_ix("Speech to Text (STT) runs offline")) == {"STT": "speech to text"}
 
 
+def test_derive_hyphenated_definition():
+    assert derive_expansions(_ix("Speech-to-Text (STT) runs offline")) == {"STT": "speech to text"}
+
+
 def test_derive_skips_stopwords_and_leading_noise():
     ix = _ix("data from the Bureau of Labor Statistics (BLS)")
     assert derive_expansions(ix) == {"BLS": "bureau of labor statistics"}

@@ -120,7 +120,8 @@ def load_expansions(path: str = EXPANSIONS_PATH) -> dict:
 
 _ACR_IN_PARENS_RE = re.compile(r"\(([A-Z]{2,5})\)")
 _ACR_THEN_PARENS_RE = re.compile(r"\b([A-Z]{2,5})\b\s*\(([^()]+)\)")
-_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+# hyphen segments are separate words: "Speech-to-Text" spells STT, spoken "speech to text"
+_WORD_RE = re.compile(r"[A-Za-z]+")
 _EXPANSION_STOPWORDS = {"to", "of", "and", "the", "for"}
 
 

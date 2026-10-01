@@ -52,7 +52,7 @@ Delete `_TITLE_KEYWORDS`. `group_label_for_chart(chart_elem, slide_title)` retur
    The existing "chart text is a real title, not a `CHART_TYPE (n)` token" rule is
    kept as a step before the slide title, for back-compat with old indexes that lack
    `chart_title`.
-2. **Clean:** lowercase, remove parenthesised spans, collapse whitespace, strip.
+2. **Clean:** lowercase, remove parenthesised spans, collapse whitespace, strip. Authoring-tool defaults ("Series N", "Chart Title") clean to empty and fall through to the next source.
 3. **Head:** cut the cleaned text at the first whole-word connector in
    `{by, vs, vs., versus, per, over, across}`. `of` / `for` are excluded
    ("share of revenue" must not become "share"). Empty head → head = full.
