@@ -11,6 +11,7 @@ doesn't need any resampling.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import wave
 from pathlib import Path
@@ -30,36 +31,70 @@ def _resample(pcm: bytes, src_rate: int, src_channels: int) -> bytes:
     return pcm
 
 
+def _write_wav(wav_path: Path, pcm: bytes) -> None:
+    with wave.open(str(wav_path), "wb") as w:
+        w.setnchannels(TARGET_CHANNELS)
+        w.setsampwidth(2)
+        w.setframerate(TARGET_RATE)
+        w.writeframes(pcm)
+
+
 class PiperTTS:
     def __init__(self, model_path: str | Path) -> None:
         from piper import PiperVoice
         self.voice = PiperVoice.load(str(model_path))
 
+    def _pcm16k(self, text: str) -> bytes:
+        """Synthesize `text` to 16 kHz mono 16-bit PCM bytes."""
+        # piper yields its native sample rate; collect, then resample to 16 kHz
+        chunks: list[bytes] = []
+        native_rate = None
+        native_channels = None
+        for chunk in self.voice.synthesize(text):
+            # piper >=1.4 yields AudioChunk objects with .audio_int16_bytes
+            if hasattr(chunk, "audio_int16_bytes"):
+                pcm = chunk.audio_int16_bytes
+                native_rate = chunk.sample_rate
+                native_channels = chunk.sample_channels
+            else:
+                pcm = bytes(chunk)
+                native_rate = native_rate or self.voice.config.sample_rate
+                native_channels = native_channels or 1
+            chunks.append(pcm)
+        return _resample(b"".join(chunks), native_rate or TARGET_RATE, native_channels or 1)
+
     def synthesize(self, text: str, wav_path: Path) -> None:
         """Synthesize `text` and write a 16 kHz mono 16-bit WAV to `wav_path`."""
-        # piper writes its native sample rate; we re-open + resample to 16 kHz
-        with wave.open(str(wav_path), "wb") as w:
-            w.setnchannels(TARGET_CHANNELS)
-            w.setsampwidth(2)
-            w.setframerate(TARGET_RATE)
-            # collect all bytes first, resample, then write
-            chunks: list[bytes] = []
-            native_rate = None
-            native_channels = None
-            for chunk in self.voice.synthesize(text):
-                # piper >=1.4 yields AudioChunk objects with .audio_int16_bytes
-                if hasattr(chunk, "audio_int16_bytes"):
-                    pcm = chunk.audio_int16_bytes
-                    native_rate = chunk.sample_rate
-                    native_channels = chunk.sample_channels
-                else:
-                    pcm = bytes(chunk)
-                    native_rate = native_rate or self.voice.config.sample_rate
-                    native_channels = native_channels or 1
-                chunks.append(pcm)
-            full = b"".join(chunks)
-            resampled = _resample(full, native_rate or TARGET_RATE, native_channels or 1)
-            w.writeframes(resampled)
+        _write_wav(wav_path, self._pcm16k(text))
+
+    def synthesize_segments(self, segments: list[str], wav_path: Path, gap_ms: int) -> None:
+        """One WAV of `segments`, each followed by `gap_ms` of silence.
+
+        Piper adds no reliable pause between sentences; an explicit gap keeps
+        consecutive narrated elements out of the same STT tail window."""
+        gap = b"\x00\x00" * int(TARGET_RATE * gap_ms / 1000)
+        _write_wav(wav_path, b"".join(self._pcm16k(s) + gap for s in segments))
+
+
+def synthesize_slides(slides: list[dict], voice_path: str | Path, out_dir: Path,
+                      gap_ms: int, tts: PiperTTS | None = None) -> list[dict]:
+    """Per-slide WAVs from `[{"slide", "segments"}]`; returns a manifest.
+
+    WAV names are keyed on a hash of (segments, gap, voice), so a changed
+    narration rule can never silently replay stale audio."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest: list[dict] = []
+    for entry in slides:
+        key = hashlib.sha1(json.dumps(
+            [entry["segments"], gap_ms, str(voice_path)]).encode()).hexdigest()[:10]
+        wav = out_dir / f"slide_{entry['slide']:03d}_{key}.wav"
+        if not wav.exists():
+            tts = tts or PiperTTS(voice_path)
+            tts.synthesize_segments(entry["segments"], wav, gap_ms)
+        manifest.append({"slide": entry["slide"], "text": " ".join(entry["segments"]),
+                         "wav": str(wav)})
+    return manifest
 
 
 def synthesize_script(script_path: Path, out_dir: Path) -> list[dict]:
