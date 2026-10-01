@@ -50,8 +50,10 @@ def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
     x, y, w, h = bbox_px
     draw = ImageDraw.Draw(img)
     # single dark outline box around the active element
-    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
-    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=3)
+    # drawn OUTSIDE the element (PIL widths grow inward) so it never covers the text
+    p = 6
+    draw.rectangle([x - p, y - p, x + w + p, y + h + p], outline=HALO, width=6)
+    draw.rectangle([x - p, y - p, x + w + p, y + h + p], outline=AMBER, width=3)
     # numbered badge in top-left of the box
     badge_d = 56
     bx, by = x - 8, y - 8

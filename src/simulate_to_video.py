@@ -96,8 +96,10 @@ def _draw_highlight(img: Image.Image, bbox_px: Bbox) -> None:
     if w <= 0 or h <= 0:
         return
     draw = ImageDraw.Draw(img)
-    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
-    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=3)
+    # drawn OUTSIDE the element (PIL widths grow inward) so it never covers the text
+    p = 6
+    draw.rectangle([x - p, y - p, x + w + p, y + h + p], outline=HALO, width=6)
+    draw.rectangle([x - p, y - p, x + w + p, y + h + p], outline=AMBER, width=3)
 
 
 def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,

@@ -46,6 +46,7 @@ HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"
 HIGHLIGHT_OUTER_WIDTH = 6
 HIGHLIGHT_INNER_COLOUR = "#ffb000"
 HIGHLIGHT_INNER_WIDTH = 3
+HIGHLIGHT_PAD = 4  # px outside the element so the box frames the text instead of covering it
 
 
 class ViewerApp:
@@ -354,6 +355,7 @@ class ViewerApp:
         x, y, w, h = bbox
         if w <= 0 or h <= 0:
             return
+        x, y, w, h = x - HIGHLIGHT_PAD, y - HIGHLIGHT_PAD, w + 2 * HIGHLIGHT_PAD, h + 2 * HIGHLIGHT_PAD
         self._highlight_outer_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
             outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
