@@ -8,3 +8,7 @@ graphify-out/
 
 # generated deck corpus (tools/make_corpus.py)
 corpus/
+
+# user benchmark decks (may be private) — see decks/README.md
+decks/*
+!decks/README.md
