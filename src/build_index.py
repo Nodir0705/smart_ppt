@@ -39,6 +39,7 @@ def build_index(
     render_slides: bool = True,
     write_intermediates: bool = True,
     expansions_path: str = EXPANSIONS_PATH,
+    ocr: bool = True,
 ) -> dict:
     """Build the index for `deck` and return the richest produced stage.
 
@@ -46,13 +47,14 @@ def build_index(
     serialized to disk *before* the next stage runs — the on-disk files are
     correct snapshots of each stage. `refine`/`scope` require LibreOffice
     (soffice) on PATH; pass `refine=False` to skip the PDF/render dependency.
+    `ocr=False` skips the tesseract fallback (bench "no-ocr" variant).
     """
     deck = Path(deck)
     out = Path(out_dir)
 
     # OCR alt-text-less pictures when tesseract is present (parse_deck self-gates
     # and no-ops otherwise) so baked-in image text becomes pointable.
-    index = parse_deck(str(deck), ocr=True)
+    index = parse_deck(str(deck), ocr=ocr)
     if write_intermediates:
         _write(out / "index.json", index)
     final = index

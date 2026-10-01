@@ -363,3 +363,20 @@ def test_titled_chart_acronym_scopes_without_deck_vocab(tmp_path):
     engine = els["STT Engine"]["trigger_phrases"]
     assert "speech to text" in engine
     assert "speech to text engine" in engine
+
+
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None,
+                    reason="tesseract required for the OCR fallback")
+def test_ocr_preserves_element_ids(tmp_path):
+    """The bench narrates from the ocr=False truth parse and scores the ocr=True
+    index — that only works if OCR fills text on existing elements, never adds,
+    drops or renumbers them."""
+    for d in build_corpus(tmp_path):
+        ids = lambda ix: [e["id"] for s in ix["slides"] for e in s["elements"]]
+        assert ids(parse_deck(d.path, ocr=False)) == ids(parse_deck(d.path, ocr=True)), d.name
+
+
+def test_build_index_accepts_ocr_flag():
+    import inspect
+    from src.build_index import build_index
+    assert inspect.signature(build_index).parameters["ocr"].default is True
