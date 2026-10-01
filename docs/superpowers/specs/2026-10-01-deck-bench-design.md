@@ -105,7 +105,7 @@ audit currently plays each WAV in real time.
 
 ## 5. Report
 
-`out/bench/report.md` + `out/bench/report.json`, per variant:
+`out/bench/report_<variant>.md` + `out/bench/report_<variant>.json` (one pair per variant, so variants can be compared side by side):
 
 - per deck: recall, precision, false highlights, flicker, slides evaluated /
   skipped; status `OK` / `FAILED: <reason>` (a failing deck never aborts the run);
