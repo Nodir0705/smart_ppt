@@ -321,3 +321,28 @@ def test_corpus_parse_is_deterministic(tmp_path):
         ta = _element_texts(parse_deck(da.path))
         tb = _element_texts(parse_deck(by_name_b[da.name].path))
         assert ta == tb, f"{da.name}: non-deterministic parse {ta!r} != {tb!r}"
+
+
+def test_chart_title_and_series_names_emitted(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["titled_chart_acronym"].path)
+    chart = next(e for s in index["slides"] for e in s["elements"] if e["type"] == "chart")
+    assert chart["chart_title"] == "Revenue by region (USD)"
+    assert chart["series_names"] == ["Revenue"]
+    # chart text is still the chart-type token (container embedding unchanged)
+    assert chart["text"].startswith("COLUMN_CLUSTERED")
+
+
+def test_untitled_chart_has_no_chart_title(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["pie_chart"].path)
+    chart = next(e for s in index["slides"] for e in s["elements"] if e["type"] == "chart")
+    assert chart.get("chart_title") is None
+    assert chart["series_names"] == ["Share"]
+
+
+def test_multiseries_chart_lists_every_series(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["grouped_bar"].path)
+    chart = next(e for s in index["slides"] for e in s["elements"] if e["type"] == "chart")
+    assert len(chart["series_names"]) >= 2
