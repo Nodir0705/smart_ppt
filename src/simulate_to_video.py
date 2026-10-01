@@ -32,7 +32,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .audio import PlaybackSource
+from .audio import FileSource, PlaybackSource
 from .encoder import load_default_encoder
 from .geom import Bbox, ease_in_out_cubic, inches_to_image_px, lerp_bbox
 from .live import LiveTranscriber
@@ -58,14 +58,17 @@ def _wav_duration_s(path: Path) -> float:
 def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
                    engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], tail_words: int = 8,
-                   normalizer=None) -> list[tuple[float, str | None, dict | None]]:
+                   normalizer=None, fast: bool = False) -> list[tuple[float, str | None, dict | None]]:
     """Run the full pipeline against a muted PlaybackSource; return a list of
     (timestamp_seconds, active_element_id) transitions paced by audio time.
+
+    fast: unpaced FileSource replay stamped on the STT audio clock (needs an
+    audio_clock engine) — same transitions, minutes instead of real time.
     """
     controller = LiveController(matcher, raw_index, normalizer=normalizer,
                                 tail_words=tail_words, slide_no=slide_no)
     buf = controller.buffer
-    src = PlaybackSource(str(wav_path), mute=True)
+    src = FileSource(str(wav_path), chunk_ms=100) if fast else PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
 
     events: list[tuple[float, str | None, dict | None]] = []
@@ -79,7 +82,8 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
             return
         key = (ev.active_id, ev.line_index)
         if key != last_key:
-            events.append((time.monotonic() - t0, ev.active_id, ev.line_bbox))
+            t = partial.timestamp if fast else time.monotonic() - t0
+            events.append((t, ev.active_id, ev.line_bbox))
             last_key = key
 
     transcriber.run(on_update=on_update)
@@ -287,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fps", type=int, default=ANIM_FPS)
     ap.add_argument("--max-width", type=int, default=1280, help="video width in pixels")
     ap.add_argument("--only", type=int, default=None, help="render only this slide number")
+    ap.add_argument("--fast", action="store_true",
+                    help="unpaced replay on the STT audio clock (no real-time wait)")
     args = ap.parse_args(argv)
 
     index_path = Path(args.index)
@@ -304,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     enc = load_default_encoder()
     idx = Index(index_path, enc)
     matcher = Matcher(idx, enc)
-    engine = load_default_stt_engine(sample_rate=16000)
+    engine = load_default_stt_engine(sample_rate=16000, audio_clock=args.fast)
     hotwords = hotwords_from_index(raw_index)
 
     slide_videos: list[Path] = []
@@ -314,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         out_mp4 = out_dir / f"slide_{sno:03d}.mp4"
         print(f"\nslide {sno}: {wav.name}")
         print("  running simulation…")
-        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords)
+        events = _record_events(sno, wav, raw_index, engine, matcher, hotwords, fast=args.fast)
         for t, eid, lb in events:
             tag = " (line)" if lb else ""
             print(f"    t={t:5.1f}s  active={eid}{tag}")
