@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 EXPANSIONS_PATH = "data/expansions.json"
@@ -47,42 +48,56 @@ def chart_noun(chart_text: str) -> str:
 # group_label_for_chart
 # ---------------------------------------------------------------------------
 
-_TITLE_KEYWORDS = [
-    (("latency", "time"), "latency"),
-    (("effort", "build"), "effort"),
-    (("accuracy", "threshold"), "accuracy"),
-]
+_CHART_TYPE_RE = re.compile(r'^[A-Z][A-Z0-9_]+\s*\(\d+\)\s*$')
+# connector words that end a title's head noun phrase. "of"/"for" are excluded
+# on purpose: "share of revenue" must not shrink to "share".
+_CONNECTORS = {"by", "vs", "vs.", "versus", "per", "over", "across"}
+# authoring-tool defaults that carry no meaning as a label
+_DEFAULT_LABEL_RE = re.compile(r'^(series \d+|chart title)$')
 
 
-def group_label_for_chart(chart_elem: dict, slide_title: str | None) -> str:
-    """Return a short human label for a chart group, derived deterministically.
+def _clean_label(text: str) -> str:
+    """Lowercase, drop parenthesised spans (units like "(ms)"), collapse spaces."""
+    text = re.sub(r"\([^)]*\)", " ", text.lower())
+    cleaned = " ".join(text.split())
+    return "" if _DEFAULT_LABEL_RE.match(cleaned) else cleaned
 
-    Priority:
-      1. Use chart's own text if it is a non-generic title (not a bare
-         chart-type string like "COLUMN_CLUSTERED (51)").
-      2. Infer from slide title keywords.
-      3. Fall back to ``<noun> chart``.
-    Returns a lowercase label.
+
+def _head_label(full: str) -> str:
+    """The title's head noun phrase: everything before the first connector."""
+    words = full.split()
+    for i, w in enumerate(words):
+        if w in _CONNECTORS:
+            return " ".join(words[:i]) or full
+    return full
+
+
+def group_label_for_chart(chart_elem: dict, slide_title: str | None) -> tuple[str, str]:
+    """Return (head, full) spoken labels for a chart group, deck-agnostically.
+
+    Source, first non-empty after cleaning wins:
+      1. the chart's own title (``chart_title``, from the parser)
+      2. its series name, when it has exactly one series
+      3. the chart's ``text`` when it is a real title, not a "PIE (5)" token
+         (indexes built before ``chart_title`` existed)
+      4. the slide title
+    else ``"<noun> chart"``. ``head`` is ``full`` cut at the first connector
+    word ("latency by stage" -> "latency").
     """
-    # Heuristic: if the chart text doesn't look like a bare chart-type token
-    # (i.e. it doesn't begin with an all-caps word followed by optional
-    # underscore parts and a parenthesised number), treat it as a real title.
     text = (chart_elem.get("text") or "").strip()
-    import re
-    _CHART_TYPE_RE = re.compile(r'^[A-Z][A-Z0-9_]+\s*\(\d+\)\s*$')
-    if text and not _CHART_TYPE_RE.match(text):
-        return text.lower()
-
-    # Infer from slide title
-    if slide_title:
-        lower_title = slide_title.lower()
-        for keywords, label in _TITLE_KEYWORDS:
-            if any(k in lower_title for k in keywords):
-                return label
-
-    # Fallback
-    noun = chart_noun(text)
-    return f"{noun} chart"
+    series = chart_elem.get("series_names") or []
+    candidates = [
+        chart_elem.get("chart_title"),
+        series[0] if len(series) == 1 else None,
+        text if text and not _CHART_TYPE_RE.match(text) else None,
+        slide_title,
+    ]
+    for cand in candidates:
+        full = _clean_label(cand or "")
+        if full:
+            return _head_label(full), full
+    fallback = f"{chart_noun(text)} chart"
+    return fallback, fallback
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +112,63 @@ def load_expansions(path: str = EXPANSIONS_PATH) -> dict:
         return {k.upper(): v for k, v in raw.items()}
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return {}
+
+
+# ---------------------------------------------------------------------------
+# derive_expansions  — "Speech to Text (STT)" / "STT (Speech to Text)"
+# ---------------------------------------------------------------------------
+
+_ACR_IN_PARENS_RE = re.compile(r"\(([A-Z]{2,5})\)")
+_ACR_THEN_PARENS_RE = re.compile(r"\b([A-Z]{2,5})\b\s*\(([^()]+)\)")
+# hyphen segments are separate words: "Speech-to-Text" spells STT, spoken "speech to text"
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_EXPANSION_STOPWORDS = {"to", "of", "and", "the", "for"}
+
+
+def _initials_spell(words: list[str], acr: str) -> bool:
+    """True if the words' initials spell `acr` — counting every word, or only
+    the non-stopwords ("Bureau of Labor Statistics" -> BLS)."""
+    if "".join(w[0] for w in words).upper() == acr:
+        return True
+    content = [w for w in words if w.lower() not in _EXPANSION_STOPWORDS]
+    return bool(content) and "".join(w[0] for w in content).upper() == acr
+
+
+def _expansion_before(words: list[str], acr: str) -> str | None:
+    """Shortest run of trailing `words` whose initials spell `acr`."""
+    for n in range(len(acr), min(len(words), len(acr) + 3) + 1):
+        tail = words[-n:]
+        if _initials_spell(tail, acr):
+            return " ".join(tail).lower()
+    return None
+
+
+def derive_expansions(index: dict) -> dict[str, str]:
+    """Acronym -> expansion pairs the deck defines itself, deterministically.
+
+    Recognises "Words (ACR)" and "ACR (Words)" in any element's text, gated by an
+    initials check. An acronym defined two different ways is dropped as
+    ambiguous (same rule as asr_normalize.build_alias_map).
+    """
+    found: dict[str, set[str]] = {}
+    for slide in index.get("slides", []):
+        for elem in slide.get("elements", []):
+            text = elem.get("text") or ""
+            for m in _ACR_IN_PARENS_RE.finditer(text):
+                acr = m.group(1)
+                exp = _expansion_before(_WORD_RE.findall(text[:m.start()]), acr)
+                if exp:
+                    found.setdefault(acr, set()).add(exp)
+            for m in _ACR_THEN_PARENS_RE.finditer(text):
+                acr, words = m.group(1), _WORD_RE.findall(m.group(2))
+                if len(words) <= len(acr) + 3 and _initials_spell(words, acr):
+                    found.setdefault(acr, set()).add(" ".join(words).lower())
+    return {acr: next(iter(exps)) for acr, exps in sorted(found.items()) if len(exps) == 1}
+
+
+def expansions_for(index: dict, path: str = EXPANSIONS_PATH) -> dict[str, str]:
+    """Deck-derived expansions overlaid with the hand-override file (file wins)."""
+    return {**derive_expansions(index), **load_expansions(path)}
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +210,6 @@ def stat_phrases(text: str) -> list[str]:
                  "less than a millisecond", "sub millisecond", ...].
     Returns [] when the text isn't a recognisable stat.
     """
-    import re
     m = re.match(r"^\s*([<>≤≥~]?)\s*(\d+(?:\.\d+)?)\s*([a-zA-Z%]+)\s*$", text.strip())
     if not m:
         return []
@@ -161,8 +232,8 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
 
     For every element:
       - 'group_id': parent_id if the element has one (chart_category), else its own id.
-      - 'group_label': for chart_category, the group_label_for_chart of its parent chart
-        (looked up within the same slide); else None.
+      - 'group_label': for chart_category, the head label from group_label_for_chart of its
+        parent chart; scoped phrases are added for both the head and the full title.
 
     Added trigger phrases (append, dedupe, keep existing):
       - chart_category: scoped phrases using label + noun + group_label:
@@ -199,13 +270,16 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
             eid = elem["id"]
             parent_id = elem.get("parent_id")
             phrases: list = elem.setdefault("trigger_phrases", [])
+            label_variants: list[str] = []
 
             # ------ group_id / group_label ------
             if parent_id:
                 elem["group_id"] = parent_id
                 parent_elem = elem_by_id.get(parent_id)
                 if parent_elem is not None:
-                    elem["group_label"] = group_label_for_chart(parent_elem, slide_title)
+                    head, full = group_label_for_chart(parent_elem, slide_title)
+                    elem["group_label"] = head
+                    label_variants = [head] if full == head else [head, full]
                 else:
                     elem["group_label"] = None
             elif bullet_group is not None and elem.get("type") == "bullet":
@@ -231,21 +305,19 @@ def scope_index(index: dict, expansions: dict | None = None) -> dict:
                 who = f"{category} {series}".strip() if series else category
                 parent_elem = elem_by_id.get(parent_id) if parent_id else None
                 noun = chart_noun(parent_elem.get("text", "") if parent_elem else "") if parent_elem else "item"
-                group_label = elem.get("group_label") or ""
-                # avoid "... bar chart chart" when group_label already ends in chart
-                gl_suffix = "" if group_label.endswith("chart") else " chart"
 
                 if who and noun:
                     _add_phrase(phrases, f"the {who} {noun}")
-                if who and group_label:
-                    _add_phrase(phrases, f"{who} {group_label}")
-                if who and noun and group_label:
-                    _add_phrase(phrases, f"the {who} {noun} in the {group_label}{gl_suffix}")
+                for gl in label_variants:
+                    # avoid "... bar chart chart" when the label already ends in chart
+                    gl_suffix = "" if gl.endswith("chart") else " chart"
+                    if who:
+                        _add_phrase(phrases, f"{who} {gl}")
+                        _add_phrase(phrases, f"the {who} {noun} in the {gl}{gl_suffix}")
 
             # ------ acronym expansion ------
             text = elem.get("text") or ""
             # Split text into tokens (preserve original casing for comparison)
-            import re
             tokens = re.split(r'(\s+)', text)
             word_tokens = [t for t in tokens if t.strip()]
 
@@ -280,7 +352,7 @@ def main(argv=None) -> int:
     with open(args.input, encoding="utf-8") as fh:
         index = json.load(fh)
 
-    expansions = load_expansions(args.expansions)
+    expansions = expansions_for(index, args.expansions)
 
     # Count existing phrases before
     before = sum(

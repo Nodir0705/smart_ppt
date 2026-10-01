@@ -299,6 +299,33 @@ def _build_pie_chart(out_dir: Path) -> CorpusDeck:
                       note="pie -> 4 angular-wedge sub-regions (not needs_vision)")
 
 
+def _build_titled_chart_acronym(out_dir: Path) -> CorpusDeck:
+    """A titled single-series column chart plus an acronym defined once in body
+    text ("Speech to Text (STT)") and used bare elsewhere ("STT Engine"). Drives
+    deck-agnostic group labels (from the chart's own title) and auto-derived
+    acronym expansions — neither may depend on test_deck vocabulary."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Speech to Text (STT) runs offline", y=0.3, h=0.8)
+    _textbox(s.shapes, "STT Engine", x=7.0, y=6.0, w=2.5, h=0.8, size=18)
+    data = CategoryChartData()
+    data.categories = ["North", "South"]
+    data.add_series("Revenue", (40, 30))
+    gf = s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED,
+                            Inches(1), Inches(1.5), Inches(6), Inches(4.5), data)
+    gf.chart.has_title = True
+    gf.chart.chart_title.text_frame.text = "Revenue by region (USD)"
+    path = out_dir / "titled_chart_acronym.pptx"
+    prs.save(str(path))
+    return CorpusDeck("titled_chart_acronym", str(path),
+                      expected_texts=["North", "South", "STT Engine"],
+                      expected_types=["chart", "chart_category", "chart_category"],
+                      note="chart title -> group label; 'Words (ACR)' -> expansion")
+
+
 def _build_nested_groups(out_dir: Path) -> CorpusDeck:
     """A textbox nested two GROUPs deep, plus one a single GROUP deep. Exercises
     the affine COMPOSITION through nesting — a depth-1 transform would leave the
@@ -444,6 +471,7 @@ _BUILDERS = [
     _build_grouped_bar_chart,
     _build_stacked_bar_chart,
     _build_pie_chart,
+    _build_titled_chart_acronym,
     _build_nested_groups,
     _build_table,
     _build_duplicate_text,

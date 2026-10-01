@@ -48,6 +48,8 @@ class Element:
     value: float | None = None   # numeric value (chart_category bars/slices)
     series: str | None = None    # series name (multi-series chart categories)
     multi_series: bool = False   # chart element flag → chart_detect skips it
+    chart_title: str | None = None       # chart's own title (group_scope labels)
+    series_names: list[str] | None = None  # chart series names (group_scope labels)
 
 
 # ---------- helpers ----------
@@ -401,6 +403,23 @@ def _expand_table(shape, slide_no: int, start_idx: int) -> list[Element]:
     return out
 
 
+def _chart_meta(chart) -> dict:
+    """The chart's own title and series names, for deck-agnostic group labels.
+
+    Reads `chart_title.text_frame` only when it already exists (`has_text_frame`)
+    — touching `.text_frame` otherwise would create one. A malformed chart part
+    yields empty metadata rather than aborting the slide."""
+    title = None
+    names: list[str] = []
+    try:
+        if chart.has_title and chart.chart_title.has_text_frame:
+            title = chart.chart_title.text_frame.text.strip() or None
+        names = [str(se.name) for plot in chart.plots for se in plot.series]
+    except Exception:
+        pass
+    return {"chart_title": title, "series_names": names}
+
+
 def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     """Emit one `chart` element + one `chart_category` per category label.
 
@@ -414,6 +433,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
     chart = shape.chart
     chart_type = str(chart.chart_type)
     ct_simple = classify_chart_type(chart_type)
+    meta = _chart_meta(chart)
 
     # Radar/bubble/stock/surface and combo (multi-plot) charts have no sound
     # per-category bar/slice geometry — emit one needs_vision chart element
@@ -426,6 +446,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
             bbox=bbox,
             trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
             needs_vision=True,
+            **meta,
         )]
 
     categories: list[str] = []
@@ -449,7 +470,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
         else:
             sub = grouped_bar_subregions(bbox, series_values)
         return _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type,
-                                         categories, series_list, sub)
+                                         categories, series_list, sub, meta)
 
     values = series_list[0][1] if series_list else []
     sub_bboxes = subregions_for_chart(bbox, chart_type, len(categories), values)
@@ -464,6 +485,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
         text=chart_type,
         bbox=bbox,
         trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
+        **meta,
     )
     out.append(chart_el)
     idx += 1
@@ -489,7 +511,7 @@ def _expand_chart(shape, slide_no: int, start_idx: int) -> list[Element]:
 
 
 def _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type, categories,
-                              series_list, sub):
+                              series_list, sub, meta):
     """Multi-series bar: 1 chart + one chart_category per (category, series),
     each with its own distinct sub-region bbox (`sub`, in category-major order)
     and series-named triggers so "the revenue bar in Q2" resolves to it."""
@@ -500,6 +522,7 @@ def _expand_multiseries_chart(slide_no, start_idx, bbox, chart_type, categories,
         bbox=bbox,
         trigger_phrases=_phrases_for_text(chart_type) + ["chart"],
         multi_series=True,
+        **meta,
     )
     out: list[Element] = [chart_el]
     idx = start_idx + 1
@@ -737,4 +760,9 @@ def _element_to_dict(e: Element) -> dict:
         d["series"] = e.series
     if e.multi_series:
         d["multi_series"] = True
+    # additive, chart elements only — non-chart output stays byte-identical
+    if e.chart_title is not None:
+        d["chart_title"] = e.chart_title
+    if e.series_names is not None:
+        d["series_names"] = e.series_names
     return d
