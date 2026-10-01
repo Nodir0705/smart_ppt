@@ -173,6 +173,34 @@ class TestMultiScaleTail:
         assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
 
 
+class TestNullFloor:
+    """An element must beat its own similarity to generic presenter talk
+    (Matcher.null_floor) by `null_margin`: a 1-word label like "When" scores
+    ~0.68 against any sentence, so generic filler must not light it."""
+
+    W = _ref("when", None)
+    TABLE = {"so let me just point out a couple of things": [(0.68, W)],
+             "when": [(0.95, W)]}
+
+    def _pol(self, margin):
+        m = TextStubMatcher(self.TABLE)
+        m.null_floor = {"when": 0.63}          # bar = max(0.65, 0.63 + margin)
+        return MatchPolicy(m, PolicyConfig(threshold=0.65, gap=0.03, stickiness=1,
+                                           short_words=0, null_margin=margin))
+
+    def test_generic_sentence_does_not_light_one_word_element(self):
+        pol = self._pol(0.12)
+        assert pol.step("so let me just point out a couple of things", 1)[1:] == (None, "noop")
+
+    def test_own_word_lights_it(self):
+        assert self._pol(0.12).step("when", 1)[1:] == ("when", "switch")
+
+    def test_without_null_margin_the_generic_sentence_lights_it(self):
+        # the mechanism, not the threshold, is what blocks the filler
+        pol = self._pol(None)
+        assert pol.step("so let me just point out a couple of things", 1)[1:] == ("when", "switch")
+
+
 # ---------- stub matcher for policy tests ----------
 
 class StubMatcher:
@@ -326,6 +354,22 @@ def loaded(real_encoder):
     enc = real_encoder
     idx = Index(ROOT / "out" / "index.json", enc)
     return Matcher(idx, enc), idx
+
+
+@pytest.mark.slow
+def test_real_null_floor_blocks_filler_but_not_the_word(loaded):
+    """Real encoder: slide 3's one-word "When" cell stays dark under generic
+    presenter filler and lights when its word is spoken."""
+    matcher, _idx = loaded
+    filler = ("i want to move on to the ne",   # a real STT tail of the filler pass
+              "so what happens next")
+    on = PolicyConfig().null_margin
+    cases = ([(f, None, True) for f in filler]          # without the null floor: lit
+             + [(f, on, False) for f in filler] + [("when", on, True)])
+    for spoken, margin, lit in cases:
+        pol = MatchPolicy(matcher, PolicyConfig(null_margin=margin))
+        pol.step(spoken, 3)
+        assert (pol.active_id == "s3_e2") is lit, (spoken, margin)
 
 
 @pytest.mark.slow

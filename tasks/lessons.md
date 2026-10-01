@@ -39,3 +39,27 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
 - **Fleeting mentions kill stickiness.** stickiness=2 / "sustained N updates" cut recall hard (mentions last ~1 update). Dropping the in-progress last word (fragment hypothesis) barely moved flicker (71→65). What worked: a revert guard — the element a switch just left can't come back for 8 steps — flicker 54→20 with no hit cost.
 - **Result** (short_words=2, short_threshold=0.73, revert_guard=8): bench hits 442→519/741, 1+2w 82→134/255, 6+ 193→199/225, false 0, flicker 31→20; hand fixture 38/40, false 1, flicker 2→1. Plateau: Ts 0.71–0.75 and guard 6–9 all pass the gate.
 - **Live = bench:** the multi-scale logic lives in `MatchPolicy.step` (after normalization) and `timeline_audit.record_trajectory` now runs through `LiveController.feed`, the same path the viewer and simulators use.
+
+## 2026-10-01 — filler precision: the bench only measured narration that NAMES things
+- **Measurement gap.** Every eval narrated deck elements, so `false` could only count wrong-element highlights while
+  the presenter was naming something. Nobody measured talk that names nothing ("as you can see here, this is really
+  important"). A negative pass (filler only, expected `[]`) showed most slides lit something: holdout 20 false (old)
+  → 36 after the multi-scale tail. Ablation: the 2-word override adds ~1 (off 35, Ts 0.78 35); the per-phrase windows
+  add the rest, because a 4-word window of filler resembles a short label more than an 8-word one does.
+- **Diagnosis decided the mechanism.** Filler raw scores sat at 0.65–0.71 (true mentions: median 0.73–0.80) and
+  spanned all label lengths (1w 30 / 2w 16 / 3w 10 / 4+ 18 of 74 switches). So a "≤2-word needs lexical support" rule
+  would have left ~40%, and a global threshold of 0.68 cost ~10% of true switches.
+- **Mechanism: per-element null floor.** `Matcher.null_floor[id]` = the element's best cosine to a fixed list of
+  generic presenter lines (`NULL_SPEECH`); `MatchPolicy` requires raw ≥ max(threshold, floor + `null_margin`) on both
+  the full-tail and short-override paths. "When"/"2"/"Display" sit ~0.6 from any sentence, so they get a higher bar
+  than specific labels. One parameter, no new model, one extra encode at load. `NULL_SPEECH` is a decision-loop
+  input like aliases: changing it shifts every bar.
+- **Tune/holdout discipline.** Margin picked on FILLER_TUNE + bench (0.12: tune 9; passing window 0.10–0.13; 0.14
+  drops bench hits to 504) BEFORE recording the holdout. Holdout at 0.12: 5 (old 20, current 36). NULL_SPEECH shares
+  phrasing with FILLER_TUNE ("look at this", "next slide") — tune is optimistic. That's why the holdout shares no
+  content word with tune, NULL_SPEECH or any deck (unit-tested).
+- **Cost:** bench hits 519→512/741, 1+2w 134→131/255, 6+ 199→198/225, flicker 20→15, false 0; hand fixture unchanged
+  (38/40, false 1, flicker 1). Residual: "2" lit by "a couple of things" (0.73–0.74) — semantically fair, left alone.
+- **Lesson:** a precision metric that only runs while the target is being named is blind to the most common real
+  failure (talk that names nothing). Every recall lever needs a negative pass, and a held-out filler set, before it
+  ships.

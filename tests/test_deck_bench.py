@@ -6,6 +6,7 @@ import pytest
 
 import re
 
+from src.matcher import NULL_SPEECH
 from tools.deck_bench import FILLER_HOLDOUT, FILLER_TUNE, filler_script, inventory, totals
 
 
@@ -59,6 +60,8 @@ def test_filler_holdout_is_disjoint_from_tune():
     # the holdout must not reuse the tune set's content words, or tuning leaks into it
     assert len(FILLER_HOLDOUT) == len(FILLER_TUNE) == 6
     assert not _content(FILLER_HOLDOUT) & _content(FILLER_TUNE)
+    # nor with the matcher's null-hypothesis prototypes, or the holdout is tuned on
+    assert not _content(FILLER_HOLDOUT) & _content(NULL_SPEECH)
 
 
 @pytest.mark.skipif(os.environ.get("SMARTPPT_RUN_BENCH") != "1",

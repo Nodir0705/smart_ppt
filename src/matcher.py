@@ -238,6 +238,25 @@ def phrase_window(phrase: str) -> int:
     return max(PHRASE_WINDOW_MIN, len(phrase.split()) + 1)
 
 
+# Null hypothesis: generic presenter talk that names nothing on any slide. An
+# element's null floor is its best similarity to any of these lines; it may only
+# light when the spoken tail beats that floor by PolicyConfig.null_margin. Short,
+# generic labels ("When", "2", "Display", "Thank you!") sit close to ANY sentence
+# and so get a higher bar than specific ones. Fixed text, never tuned per deck.
+NULL_SPEECH = (
+    "Okay, let's get started.",
+    "So here is what I wanted to show you.",
+    "This is a key point, so pay attention.",
+    "Moving on.",
+    "Does anyone have a question about that?",
+    "Let's go to the next slide.",
+    "As I mentioned earlier, this matters a lot.",
+    "Well, um, you know, basically.",
+    "Good, so that covers the basics.",
+    "Now, look at this.",
+)
+
+
 class Matcher:
     QUERY_CACHE_SIZE = 16
 
@@ -252,6 +271,11 @@ class Matcher:
         self._windows: dict[int, np.ndarray] = {
             sno: np.array([phrase_window(p) for r in refs for p in r.phrases], dtype=np.int64)
             for sno, (_embs, refs) in index._by_slide.items()
+        }
+        null = encoder.encode(list(NULL_SPEECH))   # (n_null, dim), once per load
+        self.null_floor: dict[str, float] = {
+            r.id: float((embs[r.emb_start:r.emb_end] @ null.T).max())
+            for embs, refs in index._by_slide.values() for r in refs if r.is_pointable
         }
 
     def _encode_query(self, spoken: str) -> np.ndarray:
@@ -344,6 +368,10 @@ class PolicyConfig:
     #     `revert_guard` steps (A -> B -> A bounce is the flicker a short-scale
     #     switch would otherwise cause while A's words linger). 0 disables. ---
     revert_guard: int = 8
+    # --- null-hypothesis bar: an element must also beat its own similarity to
+    #     generic presenter talk (Matcher.null_floor) by this much, so filler
+    #     ("as you can see here...") can't light short/generic labels. ---
+    null_margin: float | None = 0.12   # None disables
 
 
 class MatchPolicy:
@@ -390,6 +418,13 @@ class MatchPolicy:
         fn = getattr(self.matcher, "scored_tail", None) or self.matcher.scored
         return fn(spoken, slide_no)
 
+    def _bar(self, element_id: str | None, base: float) -> float:
+        """Raw score `element_id` needs: `base`, raised to its null floor + margin."""
+        floor = getattr(self.matcher, "null_floor", {}).get(element_id)
+        if floor is None or self.cfg.null_margin is None:
+            return base
+        return max(base, floor + self.cfg.null_margin)
+
     def _short_override(self, spoken: str, slide_no: int, res: MatchResult) -> MatchResult:
         """Return a result for the short-tail winner when it clears the stricter
         bar and names an element other than the full-tail best and the active one;
@@ -403,7 +438,7 @@ class MatchPolicy:
             return res
         best_raw, best = per_el[0]
         ru_raw, ru_id = (per_el[1][0], per_el[1][1].id) if len(per_el) > 1 else (0.0, None)
-        if (best_raw < self.cfg.short_threshold or best_raw - ru_raw < self.cfg.gap
+        if (best_raw < self._bar(best.id, self.cfg.short_threshold) or best_raw - ru_raw < self.cfg.gap
                 or best.id in (res.element_id, self.active_id)):
             return res
         out = MatchResult(element_id=best.id, type=best.type, text=best.text,
@@ -475,7 +510,7 @@ class MatchPolicy:
         confident = (
             not barred
             and res.element_id is not None
-            and res.score >= self.cfg.threshold
+            and res.score >= self._bar(res.element_id, self.cfg.threshold)
             and (getattr(res, "_eff_best", res.score) - getattr(res, "_eff_runner", res.runner_up_score)) >= self.cfg.gap
         )
         if not confident:

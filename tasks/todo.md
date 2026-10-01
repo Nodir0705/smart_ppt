@@ -578,3 +578,8 @@ not tuned away. Candidate follow-up once real decks confirm it.
 2-word short-tail override (raw ≥ 0.73, gap 0.03, new element only) + 8-step revert guard, all inside
 `MatchPolicy.step`; `timeline_audit` now runs through `LiveController`. 3-deck bench: hits 442→519/741,
 1+2-word 82→134/255, 6+-word 193→199/225, false 0, flicker 31→20. Hand fixture 38/40, false 1, flicker 2→1.
+
+**Filler precision (2026-10-01):** `deck_bench` now runs a negative pass (FILLER_HOLDOUT presenter filler per slide,
+expected none) and reports `filler_false`. Holdout baseline: old (cec1f1c) 20, multi-scale 36. Fix: per-element null
+floor (best cosine to fixed `NULL_SPEECH` generic talk) + `null_margin` 0.12 in `MatchPolicy`. Holdout 36→5, tune
+56→9; bench hits 512/741, 1+2w 131/255, 6+ 198/225, false 0, flicker 15; hand 38/40, false 1, flicker 1.
