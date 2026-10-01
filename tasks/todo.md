@@ -542,3 +542,17 @@ python3 -m src.render test_deck.pptx
 python3 -m src.tts
 python3 -m src.simulate                    # auto-uses index.scoped.json + alias normalize
 ```
+
+## Deck-agnostic group scoping — roadmap #9 (2026-10-01)
+
+**Status:** complete. Spec `docs/superpowers/specs/2026-10-01-deck-agnostic-scoping-design.md`,
+plan `docs/superpowers/plans/2026-10-01-deck-agnostic-scoping.md`.
+
+- [x] parser emits `chart_title` / `series_names` (chart `text` unchanged)
+- [x] `_TITLE_KEYWORDS` deleted; labels from chart title → sole series → slide title → noun; phrases for head + full
+- [x] `derive_expansions` + `expansions_for` (file overrides win), wired in build_index + group_scope CLI; hyphenated definitions ("Speech-to-Text (STT)") handled
+- [x] corpus deck `titled_chart_acronym`
+
+**Eval (test_deck):** baseline recall 38/40 · false 1 · flicker 2 → after: recall 38/40 · false 1 · flicker 2,
+per-slide trajectories byte-identical. Slide-4 pie relabelled latency → build effort split (was a whitelist mislabel).
+`SMARTPPT_RUN_EVAL=1` grounding test passes; full suite 195 passed, 1 skipped.
