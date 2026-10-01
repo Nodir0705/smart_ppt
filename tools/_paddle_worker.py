@@ -29,11 +29,12 @@ _MODEL_NAMES = {
     "server": dict(text_detection_model_name="PP-OCRv5_server_det",
                    text_recognition_model_name="PP-OCRv5_server_rec"),
 }
+_MODEL_NAMES.update({f"{k}-gpu": v for k, v in list(_MODEL_NAMES.items())})
 
 
 def build_pipeline(model: str) -> PaddleOCR:
     return PaddleOCR(
-        device="cpu",
+        device="gpu:0" if model.endswith("-gpu") else "cpu",
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,

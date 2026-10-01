@@ -44,6 +44,8 @@ DECK_NAMES = [
 ]
 
 PADDLE_PY = Path.home() / ".venvs" / "smartppt-paddle" / "bin" / "python"
+# -gpu engines run the same models in the paddlepaddle-gpu venv
+PADDLE_GPU_PY = Path.home() / ".venvs" / "smartppt-paddle-gpu" / "bin" / "python"
 PADDLE_WORKER = ROOT / "tools" / "_paddle_worker.py"
 
 # reproduce src/ocr.py's filter exactly (see that module's docstring/constants)
@@ -261,10 +263,11 @@ def run_paddle_icons(crops: list[tuple[str, Image.Image]], model: str, tmp_dir: 
 
 
 def _run_paddle_worker(model: str, spec_path: Path, out_path: Path) -> None:
-    if not PADDLE_PY.exists():
-        raise RuntimeError(f"paddle venv python not found at {PADDLE_PY}; run setup first")
+    py = PADDLE_GPU_PY if model.endswith("-gpu") else PADDLE_PY
+    if not py.exists():
+        raise RuntimeError(f"paddle venv python not found at {py}; run setup first")
     r = subprocess.run(
-        [str(PADDLE_PY), str(PADDLE_WORKER), "--model", model,
+        [str(py), str(PADDLE_WORKER), "--model", model,
          "--spec", str(spec_path), "--out", str(out_path)],
         capture_output=True, text=True, timeout=3600,
     )
@@ -345,8 +348,7 @@ def check_determinism(engine: str, deck_names: list[str], deck_truths: dict) -> 
     elif engine == "tesseract-raw":
         second = {name: run_tesseract_deck(deck_truths[name], False)[0] for name in deck_names}
     else:
-        model = {"paddleocr": "mobile", "paddleocr-mobile": "mobile",
-                  "paddleocr-server": "server"}[engine]
+        model = {"paddleocr": "mobile", **ENGINES_PADDLE}[engine]
         with tempfile.TemporaryDirectory(prefix="bakeoff_det_") as td:
             second = {name: run_paddle_deck(deck_truths[name], name, model, Path(td))[0]
                       for name in deck_names}
@@ -357,7 +359,8 @@ def check_determinism(engine: str, deck_names: list[str], deck_truths: dict) -> 
 
 
 ENGINES_TESS = {"tesseract-current": True, "tesseract-raw": False}
-ENGINES_PADDLE = {"paddleocr-mobile": "mobile", "paddleocr-server": "server"}
+ENGINES_PADDLE = {"paddleocr-mobile": "mobile", "paddleocr-server": "server",
+                  "paddleocr-mobile-gpu": "mobile-gpu", "paddleocr-server-gpu": "server-gpu"}
 
 
 def main() -> None:
