@@ -74,3 +74,10 @@ def test_slide_with_nothing_narratable_is_omitted():
     script, expected = narrate(deck)
     assert [s["slide"] for s in script] == [2]
     assert [s["slide"] for s in expected] == [2]
+
+
+def test_chart_values_are_speakable_digits():
+    deck = _deck(_el("s1_e0", "chart", "COLUMN_CLUSTERED (51)", 1, 2),
+                 _el("s1_e1", "chart_category", "Big", 1, 2, parent_id="s1_e0", value=-1234567.891),
+                 _el("s1_e2", "chart_category", "Tiny", 1, 2, parent_id="s1_e0", value=0.125))
+    assert narrate(deck)[0][0]["segments"] == ["Big is -1234567.89", "Tiny is 0.12"]

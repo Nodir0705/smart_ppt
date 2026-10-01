@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import wave
 from pathlib import Path
 
@@ -32,11 +33,15 @@ def _resample(pcm: bytes, src_rate: int, src_channels: int) -> bytes:
 
 
 def _write_wav(wav_path: Path, pcm: bytes) -> None:
-    with wave.open(str(wav_path), "wb") as w:
+    # write-then-rename: an interrupted write never leaves a truncated WAV that
+    # synthesize_slides' exists() cache check would trust
+    tmp = Path(f"{wav_path}.tmp")
+    with wave.open(str(tmp), "wb") as w:
         w.setnchannels(TARGET_CHANNELS)
         w.setsampwidth(2)
         w.setframerate(TARGET_RATE)
         w.writeframes(pcm)
+    os.replace(tmp, wav_path)
 
 
 class PiperTTS:

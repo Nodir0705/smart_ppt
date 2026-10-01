@@ -69,10 +69,11 @@ def totals(records: list[dict]) -> dict:
             "flicker": sum(r["flicker"] for r in ok)}
 
 
-def bench_deck(deck: Path, variant: str, out_root: Path, models) -> dict:
+def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> dict:
+    """Fill `rec` in place, so a deck that fails mid-way keeps its inventory."""
     d = out_root / deck.stem
     truth = parse_deck(str(deck), ocr=False)          # narration source: XML only
-    rec: dict = {"deck": deck.stem, "inventory": inventory(truth)}
+    rec["inventory"] = inventory(truth)
     script, expected = narrate(truth)
     rec["skipped_slides"] = len(truth["slides"]) - len(script)
     _write(d / "narration.json", {"voice": str(VOICE), "gap_ms": GAP_MS, "slides": script})
@@ -137,16 +138,20 @@ def main(argv: list[str] | None = None) -> int:
     records = []
     for deck in decks:
         print(f"=== {deck.stem} ===", flush=True)
+        rec = {"deck": deck.stem}
         try:
-            records.append(bench_deck(deck, args.variant, out_root, models))
+            bench_deck(deck, args.variant, out_root, models, rec)
         except Exception as e:  # one bad deck never aborts the run
             traceback.print_exc()
-            records.append({"deck": deck.stem, "status": f"FAILED: {type(e).__name__}: {e}"})
+            rec["status"] = f"FAILED: {type(e).__name__}: {e}"
+        records.append(rec)
     tot = totals(records)
-    _write(out_root / f"report_{args.variant}.json",
+    # --only writes its own report so a debug re-run never clobbers the full one
+    name = f"report_{args.variant}" + (f"_{args.only}" if args.only else "")
+    _write(out_root / f"{name}.json",
            {"variant": args.variant, "gap_ms": GAP_MS, "decks": records, "totals": tot})
     md = _markdown(args.variant, records, tot)
-    (out_root / f"report_{args.variant}.md").write_text(md)
+    (out_root / f"{name}.md").write_text(md)
     print(md)
     return 0
 

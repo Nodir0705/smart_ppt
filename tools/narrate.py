@@ -32,7 +32,10 @@ def _phrase(e: dict) -> str:
         cat = raw.split(" — ", 1)[0] if series else raw
         who = f"{series} {cat}" if series else cat
         v = e.get("value")
-        return f"{who} is {v:g}" if v is not None else who
+        if v is None:
+            return who
+        # speakable digits: 12.0 -> "12", 1234567.891 -> "1234567.89" (never "1.2e+06")
+        return f"{who} is {int(v) if float(v).is_integer() else round(v, 2)}"
     return " ".join(_norm(e.get("text")).split()[:MAX_WORDS])
 
 

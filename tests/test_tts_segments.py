@@ -39,3 +39,8 @@ def test_synthesize_slides_caches_by_content(tmp_path):
     assert m3[0]["wav"] != m1[0]["wav"] and tts.calls == 3   # new content -> new file
     m4 = synthesize_slides(slides[:1], "voice.onnx", tmp_path, gap_ms=600, tts=tts)
     assert m4[0]["wav"] != m1[0]["wav"]          # gap is part of the key
+
+
+def test_wav_write_leaves_no_temp_file(tmp_path):
+    _FakeTTS().synthesize_segments(["a"], tmp_path / "s.wav", gap_ms=100)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["s.wav"]
