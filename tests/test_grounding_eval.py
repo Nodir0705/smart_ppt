@@ -45,17 +45,18 @@ def test_phase1_grounding_targets_met():
     assert "s6_e1" in slides[6]["trajectory"], "STT Engine node never lit"
 
     # No per-slide regression below the floor. Re-baselined for the bge-small
-    # encoder (2026-06-18): slide 3 drops 9->8 — bge-small misses the marginal
-    # s3_e5; recovering it needs gap=0.01, which spikes flicker 0->7 (a worse
-    # trade). Overall stays 37/40, flicker 0, all three critical targets met.
-    floor = {1: 2, 2: 6, 3: 8, 4: 7, 5: 6, 6: 5, 7: 2}
+    # encoder (2026-06-18): slide 3 dropped 9->8 (bge-small missed s3_e5). The
+    # root cause was the STT splitting "offline" -> "off line", so the deck word
+    # never matched; fixed deterministically with an "off line"->"offline" alias
+    # (data/aliases.json), recovering s3_e5 with no flicker cost (2026-06-27).
+    floor = {1: 2, 2: 6, 3: 9, 4: 7, 5: 6, 6: 5, 7: 2}
     for sno, lo in floor.items():
         assert slides[sno]["hits"] >= lo, f"slide {sno} regressed: {slides[sno]['hits']} < {lo}"
 
     # Headline metric is now three first-class numbers so tuning can't trade one
-    # for another silently. Baseline (bge-small + scoped): recall 37/40,
-    # precision 37/38 (1 false highlight on s6), flicker 2.
-    assert overall["hits"] >= 36, f"recall dropped: {overall['hits']}/40"
+    # for another silently. Baseline (bge-small + scoped + off-line alias):
+    # recall 38/40, precision 38/39 (1 false highlight on s6), flicker 2.
+    assert overall["hits"] >= 37, f"recall dropped: {overall['hits']}/40"
     # precision: false highlights are elements the narration never named — recall
     # is blind to them, so guard them explicitly.
     assert overall["false"] <= 2, f"too many false highlights: {overall['false']}"

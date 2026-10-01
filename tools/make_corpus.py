@@ -38,6 +38,9 @@ class CorpusDeck:
     expected_min_elements: int = 1
     # a documented parser gap this deck targets (harness xfails on it)
     known_gap: str | None = None
+    # text only reachable with the OCR step (tesseract): the pure-parse fast test
+    # skips these (it can't OCR); the slow OCR test asserts survival instead.
+    requires_ocr: bool = False
     note: str = ""
 
 
@@ -76,6 +79,28 @@ def _build_multiline_body(out_dir: Path) -> CorpusDeck:
     prs.save(str(path))
     return CorpusDeck("multiline_body", str(path), expected_texts=lines,
                       note="multi-paragraph body; should not lose any line")
+
+
+def _build_wrapping_paragraph(out_dir: Path) -> CorpusDeck:
+    """ONE long paragraph in a narrow box, so it soft-wraps across several visual
+    lines WITHOUT paragraph breaks. The parser keeps it as a single element; the
+    refine step is what splits it into per-line `line_bboxes` — the data
+    line-level highlighting consumes. (Multi-PARAGRAPH bodies already split into
+    separate elements at parse time, so this wrap case is the real multi-line
+    one.) Refine needs soffice, so only the slow test exercises the geometry."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    tb = s.shapes.add_textbox(Inches(1), Inches(1.5), Inches(3.0), Inches(2.5))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    para = ("This is a single long paragraph that must wrap across several "
+            "visual lines inside one narrow text box")
+    tf.text = para
+    tf.paragraphs[0].font.size = Pt(20)
+    path = out_dir / "wrapping_paragraph.pptx"
+    prs.save(str(path))
+    return CorpusDeck("wrapping_paragraph", str(path), expected_texts=[para],
+                      note="one soft-wrapping paragraph -> multi-line line_bboxes")
 
 
 def _build_title_and_bullets(out_dir: Path) -> CorpusDeck:
@@ -252,6 +277,149 @@ def _build_radar_chart(out_dir: Path) -> CorpusDeck:
                       note="radar -> single needs_vision chart, no fabricated bars")
 
 
+def _build_pie_chart(out_dir: Path) -> CorpusDeck:
+    """A single-series pie. Unlike radar, pie HAS sound geometry — each slice is
+    an angular wedge — so the parser emits one value-proportional sub-region per
+    category (needs_vision False), not a needs_vision punt."""
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    data = CategoryChartData()
+    data.categories = ["North", "South", "East", "West"]
+    data.add_series("Share", (40, 30, 20, 10))
+    s.shapes.add_chart(XL_CHART_TYPE.PIE,
+                       Inches(1), Inches(1), Inches(6), Inches(4.5), data)
+    path = out_dir / "pie_chart.pptx"
+    prs.save(str(path))
+    return CorpusDeck("pie_chart", str(path),
+                      expected_texts=["North", "South", "East", "West"],
+                      expected_types=["chart"] + ["chart_category"] * 4,
+                      note="pie -> 4 angular-wedge sub-regions (not needs_vision)")
+
+
+def _build_nested_groups(out_dir: Path) -> CorpusDeck:
+    """A textbox nested two GROUPs deep, plus one a single GROUP deep. Exercises
+    the affine COMPOSITION through nesting — a depth-1 transform would leave the
+    deep node in the wrong place or drop it entirely."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    outer = s.shapes.add_group_shape()
+    inner = outer.shapes.add_group_shape()
+    tb = inner.shapes.add_textbox(Inches(2), Inches(2), Inches(2), Inches(1))
+    tb.text_frame.text = "Deep node"
+    tb2 = outer.shapes.add_textbox(Inches(5), Inches(3), Inches(2), Inches(1))
+    tb2.text_frame.text = "Mid node"
+    path = out_dir / "nested_groups.pptx"
+    prs.save(str(path))
+    return CorpusDeck("nested_groups", str(path),
+                      expected_texts=["Deep node", "Mid node"],
+                      expected_min_elements=2,
+                      note="group-in-group; both nodes survive in slide coords")
+
+
+def _build_table(out_dir: Path) -> CorpusDeck:
+    """A standalone 2x3 table. Every cell must become its own pointable
+    table_cell element (the test deck has a table, but only via the full deck —
+    pin the contract in isolation)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    cells = [["Region", "Q1", "Q2"], ["North", "10", "20"]]
+    t = s.shapes.add_table(2, 3, Inches(1), Inches(1), Inches(8), Inches(2)).table
+    for r, row in enumerate(cells):
+        for c, val in enumerate(row):
+            t.cell(r, c).text = val
+    path = out_dir / "table.pptx"
+    prs.save(str(path))
+    flat = [v for row in cells for v in row]
+    return CorpusDeck("table", str(path), expected_texts=flat,
+                      expected_types=["table_cell"] * 6,
+                      note="2x3 table -> one table_cell per cell")
+
+
+def _build_duplicate_text(out_dir: Path) -> CorpusDeck:
+    """Two separate boxes with IDENTICAL text. The parser must NOT dedup them to
+    one element — they are distinct pointables at distinct positions (the real
+    'three Live cells' ambiguity)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    for x in (1.0, 6.0):
+        tb = s.shapes.add_textbox(Inches(x), Inches(3), Inches(2), Inches(1))
+        tb.text_frame.text = "Live"
+    path = out_dir / "duplicate_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("duplicate_text", str(path), expected_texts=["Live"],
+                      expected_min_elements=2,
+                      note="identical text in 2 boxes -> 2 elements, not deduped")
+
+
+def _build_unicode_text(out_dir: Path) -> CorpusDeck:
+    """Non-ASCII content: em-dash, currency, accents. Parsing must preserve the
+    glyphs verbatim (normalization/encoding must not drop or mangle them)."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+    tb.text_frame.text = "Profit — €5M (déjà vu)"
+    path = out_dir / "unicode_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("unicode_text", str(path),
+                      expected_texts=["Profit — €5M (déjà vu)"],
+                      note="non-ASCII (em-dash/€/accents) preserved verbatim")
+
+
+def _build_image_baked_text(out_dir: Path) -> CorpusDeck:
+    """A picture with text rendered INTO the raster and NO alt text. Pure parsing
+    can't reach it, but the OCR step (tesseract) recovers "NET REVENUE" — so this
+    is requires_ocr: the fast test skips it, the slow OCR test asserts survival."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    img = Image.new("RGB", (400, 200), (255, 255, 255))
+    ImageDraw.Draw(img).text((20, 80), "NET REVENUE", fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    s.shapes.add_picture(buf, Inches(2), Inches(2), Inches(4), Inches(2))  # no alt
+    path = out_dir / "image_baked_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("image_baked_text", str(path),
+                      expected_texts=["NET REVENUE"],
+                      requires_ocr=True,
+                      note="image w/ rendered text, no alt -> recovered by tesseract OCR")
+
+
+def _build_image_no_text(out_dir: Path) -> CorpusDeck:
+    """A picture with visual STRUCTURE but NO text (geometric shapes) and no alt.
+    The precision guard: OCR readily hallucinates tokens on structured noise, so
+    this must yield NO pointable text — `needs_vision` stays True. (A solid fill
+    would prove nothing; shapes are what make tesseract hallucinate.)"""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    img = Image.new("RGB", (400, 300), (255, 255, 255))
+    dr = ImageDraw.Draw(img)
+    dr.rectangle([30, 30, 180, 160], outline=(0, 0, 0), width=4)
+    dr.ellipse([220, 40, 360, 180], outline=(20, 20, 20), width=5)
+    dr.line([0, 300, 400, 0], fill=(0, 0, 0), width=3)
+    dr.polygon([(100, 220), (180, 290), (40, 290)], outline=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    s.shapes.add_picture(buf, Inches(2), Inches(1.5), Inches(4), Inches(3))  # no alt
+    path = out_dir / "image_no_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("image_no_text", str(path), expected_texts=[],
+                      requires_ocr=True,
+                      note="shapes, no text -> OCR must NOT hallucinate a pointable")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -265,6 +433,7 @@ def _build_empty_slide(out_dir: Path) -> CorpusDeck:
 
 _BUILDERS = [
     _build_multiline_body,
+    _build_wrapping_paragraph,
     _build_title_and_bullets,
     _build_centered_title_slide,
     _build_grouped_shapes,
@@ -274,6 +443,13 @@ _BUILDERS = [
     _build_radar_chart,
     _build_grouped_bar_chart,
     _build_stacked_bar_chart,
+    _build_pie_chart,
+    _build_nested_groups,
+    _build_table,
+    _build_duplicate_text,
+    _build_unicode_text,
+    _build_image_baked_text,
+    _build_image_no_text,
     _build_empty_slide,
 ]
 

@@ -50,7 +50,9 @@ def build_index(
     deck = Path(deck)
     out = Path(out_dir)
 
-    index = parse_deck(str(deck))
+    # OCR alt-text-less pictures when tesseract is present (parse_deck self-gates
+    # and no-ops otherwise) so baked-in image text becomes pointable.
+    index = parse_deck(str(deck), ocr=True)
     if write_intermediates:
         _write(out / "index.json", index)
     final = index

@@ -50,6 +50,8 @@ def test_corpus_no_silent_drops(tmp_path):
     assert decks, "corpus generator produced no decks"
 
     for d in decks:
+        if getattr(d, "requires_ocr", False):
+            continue  # pure parse can't OCR; the slow OCR test covers these
         index = parse_deck(d.path)  # must not raise (covers empty/edge decks)
         texts = _element_texts(index)
         n_elements = len(texts)
@@ -98,10 +100,10 @@ def test_parse_deck_isolates_a_failing_slide(tmp_path, monkeypatch, caplog):
     deck = {d.name: d for d in build_corpus(tmp_path)}["title_and_bullets"]
     real = P._parse_slide
 
-    def boom(slide, i, w, h):
+    def boom(slide, i, w, h, *, ocr=False):
         if i == 1:
             raise ValueError("synthetic parse failure")
-        return real(slide, i, w, h)
+        return real(slide, i, w, h, ocr=ocr)
 
     monkeypatch.setattr(P, "_parse_slide", boom)
     with caplog.at_level("WARNING"):
@@ -181,6 +183,133 @@ def test_multiseries_scoped_phrases_are_speakable(tmp_path):
         assert not [p for p in phrases if "chart chart" in p], f"{name}: double 'chart'"
         # the series name still reaches a phrase for disambiguation
         assert any("revenue" in p or "base" in p for p in phrases)
+
+
+def test_pie_has_distinct_value_proportional_wedges(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["pie_chart"].path)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    chart = next(e for e in els if e["type"] == "chart")
+    cats = [e for e in els if e["type"] == "chart_category"]
+    # pie has sound geometry -> computed wedges, not a needs_vision punt
+    assert chart["needs_vision"] is False
+    assert len(cats) == 4
+    # the four wedge AABBs are distinct (each slice is a different region)
+    boxes = {(round(c["bbox"]["x"], 3), round(c["bbox"]["y"], 3),
+              round(c["bbox"]["w"], 3), round(c["bbox"]["h"], 3)) for c in cats}
+    assert len(boxes) == 4, "pie wedges collapsed to identical boxes"
+
+
+def test_nested_groups_map_into_slide_space(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["nested_groups"].path)
+    els = {(e.get("text") or ""): e for s in index["slides"] for e in s["elements"]}
+    # depth-2 child: identity child-extents -> stays at its authored slide coords
+    deep = els["Deep node"]["bbox"]
+    assert abs(deep["x"] - 2.0) < 0.05 and abs(deep["y"] - 2.0) < 0.05, deep
+    mid = els["Mid node"]["bbox"]
+    assert abs(mid["x"] - 5.0) < 0.05 and abs(mid["y"] - 3.0) < 0.05, mid
+
+
+def test_duplicate_text_not_deduped(tmp_path):
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["duplicate_text"].path)
+    live = [e for s in index["slides"] for e in s["elements"]
+            if (e.get("text") or "") == "Live"]
+    assert len(live) == 2, "identical-text boxes were collapsed"
+    xs = sorted(round(e["bbox"]["x"], 1) for e in live)
+    assert xs == [1.0, 6.0], xs
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("soffice") is None,
+                    reason="soffice required to render the PDF text layer")
+def test_wrapping_paragraph_refines_to_stacked_line_bboxes(tmp_path):
+    """The refine step must split ONE soft-wrapping paragraph into multiple
+    per-line boxes that stack top-to-bottom without overlap and union back to
+    the element box — the contract line-level highlighting consumes.
+
+    Structural asserts only (count >= 2, monotonic y, left-aligned, contiguous
+    union) so it survives soffice font/version differences in exact wrapping.
+    """
+    from src.refine_text import refine_index
+    from src.render import deck_pdf
+
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    deck = decks["wrapping_paragraph"]
+    index = parse_deck(deck.path)
+    # one element pre-refine (no paragraph breaks to split on)
+    els = [e for s in index["slides"] for e in s["elements"]]
+    assert len(els) == 1, f"wrap paragraph split into {len(els)} elements pre-refine"
+
+    pdf = deck_pdf(deck.path, tmp_path)
+    refine_index(index, pdf)
+    el = [e for s in index["slides"] for e in s["elements"]][0]
+    lbs = el["line_bboxes"]
+
+    assert el["bbox_source"] == "pdf_text"
+    assert len(lbs) >= 2, f"expected a multi-line wrap, got {len(lbs)} line(s)"
+    # stacked top-to-bottom, no vertical overlap between consecutive lines
+    ys = [b["y"] for b in lbs]
+    assert ys == sorted(ys), "line_bboxes not ordered top-to-bottom"
+    for a, b in zip(lbs, lbs[1:]):
+        assert a["y"] + a["h"] <= b["y"] + 1e-6, "consecutive lines overlap vertically"
+    # left-aligned: all lines start within a small x band
+    xs = [b["x"] for b in lbs]
+    assert max(xs) - min(xs) < 0.1, f"lines not left-aligned: {xs}"
+    # element bbox is the union of its line boxes
+    ux = min(xs)
+    uy = min(ys)
+    ux1 = max(b["x"] + b["w"] for b in lbs)
+    uy1 = max(b["y"] + b["h"] for b in lbs)
+    bb = el["bbox"]
+    assert abs(bb["x"] - ux) < 1e-3 and abs(bb["y"] - uy) < 1e-3
+    assert abs(bb["w"] - (ux1 - ux)) < 1e-3 and abs(bb["h"] - (uy1 - uy)) < 1e-3
+
+    # line_texts must reconstruct CLEAN words (not char-fragmented glyph chunks),
+    # in order, and concatenate back to the original paragraph — this is the
+    # handle select_line matches the spoken tail against.
+    lts = el["line_texts"]
+    assert len(lts) == len(lbs), "line_texts not parallel to line_bboxes"
+    para = el["text"].split()
+    assert " ".join(lts).split() == para, f"line_texts != paragraph words: {lts}"
+    # at least one line carries multiple whole words (guards the char-fragment bug)
+    assert any(len(lt.split()) >= 2 for lt in lts), f"lines look fragmented: {lts}"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None,
+                    reason="tesseract required for the OCR fallback")
+def test_ocr_recovers_baked_image_text(tmp_path):
+    # An alt-text-less image with baked-in text is unreachable by pure parsing;
+    # ocr=True must recover it and clear needs_vision.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    deck = decks["image_baked_text"]
+    plain = parse_deck(deck.path)              # no OCR -> still needs_vision
+    img0 = [e for s in plain["slides"] for e in s["elements"] if e["type"] == "image"][0]
+    assert img0["needs_vision"] is True and not (img0.get("text") or "")
+
+    index = parse_deck(deck.path, ocr=True)
+    imgs = [e for s in index["slides"] for e in s["elements"] if e["type"] == "image"]
+    assert len(imgs) == 1
+    assert "NET REVENUE" in (imgs[0].get("text") or "").upper()
+    assert imgs[0]["needs_vision"] is False
+    assert imgs[0]["trigger_phrases"], "OCR text produced no trigger phrases"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(__import__("shutil").which("tesseract") is None,
+                    reason="tesseract required for the OCR fallback")
+def test_ocr_does_not_hallucinate_on_textless_image(tmp_path):
+    # Precision guard: shapes-only image must NOT yield a pointable, even with OCR
+    # on (the conf + min-alpha filters must suppress tesseract's hallucinations).
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["image_no_text"].path, ocr=True)
+    imgs = [e for s in index["slides"] for e in s["elements"] if e["type"] == "image"]
+    assert len(imgs) == 1
+    assert not (imgs[0].get("text") or ""), f"OCR hallucinated: {imgs[0].get('text')!r}"
+    assert imgs[0]["needs_vision"] is True
+    assert imgs[0]["trigger_phrases"] == []
 
 
 def test_corpus_parse_is_deterministic(tmp_path):

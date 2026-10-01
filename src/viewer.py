@@ -113,6 +113,8 @@ class ViewerApp:
         self._image_pil = None
         self._current_canvas_bbox: Optional[Bbox] = None  # rendered highlight bbox
         self._target_canvas_bbox: Optional[Bbox] = None
+        self._active_bbox_in: Optional[tuple] = None       # last targeted bbox (line or union)
+        self._active_element_id: Optional[str] = None      # to detect element switches
         self._anim_start_bbox: Optional[Bbox] = None
         self._anim_step = 0
         self._anim_job = None
@@ -206,12 +208,26 @@ class ViewerApp:
         self.status_var.set(line)
 
     # ---------- highlight machinery ----------
-    def _set_target_from_element(self, element_id: str) -> None:
+    def _set_target_from_element(self, element_id: str,
+                                 line_bbox: dict | None = None) -> None:
         el = self._element_by_id[element_id]
         if not self._image_pil:
             return
+        # Per-event rule, identical to the simulators: draw the focused wrapped
+        # line when the controller picked one, else the union box. The controller
+        # already HOLDS the line across momentary misses, so a None here means
+        # "no line chosen for this element yet" (union), not "snap back". The
+        # event-less resize redraw passes no line_bbox and reuses the current rect.
+        if line_bbox is not None:
+            bbox_in = (line_bbox["x"], line_bbox["y"], line_bbox["w"], line_bbox["h"])
+        elif element_id == self._active_element_id and self._active_bbox_in is not None:
+            bbox_in = self._active_bbox_in
+        else:
+            bbox_in = el["bbox_in"]
+        self._active_bbox_in = bbox_in
+        self._active_element_id = element_id
         target_img_px = inches_to_image_px(
-            el["bbox_in"], self.slide_w_in, self.slide_h_in,
+            bbox_in, self.slide_w_in, self.slide_h_in,
             self._image_pil.width, self._image_pil.height,
         )
         target_canvas = self._fit.image_bbox_to_canvas(target_img_px)
@@ -222,6 +238,8 @@ class ViewerApp:
         if target is None:
             self._target_canvas_bbox = None
             self._current_canvas_bbox = None
+            self._active_bbox_in = None
+            self._active_element_id = None
             self._draw_highlight(None)
             return
         if self._current_canvas_bbox is None:
@@ -491,8 +509,9 @@ class ViewerApp:
         line = f"heard={ev.tail!r}  best={ev.element_id or '-'} score={ev.score:.3f} → {ev.why}"
         if ev.active_id:
             el = self._element_by_id.get(ev.active_id, {})
-            line += f"   active={ev.active_id} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(ev.active_id)
+            tag = f" L{ev.line_index}" if ev.line_index is not None else ""
+            line += f"   active={ev.active_id}{tag} {(el.get('text') or '')[:40]!r}"
+            self._set_target_from_element(ev.active_id, line_bbox=ev.line_bbox)
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)

@@ -180,14 +180,51 @@ def _apply_refinement(e: dict, words: list[dict]) -> None:
     e["shape_bbox"] = dict(e["bbox"])
     if not words:
         e["line_bboxes"] = []
+        e["line_texts"] = []
         e["bbox_source"] = "shape"
         return
     lines = cluster_lines(words)
     # Correct each line by its own height (font size), then rebuild the element
     # box from the corrected lines so multi-line elements shift correctly.
     e["line_bboxes"] = [_baseline_correct(union_bbox(line)) for line in lines]
+    # Per-line text, parallel to line_bboxes — the handle line-level highlighting
+    # uses to pick WHICH wrapped line the speaker is on (a soft-wrapped paragraph
+    # stays one element, so this is the only per-line text we keep).
+    e["line_texts"] = _assign_text_to_lines(e.get("text") or "", lines)
     e["bbox"] = _union_of_boxes(e["line_bboxes"])
     e["bbox_source"] = "pdf_text"
+
+
+def _assign_text_to_lines(text: str, lines: list[list[dict]]) -> list[str]:
+    """Reconstruct clean per-line text from the element's clean `text`.
+
+    pypdfium2's tight glyph boxes split on a fixed 2pt gap, so the assembled
+    glyph "words" are often character-fragmented ("Th i s" for "This") — fine for
+    the line *geometry* (a line's union box is identical however glyphs chunk)
+    but useless for word matching. Instead, split the element's CLEAN text across
+    lines by each line's glyph CHARACTER COUNT: walk the clean words in order,
+    filling each line's char budget before advancing. Deterministic; recovers the
+    true visual wrap (verified: "This is a single long" / "paragraph that must"…).
+
+    Falls back to the space-joined glyph words if the clean text is absent or its
+    length diverges from the glyph total (ligatures/markers) — then line-level
+    selection simply no-ops to the union bbox rather than mis-highlighting.
+    """
+    counts = [sum(len(w["text"]) for w in ln) for ln in lines]
+    words = text.split()
+    glyph_total = sum(counts)
+    if not words or glyph_total == 0 or abs(len(text.replace(" ", "")) - glyph_total) > 2:
+        return [" ".join(w["text"] for w in ln) for ln in lines]
+    result: list[list[str]] = [[] for _ in lines]
+    li = 0
+    used = 0
+    for word in words:
+        if li < len(counts) - 1 and used >= counts[li]:
+            li += 1
+            used = 0
+        result[li].append(word)
+        used += len(word)
+    return [" ".join(r) for r in result]
 
 
 def _assemble_words(textpage, page_height: float,

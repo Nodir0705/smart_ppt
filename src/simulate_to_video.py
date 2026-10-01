@@ -58,7 +58,7 @@ def _wav_duration_s(path: Path) -> float:
 def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
                    engine: STTEngine, matcher: Matcher,
                    hotwords: list[str], tail_words: int = 8,
-                   normalizer=None) -> list[tuple[float, str | None]]:
+                   normalizer=None) -> list[tuple[float, str | None, dict | None]]:
     """Run the full pipeline against a muted PlaybackSource; return a list of
     (timestamp_seconds, active_element_id) transitions paced by audio time.
     """
@@ -68,18 +68,19 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
     src = PlaybackSource(str(wav_path), mute=True)
     transcriber = LiveTranscriber(src, engine, buf, hotwords=hotwords)
 
-    events: list[tuple[float, str | None]] = []
-    last_active: str | None = None
+    events: list[tuple[float, str | None, dict | None]] = []
+    last_key: tuple | None = None
     t0 = time.monotonic()
 
     def on_update(text, partial):
-        nonlocal last_active
+        nonlocal last_key
         ev = controller.feed()
         if ev is None:
             return
-        if ev.active_id != last_active:
-            events.append((time.monotonic() - t0, ev.active_id))
-            last_active = ev.active_id
+        key = (ev.active_id, ev.line_index)
+        if key != last_key:
+            events.append((time.monotonic() - t0, ev.active_id, ev.line_bbox))
+            last_key = key
 
     transcriber.run(on_update=on_update)
     return events
@@ -133,7 +134,7 @@ def _element_axis_label_px(raw_index: dict, slide_no: int, element_id: str,
 
 
 def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
-                       raw_index: dict, events: list[tuple[float, str | None]],
+                       raw_index: dict, events: list[tuple[float, str | None, dict | None]],
                        out_path: Path, fps: int, max_width: int) -> int:
     """Render highlight frames and stream them straight into ffmpeg.
 
@@ -150,14 +151,23 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
         base = base.resize((max_width, new_h), Image.LANCZOS)
     img_w, img_h = base.size
 
-    # Pre-compute target bboxes from events (data box + its x-axis label box)
+    # Pre-compute target bboxes from events (data box + its x-axis label box).
+    # A focused wrapped-line sub-box, when present, overrides the union box.
+    def _target_box(eid, line_bbox):
+        if line_bbox is not None:
+            return inches_to_image_px(
+                (line_bbox["x"], line_bbox["y"], line_bbox["w"], line_bbox["h"]),
+                raw_index["slide_size"]["w"], raw_index["slide_size"]["h"],
+                img_w, img_h,
+            )
+        return _element_bbox_image_px(raw_index, slide_no, eid, img_w, img_h)
+
     targets: list[tuple[float, Bbox | None]] = [
-        (t, _element_bbox_image_px(raw_index, slide_no, eid, img_w, img_h))
-        for t, eid in events
+        (t, _target_box(eid, line_bbox)) for t, eid, line_bbox in events
     ]
     label_targets: list[Bbox | None] = [
         _element_axis_label_px(raw_index, slide_no, eid, img_w, img_h)
-        for _t, eid in events
+        for _t, eid, _lb in events
     ]
 
     dur = _wav_duration_s(wav_path)
@@ -305,8 +315,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nslide {sno}: {wav.name}")
         print("  running simulation…")
         events = _record_events(sno, wav, raw_index, engine, matcher, hotwords)
-        for t, eid in events:
-            print(f"    t={t:5.1f}s  active={eid}")
+        for t, eid, lb in events:
+            tag = " (line)" if lb else ""
+            print(f"    t={t:5.1f}s  active={eid}{tag}")
         print(f"  rendering + encoding @ {args.fps} fps → {out_mp4.name}")
         n = _render_and_encode(
             sno, wav, slides_dir, raw_index, events,

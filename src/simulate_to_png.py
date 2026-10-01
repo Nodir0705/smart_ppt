@@ -84,18 +84,19 @@ def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
                 "bbox_in": (bb["x"], bb["y"], bb["w"], bb["h"]),
             }
 
-    visits: list[tuple[float, str]] = []
-    last_active: str | None = None
+    visits: list[tuple[float, str, dict | None]] = []
+    last_key: tuple | None = None
     t0 = time.monotonic()
 
     def on_update(text, partial):
-        nonlocal last_active
+        nonlocal last_key
         ev = controller.feed()
         if ev is None:
             return
-        if ev.active_id and ev.active_id != last_active:
-            visits.append((time.monotonic() - t0, ev.active_id))
-            last_active = ev.active_id
+        key = (ev.active_id, ev.line_index)
+        if ev.active_id and key != last_key:
+            visits.append((time.monotonic() - t0, ev.active_id, ev.line_bbox))
+            last_key = key
 
     transcriber.run(on_update=on_update)
 
@@ -105,11 +106,14 @@ def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
     slide_w_in = raw_index["slide_size"]["w"]
     slide_h_in = raw_index["slide_size"]["h"]
     font = _pick_font(34)
-    for i, (_t, eid) in enumerate(visits, start=1):
+    for i, (_t, eid, line_bbox) in enumerate(visits, start=1):
         meta = el_meta.get(eid)
         if not meta:
             continue
-        bbox_px = inches_to_image_px(meta["bbox_in"], slide_w_in, slide_h_in,
+        # prefer the focused wrapped-line sub-box when the controller picked one
+        bbox_in = ((line_bbox["x"], line_bbox["y"], line_bbox["w"], line_bbox["h"])
+                   if line_bbox else meta["bbox_in"])
+        bbox_px = inches_to_image_px(bbox_in, slide_w_in, slide_h_in,
                                      img.width, img.height)
         _draw_visit(img, bbox_px, i, font)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +126,7 @@ def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
             {"order": i + 1, "t": round(t, 1), "id": eid,
              "type": el_meta.get(eid, {}).get("type"),
              "text": el_meta.get(eid, {}).get("text")}
-            for i, (t, eid) in enumerate(visits)
+            for i, (t, eid, _lb) in enumerate(visits)
         ],
     }
 
