@@ -48,3 +48,15 @@ def test_repeated_false_id_counts_once():
 def test_silence_is_not_a_false_highlight():
     hits, total, missed, relevant, false = score_slide([["a"]], [None, None])
     assert hits == 0 and relevant == 0 and false == 0
+
+
+def test_eval_items_skips_slides_missing_from_fixture():
+    from tools.timeline_audit import _eval_items
+    manifest = [{"slide": 1, "wav": "a.wav"}, {"slide": 2, "wav": "b.wav"},
+                {"slide": 3, "wav": "c.wav"}]
+    gt = {1: [["s1_e0"]], 3: [["s3_e0"]]}
+    items, skipped = _eval_items(manifest, gt, only=None)
+    assert [i["slide"] for i in items] == [1, 3]
+    assert skipped == [2]
+    items, skipped = _eval_items(manifest, gt, only=3)
+    assert [i["slide"] for i in items] == [3] and skipped == []
