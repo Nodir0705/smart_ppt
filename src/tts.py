@@ -72,21 +72,33 @@ class PiperTTS:
         """Synthesize `text` and write a 16 kHz mono 16-bit WAV to `wav_path`."""
         _write_wav(wav_path, self._pcm16k(text))
 
-    def synthesize_segments(self, segments: list[str], wav_path: Path, gap_ms: int) -> None:
-        """One WAV of `segments`, each followed by `gap_ms` of silence.
+    def synthesize_segments(self, segments: list[str], wav_path: Path,
+                            gap_ms: int) -> list[float]:
+        """One WAV of `segments`, each followed by `gap_ms` of silence; returns
+        each segment's start time in seconds.
 
         Piper adds no reliable pause between sentences; an explicit gap keeps
         consecutive narrated elements out of the same STT tail window."""
         gap = b"\x00\x00" * int(TARGET_RATE * gap_ms / 1000)
-        _write_wav(wav_path, b"".join(self._pcm16k(s) + gap for s in segments))
+        parts = [self._pcm16k(s) + gap for s in segments]
+        starts, at = [], 0
+        for part in parts:
+            starts.append(round(at / 2 / TARGET_RATE, 4))
+            at += len(part)
+        _write_wav(wav_path, b"".join(parts))
+        return starts
 
 
 def synthesize_slides(slides: list[dict], voice_path: str | Path, out_dir: Path,
-                      gap_ms: int, tts: PiperTTS | None = None) -> list[dict]:
+                      gap_ms: int, tts: PiperTTS | None = None,
+                      need_starts: bool = False) -> list[dict]:
     """Per-slide WAVs from `[{"slide", "segments"}]`; returns a manifest.
 
     WAV names are keyed on a hash of (segments, gap, voice), so a changed
-    narration rule can never silently replay stale audio."""
+    narration rule can never silently replay stale audio. Segment start times
+    (s) go in a `<wav>.json` sidecar and the entry's `starts`; a cached WAV from
+    before sidecars has no `starts`, and is re-synthesized only if `need_starts`
+    (so other evals' audio caches stay byte-identical)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: list[dict] = []
@@ -94,11 +106,15 @@ def synthesize_slides(slides: list[dict], voice_path: str | Path, out_dir: Path,
         key = hashlib.sha1(json.dumps(
             [entry["segments"], gap_ms, str(voice_path)]).encode()).hexdigest()[:10]
         wav = out_dir / f"slide_{entry['slide']:03d}_{key}.wav"
-        if not wav.exists():
+        side = Path(f"{wav}.json")
+        if not wav.exists() or (need_starts and not side.exists()):
             tts = tts or PiperTTS(voice_path)
-            tts.synthesize_segments(entry["segments"], wav, gap_ms)
-        manifest.append({"slide": entry["slide"], "text": " ".join(entry["segments"]),
-                         "wav": str(wav)})
+            starts = tts.synthesize_segments(entry["segments"], wav, gap_ms)
+            side.write_text(json.dumps({"starts": starts}))
+        item = {"slide": entry["slide"], "text": " ".join(entry["segments"]), "wav": str(wav)}
+        if side.exists():
+            item["starts"] = json.loads(side.read_text())["starts"]
+        manifest.append(item)
     return manifest
 
 

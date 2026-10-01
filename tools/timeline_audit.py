@@ -35,7 +35,8 @@ FIXTURE = ROOT / "tests" / "fixtures" / "expected_highlights.json"
 
 def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
                       tail_words=8, fast=False):
-    """Return (events, flicker) where events is a list of (t, active_id, tail).
+    """Return (events, flicker) where events is a list of (t, active_id, tail);
+    t is audio seconds when `fast`, else wall seconds since the replay started.
 
     Decisions come from the same ``LiveController`` the viewer and simulators
     use, so the audit measures exactly the live tail + policy logic.
@@ -58,7 +59,10 @@ def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
         if ev is None:
             return
         if ev.active_id != last:
-            events.append((time.monotonic() - t0, ev.active_id, ev.tail))
+            # fast replay is unpaced: wall time is meaningless, the partial's
+            # audio-clock stamp is when it was said
+            t = partial.timestamp if fast else time.monotonic() - t0
+            events.append((t, ev.active_id, ev.tail))
             last = ev.active_id
 
     tr.run(on_update=on_update)
@@ -142,11 +146,13 @@ def run(index_path, only=None, normalize=None, manifest_path=None, fixture_path=
     tot_hits = tot_steps = tot_flicker = 0
     tot_relevant = tot_false = 0
     per_slide: dict[int, dict] = {}
+    events_by_slide: dict[int, list] = {}
     items, skipped = _eval_items(manifest, gt, only)
     for item in items:
         sno = item["slide"]
         events, flicker = record_trajectory(sno, item["wav"], raw, engine, matcher,
                                              normalize=normalize, fast=fast)
+        events_by_slide[sno] = events
         traj = [e[1] for e in events]
         hits, steps, missed, relevant, false = score_slide(gt[sno], traj)
         tot_hits += hits
@@ -169,7 +175,7 @@ def run(index_path, only=None, normalize=None, manifest_path=None, fixture_path=
     print(f"\nOVERALL: recall {tot_hits}/{tot_steps} = {acc:.3f}   "
           f"precision {tot_relevant}/{total_hl} = {precision:.3f}   "
           f"false_highlights={tot_false}   total_flicker={tot_flicker}")
-    return {"slides": per_slide,
+    return {"slides": per_slide, "events": events_by_slide,
             "overall": {"hits": tot_hits, "steps": tot_steps, "flicker": tot_flicker,
                         "relevant": tot_relevant, "false": tot_false,
                         "precision": precision, "skipped": skipped}}

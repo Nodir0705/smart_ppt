@@ -44,3 +44,21 @@ def test_synthesize_slides_caches_by_content(tmp_path):
 def test_wav_write_leaves_no_temp_file(tmp_path):
     _FakeTTS().synthesize_segments(["a"], tmp_path / "s.wav", gap_ms=100)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.wav"]
+
+
+def test_segment_starts_returned_and_cached_in_sidecar(tmp_path):
+    tts = _FakeTTS()
+    starts = tts.synthesize_segments(["a", "b", "c"], tmp_path / "s.wav", gap_ms=500)
+    assert starts == [0.0, 0.6, 1.2]                     # 0.1 s speech + 0.5 s gap each
+    slides = [{"slide": 1, "segments": ["a", "b"]}]
+    m1 = synthesize_slides(slides, "voice.onnx", tmp_path, gap_ms=500, tts=tts)
+    assert m1[0]["starts"] == [0.0, 0.6]
+    calls = tts.calls
+    assert synthesize_slides(slides, "voice.onnx", tmp_path, gap_ms=500, tts=tts) == m1
+    assert tts.calls == calls                            # cache hit keeps starts
+    side = tmp_path / (m1[0]["wav"].rsplit("/", 1)[1] + ".json")
+    side.unlink()                                        # a pre-sidecar cached WAV
+    assert "starts" not in synthesize_slides(slides, "voice.onnx", tmp_path, 500, tts=tts)[0]
+    assert tts.calls == calls                            # not re-synthesized by default
+    m2 = synthesize_slides(slides, "voice.onnx", tmp_path, 500, tts=tts, need_starts=True)
+    assert m2 == m1 and tts.calls == calls + 2           # re-synthesized on demand
