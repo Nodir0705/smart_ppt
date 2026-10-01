@@ -556,3 +556,20 @@ plan `docs/superpowers/plans/2026-10-01-deck-agnostic-scoping.md`.
 **Eval (test_deck):** baseline recall 38/40 · false 1 · flicker 2 → after: recall 38/40 · false 1 · flicker 2,
 per-slide trajectories byte-identical. Slide-4 pie relabelled latency → build effort split (was a whitelist mislabel).
 `SMARTPPT_RUN_EVAL=1` grounding test passes; full suite 195 passed, 1 skipped.
+
+## Multi-deck benchmark harness — program step 1/5 (2026-10-01)
+
+**Status:** complete on `feat/deck-bench`. Spec `docs/superpowers/specs/2026-10-01-deck-bench-design.md`,
+plan `docs/superpowers/plans/2026-10-01-deck-bench.md`. Program: 1 harness → 2 PaddleOCR vs Tesseract →
+3 LayoutLM vs pptx → 4 Florence-2 / SmolVLM / CLIP / ViT → 5 deploy winners.
+
+- [x] SherpaEngine `audio_clock` + unpaced `timeline_audit --fast` (byte-identical to real-time on test_deck; ~15 s vs ~2 min)
+- [x] per-segment Piper synthesis, 900 ms gaps, content-hashed + atomic WAV cache
+- [x] `tools/narrate.py` (XML truth parse only; banded reading order; dup alternates)
+- [x] `build_index(ocr=)` + OCR id-invariant test
+- [x] `python3 -m tools.deck_bench` → `out/bench/report_<variant>.{md,json}`; `decks/` git-ignored
+
+**First finding (test_deck, auto-narration):** recall 31/47, precision 1.000, flicker 0. Every miss is a 1–2 word
+mention (table cells "Stage"/"Live", bare chart readings "STT is 180", short labels "STT Engine") — the matcher
+holds the previous element rather than switching on a single-word cue. Real weakness, not a harness artifact;
+not tuned away. Candidate follow-up once real decks confirm it.
