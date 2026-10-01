@@ -42,7 +42,8 @@ from .stt import STTEngine, load_default_stt_engine, hotwords_from_index
 
 
 # match the Tk viewer's highlight look (src/viewer.py)
-HALO = (40, 40, 40)
+HALO = (31, 31, 31)
+AMBER = (255, 176, 0)  # two-tone box, same as the viewer: dark edge + amber line
 HIGHLIGHT_HALO_WIDTH = 3
 
 # animation parameters — same as viewer
@@ -95,7 +96,8 @@ def _draw_highlight(img: Image.Image, bbox_px: Bbox) -> None:
     if w <= 0 or h <= 0:
         return
     draw = ImageDraw.Draw(img)
-    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=HIGHLIGHT_HALO_WIDTH)
+    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
+    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=3)
 
 
 def _element_bbox_image_px(raw_index: dict, slide_no: int, element_id: str,

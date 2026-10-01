@@ -40,8 +40,12 @@ from .matcher import Index, Matcher, PolicyConfig
 # ---- highlight animation parameters ----
 ANIM_MS = 100      # highlight glide duration (snappier; was 180)
 ANIM_FRAMES = 10
-HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # dark outline box around the active element
-HIGHLIGHT_OUTER_WIDTH = 3
+# two-tone box: a dark edge under a bright amber line, so the highlight reads on
+# both light and dark slide themes (a dark-only box vanished on dark decks)
+HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"
+HIGHLIGHT_OUTER_WIDTH = 6
+HIGHLIGHT_INNER_COLOUR = "#ffb000"
+HIGHLIGHT_INNER_WIDTH = 3
 
 
 class ViewerApp:
@@ -338,6 +342,7 @@ class ViewerApp:
         if self._highlight_outer_id is not None:
             self.canvas.delete(self._highlight_outer_id)
             self._highlight_outer_id = None
+        self.canvas.delete("hl_inner")
         if self._highlight_inner_id is not None:
             self.canvas.delete(self._highlight_inner_id)
             self._highlight_inner_id = None
@@ -349,10 +354,13 @@ class ViewerApp:
         x, y, w, h = bbox
         if w <= 0 or h <= 0:
             return
-        # single dark outline box around the active element
         self._highlight_outer_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
             outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
+        )
+        self.canvas.create_rectangle(
+            x, y, x + w, y + h, tags="hl_inner",
+            outline=HIGHLIGHT_INNER_COLOUR, width=HIGHLIGHT_INNER_WIDTH,
         )
         # companion box on the matching x-axis label (chart points), so the data
         # point and its axis value read as related — static, same colour.
@@ -373,7 +381,7 @@ class ViewerApp:
             return
         self._axis_label_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
-            outline=HIGHLIGHT_OUTER_COLOUR, width=max(1, HIGHLIGHT_OUTER_WIDTH - 1),
+            outline=HIGHLIGHT_INNER_COLOUR, width=HIGHLIGHT_INNER_WIDTH,
         )
 
     def _update_status(self) -> None:

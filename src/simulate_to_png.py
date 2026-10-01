@@ -27,7 +27,8 @@ from .matcher import Index, Matcher
 from .stt import STTEngine, load_default_stt_engine, hotwords_from_index
 
 
-HALO = (40, 40, 40)
+HALO = (31, 31, 31)
+AMBER = (255, 176, 0)  # two-tone box, same as the viewer: dark edge + amber line
 LABEL_BG = (255, 212, 0)
 LABEL_FG = (20, 20, 20)
 
@@ -49,7 +50,8 @@ def _draw_visit(img: Image.Image, bbox_px, order: int, font) -> None:
     x, y, w, h = bbox_px
     draw = ImageDraw.Draw(img)
     # single dark outline box around the active element
-    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=4)
+    draw.rectangle([x, y, x + w, y + h], outline=HALO, width=6)
+    draw.rectangle([x, y, x + w, y + h], outline=AMBER, width=3)
     # numbered badge in top-left of the box
     badge_d = 56
     bx, by = x - 8, y - 8
