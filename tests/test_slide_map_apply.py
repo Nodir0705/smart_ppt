@@ -177,17 +177,17 @@ def test_index_loads_map_units_flow_and_unpointables(tmp_path):
     assert box == pytest.approx({"x": 1.0, "y": 2.0, "w": 2.0, "h": 0.9})
 
 
-def test_index_keeps_only_specific_map_phrases(tmp_path):
-    """A map phrase joins its anchor's span only when it is no closer to generic
-    talk (NULL_SPEECH) than the anchor's own text, and closer to its own unit's
-    text than to any other unit's."""
+def test_map_phrases_filtered_and_judged_on_their_own_null_floor(tmp_path):
+    """A map phrase far more generic than its anchor's text is dropped at load; a
+    kept one never raises the anchor's null floor — it is scored minus its own
+    excess null similarity instead, so adding it can't make the unit harder to light."""
     import numpy as np
-    from src.matcher import NULL_SPEECH, Index
+    from src.matcher import NULL_SPEECH, Index, Matcher
 
     vec = {"Stage A": [1, 0, 0.3, 0], "Stage B": [0, 1, 0, 0],   # null axis = dim 2
-           "the reading stage": [0.9, 0.1, 0.25, 0],    # specific -> kept
-           "how we turn pixels into text": [0.3, 0, 0.95, 0],   # generic (near null) -> dropped
-           "o c r": [0.2, 0.9, 0, 0]}                   # closer to Stage B -> dropped
+           "the reading stage": [0.9, 0.1, 0.25, 0],    # below the text floor -> no shift
+           "how we turn pixels into text": [0.3, 0, 0.95, 0],   # far above -> dropped
+           "o c r": [0.2, 0.9, 0.3, 0]}                 # a little above -> kept, shifted
 
     class Enc:
         dim, model_name = 4, "stub"
@@ -197,11 +197,19 @@ def test_index_keeps_only_specific_map_phrases(tmp_path):
             return v / np.linalg.norm(v, axis=1, keepdims=True)
 
     _write_map(tmp_path, _map())
-    ix = apply_slide_maps(_index(), tmp_path)
     p = tmp_path / "index.json"
-    p.write_text(json.dumps(ix))
-    refs = {r.id: r for r in Index(p, Enc()).elements_on(1)}
-    assert refs["s1_head1"].phrases == ["Stage A", "the reading stage"]
+    p.write_text(json.dumps(apply_slide_maps(_index(), tmp_path)))
+    ix = Index(p, Enc())
+    refs = {r.id: r for r in ix.elements_on(1)}
+    assert refs["s1_head1"].phrases == ["Stage A", "the reading stage", "o c r"]
     assert refs["s1_body1"].phrases == ["Reads the page with a model"]
     spans = sorted((r.emb_start, r.emb_end) for r in refs.values())
     assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))   # contiguous re-lay
+    m = Matcher(ix, Enc())
+    unit = lambda t: np.asarray(t, dtype=np.float32) / np.linalg.norm(t)  # noqa: E731
+    floor = float(unit(vec["Stage A"])[2])
+    assert m.null_floor["s1_head1"] == pytest.approx(floor)      # text only, not "o c r"
+    shift = m._penalty[1][refs["s1_head1"].emb_start:refs["s1_head1"].emb_end]
+    d = Matcher.MAP_DISCOUNT
+    assert shift[0] == 0.0 and shift[1] == pytest.approx(d)       # text row free; map row discounted
+    assert shift[2] == pytest.approx(float(unit(vec["o c r"])[2]) - floor + d, abs=1e-6)

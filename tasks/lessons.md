@@ -121,3 +121,22 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
 - **The holdout disagreed:** meaning lit 52/59 vs default 53 (the unfiltered map got 55). False ids, flicker, sw/step
   and false seconds all improved. The filter drops recall phrases as well as the generic ones. That costs recall on
   the speech that most needs the map (meaning-style references).
+
+## Fix the root cause, not the phrases (2026-10-02, follow-up)
+
+- **The filter treated a symptom.** The nearest-unit rule plus the 0.03 null filter fixed the tune scripts, but it
+  removed recall phrases along with the generic ones. On the holdout, lit fell to 52/59 (s6_e13 lost every map
+  phrase). The root cause was the floor rule, so fix the floor rule.
+- **Each map phrase gets its own null bar.** An element's null floor now comes from its slide-text phrases only. A
+  map-phrase row is scored minus (its null similarity − that floor, if positive) + MAP_DISCOUNT 0.04. It clears only
+  by beating its own null similarity + null_margin. Adding phrases can't make a unit harder to light any more. On
+  unmapped decks every row is text and nothing shifts, so decisions are byte-identical (hand fixture 38/40, 1, 1).
+- **A per-phrase bar alone over-lights.** With no discount: lit 106 but sw/step 1.77–1.83 (default 1.745) and
+  filler 3. The discount band 0.03–0.05 passes every summed gate. 0.02 fails on filler and flicker. I locked 0.04,
+  the centre of the band. The null filter only touches the far tail now (slack 0.06; None is nearly the same).
+- **Flow bonus off.** 0 was equal to or better than 0.03 and 0.05 in every row; few real transitions follow map flow.
+- **Sum the gate across tune scripts.** ±1 flicker or lit per script is noise at 48–61 steps. Summing over the two
+  tune scripts gave a gate that stable settings pass and that doesn't reward picking a lucky setting.
+- Result, default → map: tune sums lit 100 → 105, false ids 34 → 26, false s 65.9 → 61.7, flicker 23 → 22,
+  sw/step mean 1.745 → 1.695. Holdout (meaning): lit 53 → 57, false 22 → 19, false s 56.9 → 47.9. Holdout
+  sw/step is worse (1.81 → 1.86, not gated). Filler 2 → 2.

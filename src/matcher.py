@@ -362,6 +362,10 @@ class Index:
         for eid, u in self.unit_of.items():
             self._unit_members.setdefault(u, []).append(eid)
         self.flow_next: dict[str, set[str]] = flow_successors(self.raw)
+        # rows [emb_start, emb_start + n_text) are an element's own slide text; any
+        # rows after them are kept slide-map phrases (see _map_rows)
+        self.n_text: dict[str, int] = {el["id"]: len(el.get("trigger_phrases") or [])
+                                       for s in self.raw["slides"] for el in s["elements"]}
 
     def unit_bbox(self, unit_id: str | None) -> dict | None:
         """Union bbox of a multi-element unit (None for a singleton / no unit)."""
@@ -494,43 +498,31 @@ class Index:
                 embs = np.concatenate(blocks).astype(np.float32)
             self._by_slide[sno] = (embs, refs)
 
-    # A slide-map phrase (talk, terms, summary on a unit's anchor) is kept only
-    # when it is SPECIFIC: no closer to generic presenter talk (NULL_SPEECH) than
-    # the anchor's own slide text is (+ MAP_NULL_SLACK), and closer to the
-    # anchor's text than to any other map unit's text on the slide. A generic
-    # phrase ("the results", "under the hood") would otherwise light on any
-    # sentence and, through the per-element null floor, raise the bar of the
-    # whole unit (stale clears, misses).
-    MAP_NULL_SLACK = 0.03
+    # A slide-map phrase (talk, terms, summary on a unit's anchor) is dropped when
+    # it is much closer to generic presenter talk (NULL_SPEECH) than the anchor's
+    # own slide text is (> text floor + MAP_NULL_SLACK): "the results", "under
+    # the hood" would light on any sentence. None keeps every map phrase. Kept
+    # phrases are judged against their OWN null similarity (Matcher._penalty).
+    MAP_NULL_SLACK: float | None = 0.06
 
     def _map_rows(self, slide: dict, refs: list[ElementRef], embs: np.ndarray) -> dict:
         """anchor id -> (kept map phrases, their embeddings) for a mapped slide."""
-        units = list(((slide.get("map") or {}).get("units") or {}).values())
-        if not units:
-            return {}
         by_ref = {r.id: r for r in refs}
-        by_el = {e["id"]: e for e in slide["elements"]}
-
-        def rows(ids: list[str]) -> np.ndarray:
-            return np.concatenate([embs[by_ref[i].emb_start:by_ref[i].emb_end] for i in ids] or [embs[:0]])
-
-        null = self.encoder.encode(list(NULL_SPEECH))
+        null = None
         out = {}
-        for members in units:
-            phrases = by_el[members[0]].get("map_phrases") or []
-            own = rows(members[:1])
-            # ponytail: an anchor without slide text has nothing to calibrate
-            # against, so its map phrases are dropped; anchor on a texted member if
-            # picture-only units matter
-            if not phrases or not len(own):
+        for el in slide["elements"]:
+            phrases = el.get("map_phrases") or []
+            if not phrases:
                 continue
-            others = rows([i for ms in units if ms is not members for i in ms])
+            null = self.encoder.encode(list(NULL_SPEECH)) if null is None else null
+            r = by_ref[el["id"]]
+            own = embs[r.emb_start:r.emb_end]
             pe = self.encoder.encode(phrases)
-            keep = (pe @ null.T).max(1) <= float((own @ null.T).max()) + self.MAP_NULL_SLACK
-            if len(others):
-                keep &= (pe @ own.T).max(1) > (pe @ others.T).max(1)
+            keep = np.ones(len(phrases), dtype=bool)
+            if self.MAP_NULL_SLACK is not None and len(own):
+                keep = (pe @ null.T).max(1) <= float((own @ null.T).max()) + self.MAP_NULL_SLACK
             if keep.any():
-                out[members[0]] = ([p for p, k in zip(phrases, keep) if k], pe[keep])
+                out[el["id"]] = ([p for p, k in zip(phrases, keep) if k], pe[keep])
         return out
 
     # ---- public ----
@@ -575,6 +567,7 @@ NULL_SPEECH = (
 
 class Matcher:
     QUERY_CACHE_SIZE = 16
+    MAP_DISCOUNT = 0.04   # score shift on slide-map phrase rows (see __init__)
 
     def __init__(self, index: Index, encoder: Encoder) -> None:
         self.index = index
@@ -589,10 +582,29 @@ class Matcher:
             for sno, (_embs, refs) in index._by_slide.items()
         }
         null = encoder.encode(list(NULL_SPEECH))   # (n_null, dim), once per load
-        self.null_floor: dict[str, float] = {
-            r.id: float((embs[r.emb_start:r.emb_end] @ null.T).max())
-            for embs, refs in index._by_slide.values() for r in refs if r.is_pointable
-        }
+        # An element's null floor comes from its own slide-text phrases. A slide-map
+        # phrase is judged against its OWN null similarity instead: its rows are
+        # scored minus how far that similarity exceeds the element's floor, so it
+        # clears the element's bar only by beating its own floor + null_margin.
+        # Adding phrases can then never make an element harder to light (a max
+        # over all rows let one generic phrase raise the whole unit's bar). Map
+        # rows also pay MAP_DISCOUNT: a paraphrase written without seeing the talk
+        # is weaker evidence than the words on the slide.
+        # Unmapped decks: every row is text, floor = max over rows, no penalty.
+        self.null_floor: dict[str, float] = {}
+        self._penalty: dict[int, np.ndarray] = {}   # slide -> per-row score shift (mapped only)
+        for sno, (embs, refs) in index._by_slide.items():
+            pen = np.zeros(embs.shape[0], dtype=np.float32)
+            for r in refs:
+                if not r.is_pointable:
+                    continue
+                ns = (embs[r.emb_start:r.emb_end] @ null.T).max(1)
+                nt = min(getattr(index, "n_text", {}).get(r.id, len(ns)), len(ns))
+                floor = float(ns[:nt].max()) if nt else float(ns.min())
+                self.null_floor[r.id] = floor
+                pen[r.emb_start + nt:r.emb_end] = np.maximum(0.0, ns[nt:] - floor) + self.MAP_DISCOUNT
+            if pen.any():
+                self._penalty[sno] = pen
 
     def _encode_query(self, spoken: str) -> np.ndarray:
         vec = self._query_cache.get(spoken)
@@ -628,6 +640,8 @@ class Matcher:
             for k in np.unique(win[win < len(words)]):   # phrases wanting a shorter window
                 sel = win == k
                 sims[sel] = embs[sel] @ self._encode_query(" ".join(words[-int(k):]))
+        if slide_no in self._penalty:
+            sims = sims - self._penalty[slide_no]
         per_el: list[tuple[float, ElementRef]] = []
         for ref in refs:
             if not ref.is_pointable:
@@ -701,8 +715,10 @@ class PolicyConfig:
     stale_release: int = 3
     # --- flow hint: a unit the slide map says comes next (`flow` relation) after
     #     the active unit gets this on its effective score. 0 disables; decks
-    #     without maps have no flow relations, so it never applies there. ---
-    flow_bonus: float = 0.05
+    #     without maps have no flow relations, so it never applies there. Off:
+    #     few real transitions follow map flow (4% on the jumpy talk) and 0.03 /
+    #     0.05 only added switches. ---
+    flow_bonus: float = 0.0
 
 
 def _floor(ref: ElementRef) -> str:
