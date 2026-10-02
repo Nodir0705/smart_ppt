@@ -155,3 +155,28 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   `llama_state_seq_get_data/set_data` for seq 0 instead: ~14 MB per slide, restore ~100 ms, bit-identical scores.
 - **Thread count is measured, not assumed:** i5-14400F (6P+4E) best at 12 threads (131 ms); 16 threads thrashes
   (p90 1.5 s).
+
+## Clause pointer: decide per clause, point and hold (2026-10-02)
+
+- **Segmenting into clauses fixed hopping; the decider fixed wrong ids.** The same bge-small cosine as today,
+  run per clause (bi decider), cut lateness 2.59 → 1.75 s but kept 1.9 switches/step. A cross-encoder that reads
+  clause and unit description together cut false ids 16/10 → 6/6 and switches to ~1.2/step.
+- **Re-ranker logits are bimodal and absolute.** Unrelated pairs score -9..-12 and a named unit -5..+5 on every
+  slide, so one fixed NONE bar (-7) works. The pass band was -8..-5.5; it fails at -5 on lateness, not on recall.
+- **CPU cost is per token, so measure it on real calls.** MiniLM-L-6 took 387 ms/call on one thread (6-10 units x
+  ~150 tokens); int8 quantization only gave ~1.5x. TinyBERT-L-2 (128 wide) took 15 ms in the live loop and passed the
+  same gate. bge-reranker-base was best on quality (jumpy false ids 2, lateness 2.63 s) but took 2 s per call.
+- **The local LLMs lost recall inside the engine:** lit 41-50 on the tune talks, against 46-59 for the cross-encoder.
+  A tie-break hybrid (LLM only when the cross top-2 are close) never beat the cross-encoder alone.
+- **Put the transcript state on the object that travels.** Every consumer hands `controller.buffer` to
+  `LiveTranscriber`, and the viewer swaps in a fresh buffer per slide. The cumulative words and the pause boundaries
+  therefore live on `RollingBuffer`, and `LiveTranscriber` shows every chunk to it before STT. No consumer can forget
+  the hook.
+- **The replay harness must reproduce known rows before it ranks anything.** `tools/clause_replay` matched today's
+  map system (46/48 1.85 ... on all 3 talks) and the oracle rows exactly. A first parity check against my faster
+  sweep loop caught an off-by-a-partial bug: the pointer was created after the first partial, which dropped that
+  partial's words.
+- **Don't re-run a pipeline stage on its own output.** Re-applying `apply_slide_maps` to the scoped index changed
+  `map_phrases` (scope had added a trigger phrase afterwards). Patch in only the new key and diff the result.
+- **Holdout kept honest.** I locked params on original + jumpy, committed them, and only then ran meaning:
+  57/59 (=), false 11 (19), 1.28 sw/step, dwell 5.4 s, lateness 2.47 s (2.68). All gates passed.
