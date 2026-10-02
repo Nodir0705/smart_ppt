@@ -214,3 +214,8 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   is sometimes an error. Position terms add two of those errors: "on the right are the four ..." lights the
   right-hand card. Without position terms it is 16 / 51.5 and costs 3 lit. The raw false-seconds win is partly
   tolerated title time.
+
+## 2026-10-03 — blind whole-map refinement REGRESSED (maps_v2 not adopted)
+A per-slide "review and refine" pass (43 agents, blind to scripts: merge duplicates, presenter-angle rewrites, exclusive terms first, drop generic phrases) made both decks WORSE on the clause pointer: AI tune false s 15.0→29.5, jumpy lit 59→56; Open-Q original lit 94→89, meaning false s 60.9→93.7, flicker 2→12. The refined maps carried ≈2–3× more `terms`/`talk` per slide and changed unit partitions on 3 AI + 5 OQ slides; losses concentrate on the re-partitioned slides, and false time moved between slides rather than disappearing.
+- **Lesson:** "more and richer descriptions" over-trigger a cross-encoder that scores short noisy clauses; a map rewrite must be MINIMAL and targeted (one failure class at a time, ablated), not a wholesale re-authoring. Keep v1 maps as the baseline; test candidate edits as hybrids (partition-only, exclusive-terms-only, summary-only) before adopting anything.
+- Adjudication of 27 "non-pointing" sentences that plainly name a unit: 21 tolerated → Open-Q original adjudicated false s 56.8→39.9 (measurement only; strict ruler unchanged).
