@@ -431,3 +431,67 @@ class TestSemanticAcceptance:
         assert r_s4.element_id != r_s3.element_id
         assert r_s4.element_id.startswith("s4_")
         assert r_s3.element_id.startswith("s3_")
+
+
+# ---------- slide furniture ----------
+
+def _el(eid, text, y, h=0.1, type="body"):
+    return {"id": eid, "type": type, "text": text, "bbox": {"x": 1.0, "y": y, "w": 2.0, "h": h}}
+
+
+def _furniture_deck():
+    """5 slides, 7.5 in tall: a running footer (with a changing page count) and a
+    page number in the bottom margin on every slide; content that must survive."""
+    slides = []
+    for n in range(1, 6):
+        els = [_el(f"s{n}_title", f"Step {n}", 0.3, type="title"),  # repeats ("Step #"), in the margin
+               _el(f"s{n}_head", f"Part {n}", 0.3),                # same, but not a title -> header
+               _el(f"s{n}_foot", f"Acme Review | Page {n + 1}", 7.1),
+               _el(f"s{n}_pg", str(n), 7.1),
+               _el(f"s{n}_body", "Revenue grew", 3.0)]
+        slides.append({"slide_number": n, "elements": els})
+    slides[2]["elements"].append(_el("s3_stat", "3", 3.5))          # mid-slide stat "3" on slide 3
+    slides[3]["elements"].append(_el("s4_num", "7", 7.1))           # margin number != slide number
+    return {"slide_size": {"w": 13.33, "h": 7.5}, "slides": slides}
+
+
+def test_furniture_ids_flags_footer_and_page_numbers_only():
+    from src.matcher import furniture_ids
+    got = furniture_ids(_furniture_deck())
+    assert got == {f"s{n}_{k}" for n in range(1, 6) for k in ("foot", "pg", "head")}
+    assert "s3_stat" not in got and "s4_num" not in got      # mid-slide / not its slide number
+    deck = _furniture_deck()
+    for s in deck["slides"]:
+        s["elements"][1]["bbox"]["y"] = 2.0                          # the repeat moved mid-slide
+    assert not {e for e in furniture_ids(deck) if e.endswith("_head")}
+
+
+def test_furniture_needs_a_majority_of_slides():
+    from src.matcher import furniture_ids
+    deck = _furniture_deck()
+    for s in deck["slides"][2:]:                                     # footer on 2 of 5 slides only
+        s["elements"] = [e for e in s["elements"] if not e["id"].endswith("_foot")]
+    assert not {e for e in furniture_ids(deck) if e.endswith("_foot")}
+    assert furniture_ids({"slides": deck["slides"]}) == set()        # no slide size -> no geometry
+
+
+def test_index_makes_furniture_unpointable(tmp_path):
+    import json
+    import numpy as np
+    from src.matcher import Index
+
+    class Enc:
+        dim, model_name = 4, "stub"
+        def encode(self, texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    deck = _furniture_deck()
+    for s in deck["slides"]:
+        for e in s["elements"]:
+            e["trigger_phrases"] = [e["text"]]
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps(deck))
+    refs = {r.id: r for r in Index(p, Enc()).elements_on(1)}
+    assert not refs["s1_foot"].is_pointable and not refs["s1_pg"].is_pointable
+    assert refs["s1_body"].is_pointable and refs["s1_title"].is_pointable
+

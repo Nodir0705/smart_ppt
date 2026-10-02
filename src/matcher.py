@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,53 @@ def best_index(preferred: str | Path | None = None, out_dir: str | Path = "out")
     return out / "index.json"
 
 
+# ---------- slide furniture (never pointed at) ----------
+
+# A presenter never points at the deck's furniture: the running footer/caption
+# repeated on most slides, or the page number in the slide's margin. Left
+# pointable they collide with speech ("handout checker", "ten", "page") and light
+# instead of content. Deterministic and deck-agnostic: decided from the index's
+# own repetition + geometry, no wordlist.
+FURNITURE_MIN_SHARE = 0.5   # running text: on at least this share of slides (and >= 3)
+FURNITURE_EDGE = 0.15       # margin: bbox centre in the top/bottom 15% of the slide (or off it)
+
+
+def furniture_ids(raw: dict) -> set[str]:
+    """Ids of non-title elements in a slide's top/bottom FURNITURE_EDGE margin that are
+
+    * running text — the same text (digits ignored, so "Page 7"/"Page 8" match)
+      containing a letter, on >= FURNITURE_MIN_SHARE of the slides (min 3); or
+    * a page number — a bare integer equal to its slide's number.
+
+    Titles are never furniture: "Step 1" … "Step 5" headings repeat by the same
+    rule but are the slide's subject.
+    """
+    slides = raw.get("slides", [])
+    height = (raw.get("slide_size") or {}).get("h")
+    if not height:
+        return set()
+    key = lambda t: re.sub(r"\d+", "#", " ".join(t.lower().split()))  # noqa: E731
+    on: dict[str, set[int]] = {}
+    for s in slides:
+        for el in s["elements"]:
+            t = (el.get("text") or "").strip()
+            if re.search(r"[a-z]", t, re.I):
+                on.setdefault(key(t), set()).add(s["slide_number"])
+    running = {k for k, v in on.items() if len(v) >= max(3, FURNITURE_MIN_SHARE * len(slides))}
+    out: set[str] = set()
+    for s in slides:
+        for el in s["elements"]:
+            t, box = (el.get("text") or "").strip(), el.get("bbox")
+            if not t or not box or el.get("type") == "title":
+                continue
+            cy = (box["y"] + box["h"] / 2) / height
+            if FURNITURE_EDGE <= cy <= 1 - FURNITURE_EDGE:
+                continue
+            if key(t) in running or (t.isdigit() and int(t) == s["slide_number"]):
+                out.add(el["id"])
+    return out
+
+
 # ---------- index loader with embedding cache ----------
 
 class Index:
@@ -115,6 +163,13 @@ class Index:
         # one EmbeddingMatrix and ElementRef list per slide_no
         self._by_slide: dict[int, tuple[np.ndarray, list[ElementRef]]] = {}
         self._build_cache_or_load()
+        # Furniture keeps its rows (the cache is untouched) but gets an empty
+        # span, so it is never pointable.
+        furniture = furniture_ids(self.raw)
+        for _embs, refs in self._by_slide.values():
+            for r in refs:
+                if r.id in furniture:
+                    r.emb_end = r.emb_start
 
     # ---- cache key based on index content + encoder model ----
     # Bump CACHE_VERSION whenever the ElementRef schema changes so stale pickles
