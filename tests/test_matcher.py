@@ -117,13 +117,14 @@ class TestMultiScaleTail:
 
     def test_dilution_short_tail_names_new_element(self):
         # 8-word tail still favours the title ("pipe line stages ..."), but the
-        # last two words clearly name the "Stage" cell -> switch.
+        # last two words clearly name the "Stage" cell -> switch once confirmed.
         pol = MatchPolicy(TextStubMatcher({
             "pipe line stages": [(0.92, self.T), (0.70, self.S)],
             "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
             "stages stage": [(0.93, self.S), (0.83, self.T)],
         }), PolicyConfig(**self.CFG))
         assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
+        assert pol.step("pipe line stages stage", 1)[1:] == ("title", "hold")
         assert pol.step("pipe line stages stage", 1)[1:] == ("stage", "switch")
 
     def test_short_override_off_keeps_long_tail_decision(self):
@@ -156,6 +157,7 @@ class TestMultiScaleTail:
             "stage um": [(0.60, self.S), (0.55, self.T)],
         }), PolicyConfig(**self.CFG))
         pol.step("pipe line stages", 1)
+        pol.step("pipe line stages stage", 1)
         assert pol.step("pipe line stages stage", 1)[1] == "stage"
         for _ in range(3):   # revert_guard=3 steps: title barred
             assert pol.step("line stages stage um", 1)[1:] == ("stage", "hold")
@@ -420,6 +422,7 @@ class TestSemanticAcceptance:
         pol = MatchPolicy(matcher, PolicyConfig())
         _, active, _ = pol.step("pipe line stages", 3)
         assert active == by_text["Pipeline Stages"]
+        pol.step("pipe line stages stage", 3)            # short win, confirming
         res, active, why = pol.step("pipe line stages stage", 3)
         assert active == by_text["Stage"] and why == "switch", res
 
@@ -520,7 +523,7 @@ def test_barred_bounce_still_clears_an_unsupported_active():
                                    short_words=0, null_margin=None))
     pol.step("x", 1), pol.step("x", 1)
     whys = [pol.step("x", 1)[2] for _ in range(8)]
-    assert whys[-1] == "clear" and pol.active_id is None
+    assert whys[:3] == ["hold", "hold", "clear"] and pol.active_id is None   # stale release
 
 
 def test_cuda_encoder_gets_its_own_embedding_cache(tmp_path):
@@ -544,3 +547,70 @@ def test_cuda_encoder_gets_its_own_embedding_cache(tmp_path):
     assert cpu._cache_key() != gpu._cache_key()
     del Enc.device                                   # encoder without a device attr = CPU
     assert Index(p, Enc())._cache_key() == cpu._cache_key()
+
+
+class TestSwitchConfirmation:
+    """Short-override switches need `short_confirm` consecutive confident wins;
+    full-tail switches stay instant; a lit element whose own full-tail support
+    is gone for `stale_release` updates is released."""
+
+    A, B, C = _ref("A", None), _ref("B", None), _ref("C", None)
+    CFG = dict(threshold=0.65, gap=0.03, short_words=2, short_threshold=0.73,
+               revert_guard=0, null_margin=None)
+
+    def _pol(self, table, **kw):
+        return MatchPolicy(TextStubMatcher(table), PolicyConfig(**{**self.CFG, **kw}))
+
+    def test_full_tail_switch_is_instant(self):
+        pol = self._pol({"w1 w2 w3": [(0.80, self.A), (0.60, self.B)],
+                         "w1 w2 w4": [(0.85, self.B), (0.70, self.A)]})
+        assert pol.step("w1 w2 w3", 1)[1:] == ("A", "switch")
+        assert pol.step("w1 w2 w4", 1)[1:] == ("B", "switch")
+
+    def test_short_override_needs_two_consecutive_wins(self):
+        t = {"w1 w2 w3": [(0.80, self.A), (0.60, self.B)],
+             "w2 w3": [(0.60, self.A)],
+             "w1 b b": [(0.80, self.A), (0.70, self.B)],
+             "b b": [(0.90, self.B), (0.60, self.A)]}
+        pol = self._pol(t)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("A", "hold")
+        assert pol.step("w1 b b", 1)[1:] == ("B", "switch")
+        # an interrupted streak starts over
+        pol = self._pol(t)
+        pol.step("w1 w2 w3", 1)
+        pol.step("w1 b b", 1)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("A", "hold")
+        # short_confirm=1 restores the instant short path
+        pol = self._pol(t, short_confirm=1)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("B", "switch")
+
+    def test_stale_active_released_after_exactly_n_updates(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0)
+        pol.step("lit a", 1)
+        assert [pol.step("um uh", 1)[1:] for _ in range(3)] == [
+            ("A", "hold"), ("A", "hold"), (None, "clear")]
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0, stale_release=0)
+        pol.step("lit a", 1)
+        assert [pol.step("um uh", 1)[2] for _ in range(3)] == ["hold"] * 3
+
+    def test_stale_does_not_clear_on_a_confident_switch(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)],
+                         "see c": [(0.85, self.C), (0.60, self.A)]}, short_words=0)
+        pol.step("lit a", 1)
+        pol.step("um uh", 1), pol.step("um uh", 1)
+        assert pol.step("see c", 1)[1:] == ("C", "switch")
+
+    def test_reset_clears_confirmation_and_stale_state(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0)
+        pol.step("lit a", 1), pol.step("um uh", 1), pol.step("um uh", 1)
+        pol.reset()
+        assert pol._recent == [] and pol._stale == 0
+        pol.step("lit a", 1)
+        assert pol.step("um uh", 1)[1:] == ("A", "hold")

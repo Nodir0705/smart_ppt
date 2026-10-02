@@ -432,6 +432,15 @@ class PolicyConfig:
     #     generic presenter talk (Matcher.null_floor) by this much, so filler
     #     ("as you can see here...") can't light short/generic labels. ---
     null_margin: float | None = 0.12   # None disables
+    # --- short-override confirmation: a switch won by the short-tail override
+    #     (1-2 words, the hop-prone path) needs the same element to be the
+    #     confident winner on this many consecutive updates. Full-tail switches
+    #     stay instant. 1 disables. ---
+    short_confirm: int = 2
+    # --- stale release: the lit element is cleared after this many consecutive
+    #     updates on which its own full-tail score is below its bar (the talk has
+    #     moved on), unless that update switches to something else. 0 disables. ---
+    stale_release: int = 3
 
 
 class MatchPolicy:
@@ -463,6 +472,8 @@ class MatchPolicy:
         self._low_count = 0
         self._displaced: str | None = None   # element the last switch moved away from
         self._guard_left = 0                 # steps it stays barred from returning
+        self._recent: list[str | None] = []  # confident winner per recent step (None = none)
+        self._stale = 0                      # consecutive steps the active lacked support
 
     def reset(self) -> None:
         self.active_id = None
@@ -472,6 +483,11 @@ class MatchPolicy:
         self._low_count = 0
         self._displaced = None
         self._guard_left = 0
+        self._recent = []
+        self._stale = 0
+
+    def _remember(self, winner: str | None) -> None:
+        self._recent = (self._recent + [winner])[-max(1, self.cfg.short_confirm):]
 
     def _score(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
         # the real Matcher windows the tail per phrase; scripted stubs only expose scored()
@@ -561,9 +577,12 @@ class MatchPolicy:
         ranked: list[tuple[float, ElementRef]] = []
         if hasattr(self.matcher, "scored"):
             res, ranked = self._ranked(spoken, slide_no)
+            full = res
             res = self._short_override(spoken, slide_no, res)
+            is_short = res is not full
         else:
             res = self.matcher.match(spoken, slide_no)
+            is_short = False
         barred = False
         if self._guard_left > 0:
             self._guard_left -= 1
@@ -574,6 +593,7 @@ class MatchPolicy:
             # while it still clears its own bar (no step toward clearing).
             act = next((s for s, r in ranked if r.id == self.active_id), None)
             if act is not None and act >= self._bar(self.active_id, self.cfg.threshold):
+                self._remember(None)
                 self._candidate = None
                 self._cand_count = 0
                 return res, self.active_id, "hold"
@@ -583,6 +603,20 @@ class MatchPolicy:
             and res.score >= self._bar(res.element_id, self.cfg.threshold)
             and (getattr(res, "_eff_best", res.score) - getattr(res, "_eff_runner", res.runner_up_score)) >= self.cfg.gap
         )
+        self._remember(res.element_id if confident else None)
+        # Stale release: the active's own full-tail support is gone for
+        # `stale_release` updates and nothing else is taking over this update.
+        if self.active_id is not None and self.cfg.stale_release > 0 and hasattr(self.matcher, "scored"):
+            act = next((s for s, r in ranked if r.id == self.active_id), None)
+            if act is None or act < self._bar(self.active_id, self.cfg.threshold):
+                self._stale += 1
+            else:
+                self._stale = 0
+            if self._stale >= self.cfg.stale_release and not (confident and res.element_id != self.active_id):
+                self.active_id = None
+                self._active_group = None
+                self._stale = 0
+                return res, None, "clear"
         if not confident:
             self._low_count += 1
             self._candidate = None
@@ -605,12 +639,18 @@ class MatchPolicy:
         else:
             self._candidate = res.element_id
             self._cand_count = 1
-        if self._cand_count >= self.cfg.stickiness:
+        # a short-override win must repeat: the confident winner on each of the
+        # last `short_confirm` steps
+        confirmed = (not is_short or self.cfg.short_confirm <= 1
+                     or (len(self._recent) >= self.cfg.short_confirm
+                         and all(x == res.element_id for x in self._recent)))
+        if self._cand_count >= self.cfg.stickiness and confirmed:
             if self.active_id is not None and self.cfg.revert_guard > 0:
                 self._displaced, self._guard_left = self.active_id, self.cfg.revert_guard
             self.active_id = self._candidate
             self._active_group = getattr(res, "_best_group", None)
             self._candidate = None
             self._cand_count = 0
+            self._stale = 0
             return res, self.active_id, "switch"
         return res, self.active_id, "hold"
