@@ -73,18 +73,40 @@ class RollingBuffer:
 
     `text` returns the concatenation of those two — that's what the matcher
     operates on each tick.
+
+    It also keeps what the clause pointer needs, travelling with the buffer to
+    every consumer: the whole transcript since the last ``clear`` (finals never
+    pruned + the current partial, ``words``) and ``boundaries`` — word indices
+    where a new clause starts, recorded by ``audio`` when speech resumes after a
+    pause (LiveTranscriber feeds every PCM chunk there before STT sees it).
     """
 
     def __init__(self, window_seconds: float = 4.0) -> None:
         self.window_seconds = window_seconds
         self._finals: deque[tuple[float, str]] = deque()
         self._current_partial: str = ""
+        self._said: list[str] = []          # words of every final since clear()
+        self.boundaries: list[int] = []
+        self._pauses = None                 # PauseDetector, made on the first chunk
+
+    def audio(self, chunk: bytes, sample_rate: int = 16000) -> None:
+        """One PCM16 mono chunk, before STT consumes it: mark a clause boundary
+        at the current word count when speech resumes after a pause."""
+        if self._pauses is None:
+            from .clause_pointer import PauseDetector
+            self._pauses = PauseDetector(sample_rate)
+        if self._pauses.feed(chunk):
+            self.boundaries.append(len(self.words()))
+
+    def words(self) -> list[str]:
+        return self._said + self._current_partial.split()
 
     def push(self, partial: Partial) -> None:
         if partial.is_final:
             txt = partial.text.strip()
             if txt:
                 self._finals.append((partial.timestamp, txt))
+                self._said += txt.split()
             self._current_partial = ""
             self._prune(partial.timestamp)
         else:
@@ -120,6 +142,9 @@ class RollingBuffer:
     def clear(self) -> None:
         self._finals.clear()
         self._current_partial = ""
+        self._said = []
+        self.boundaries = []
+        self._pauses = None
 
 
 # ---------- hotword extraction ----------
@@ -286,10 +311,15 @@ class SherpaEngine:
     a finished utterance finalise and reset, mirroring Vosk's partial/final flow.
     """
 
-    def __init__(self, sample_rate: int = 16000, model_dir: Path | None = None) -> None:
+    def __init__(self, sample_rate: int = 16000, model_dir: Path | None = None,
+                 audio_clock: bool = False) -> None:
         import sherpa_onnx  # local import — heavy, optional dependency
 
         self.sample_rate = sample_rate
+        # audio_clock: stamp partials with seconds of audio consumed instead of
+        # wall time, so an unpaced file replay sees the same 4 s RollingBuffer
+        # window as real-time playback (bench/eval only; live stays wall-clock).
+        self.audio_clock = audio_clock
         md = Path(model_dir) if model_dir else SHERPA_MODEL_DIR
         s = _SHERPA_SUFFIX
         self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
@@ -319,9 +349,12 @@ class SherpaEngine:
         rec = self._rec
         stream = rec.create_stream()
         last = ""
+        audio_t = 0.0
         for chunk in audio_chunks:
             if not chunk:
                 continue
+            audio_t += len(chunk) / 2 / self.sample_rate
+            stamp = {"timestamp": audio_t} if self.audio_clock else {}
             samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
             stream.accept_waveform(self.sample_rate, samples)
             while rec.is_ready(stream):
@@ -329,24 +362,30 @@ class SherpaEngine:
             text = rec.get_result(stream).lower()  # match Vosk's lowercase contract
             if rec.is_endpoint(stream):
                 if text:
-                    yield Partial(text=text, is_final=True)
+                    yield Partial(text=text, is_final=True, **stamp)
                 rec.reset(stream)
                 last = ""
             elif text and text != last:
-                yield Partial(text=text, is_final=False)
+                yield Partial(text=text, is_final=False, **stamp)
                 last = text
 
 
-def load_default_stt_engine(sample_rate: int = 16000, grammar: bool = False):
+def load_default_stt_engine(sample_rate: int = 16000, grammar: bool = False,
+                            audio_clock: bool = False):
     """Return the best available offline STT engine.
 
     Prefers the lower-latency sherpa-onnx streaming model when it's installed and
     the model is present; otherwise falls back to Vosk. `grammar` forces Vosk
     (its deck-vocabulary constraint mode has no sherpa equivalent here).
+    `audio_clock` (unpaced bench replay) requires sherpa — no silent fallback.
     """
     if not grammar and _sherpa_model_present():
         try:
-            return SherpaEngine(sample_rate=sample_rate)
+            return SherpaEngine(sample_rate=sample_rate, audio_clock=audio_clock)
         except Exception as e:  # missing dep / bad model -> fall back, don't crash
+            if audio_clock:
+                raise
             print(f"[stt] sherpa-onnx unavailable ({e}); falling back to Vosk")
+    if audio_clock:
+        raise RuntimeError("audio_clock replay needs the sherpa-onnx engine")
     return VoskEngine(sample_rate=sample_rate, grammar=grammar)

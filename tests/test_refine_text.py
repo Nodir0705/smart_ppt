@@ -219,3 +219,74 @@ def test_union_of_boxes_multiline():
     u = _union_of_boxes([a, None, b])
     assert u == {"x": 1.0, "y": 2.0, "w": 3.0, "h": 0.6, "units": "inches"}
     assert _union_of_boxes([None]) is None
+
+
+def _pt_word(text, x, y, w=0.5, h=0.15):
+    """A PDF word dict in points (y from page top), as _iter_pdf_pages yields."""
+    return {"text": text, "x0": x * 72, "x1": (x + w) * 72, "top": y * 72, "bottom": (y + h) * 72}
+
+
+def _refine_one_slide(monkeypatch, elements, pt_words):
+    import src.refine_text as rt
+    index = {"deck": "x.pptx", "slide_size": {"w": 13.333, "h": 7.5, "units": "inches"},
+             "slides": [{"slide_number": 1, "elements": elements}]}
+    monkeypatch.setattr(rt, "_iter_pdf_pages", lambda _p: iter([(13.333 * 72, 540.0, pt_words)]))
+    return {e["id"]: e for e in rt.refine_index(index, "ignored.pdf")["slides"][0]["elements"]}
+
+
+def _el(eid, text, x, y, w, h, typ="body"):
+    return {"id": eid, "type": typ, "text": text, "needs_vision": False,
+            "bbox": {"x": x, "y": y, "w": w, "h": h, "units": "inches"}}
+
+
+def test_full_slide_label_does_not_absorb_other_shapes_overflow(monkeypatch):
+    """Bug A: a 2-word label authored as a full-slide text box used to own every
+    stray glyph on the slide (another shape's overflow) and frame half the slide."""
+    els = [_el("s1_e0", "THE PROBLEM", 0, 0, 13.333, 7.5, "diagram_label"),
+           _el("s1_e1", "Handouts come back as phone photos", 1.0, 3.4, 6.2, 0.2, "bullet")]
+    words = [_pt_word("THE", 0.7, 0.48, 0.3, 0.12), _pt_word("PROBLEM", 1.04, 0.48, 0.7, 0.12),
+             _pt_word("Handouts", 1.0, 3.42), _pt_word("come", 1.6, 3.42),
+             _pt_word("back", 2.2, 3.42), _pt_word("as", 2.8, 3.42),
+             # the bullet wraps: its second line renders below its own box
+             _pt_word("phone", 1.0, 3.62), _pt_word("photos", 1.6, 3.62),
+             _pt_word(",", 6.4, 4.2, 0.05, 0.05), _pt_word("ng", 1.9, 4.5, 0.2)]  # stray glyphs
+    out = _refine_one_slide(monkeypatch, els, words)
+    label = out["s1_e0"]
+    assert label["bbox_source"] == "pdf_text"
+    assert label["bbox"]["w"] < 1.2 and label["bbox"]["h"] < 0.2      # just the two words
+    bullet = out["s1_e1"]
+    assert bullet["bbox_source"] == "pdf_text" and len(bullet["line_bboxes"]) == 2
+
+
+def test_select_text_words_drops_stray_runs():
+    from src.refine_text import select_text_words
+    w = lambda i, t: {"i": i, "text": t, "x0": i, "y0": 0, "x1": i + 0.5, "y1": 0.2}
+    words = [w(0, "STUDENT"), w(1, "-"), w(2, "HANDOUT"), w(3, "AUTO"), w(4, "-"), w(5, "GRADING"),
+             w(9, ","), w(12, "ng"), w(15, "y")]     # 'ng' is a substring but already covered
+    kept, cover = select_text_words("STUDENT-HANDOUT AUTO-GRADING", words)
+    assert [x["text"] for x in kept] == ["STUDENT", "-", "HANDOUT", "AUTO", "-", "GRADING"]
+    assert cover == 1.0
+
+
+def test_stray_glyph_never_becomes_a_degenerate_box(monkeypatch):
+    """Bug B: a long bullet whose only in-box glyph was a lone '.' refined to a
+    0.02 x 0.02 in box; it must fall back to the shape box."""
+    els = [_el("s22_e5", "Observation: The device is occasionally missing.", 0.74, 1.97, 12.0, 0.27,
+               "bullet")]
+    out = _refine_one_slide(monkeypatch, els, [_pt_word(".", 10.97, 1.97, 0.02, 0.02)])
+    e = out["s22_e5"]
+    assert e["bbox_source"] == "shape" and e["bbox"] == e["shape_bbox"]
+
+
+def test_text_rendered_below_its_parsed_box_is_found_by_stream_alignment(monkeypatch):
+    """Parsed paragraph boxes drift from the render (code listings): each bullet's
+    glyphs sit in the NEXT bullet's box. Alignment follows the text, not the box."""
+    els = [_el("a", "reg = <0x34>;", 0.74, 1.65, 12.0, 0.22, "bullet"),
+           _el("b", "compatible = ti;", 0.74, 1.92, 12.0, 0.22, "bullet")]
+    words = [_pt_word("reg", 1.25, 1.9, 0.3), _pt_word("=", 1.6, 1.9, 0.1),
+             _pt_word("<0x34>;", 1.8, 1.9, 0.6),
+             _pt_word("compatible", 1.25, 2.3, 0.9), _pt_word("=", 2.2, 2.3, 0.1),
+             _pt_word("ti;", 2.4, 2.3, 0.2)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox"]["y"] == pytest.approx(1.9) and out["a"]["bbox"]["w"] == pytest.approx(1.15)
+    assert out["b"]["bbox"]["y"] == pytest.approx(2.3)

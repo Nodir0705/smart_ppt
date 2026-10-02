@@ -556,3 +556,44 @@ plan `docs/superpowers/plans/2026-10-01-deck-agnostic-scoping.md`.
 **Eval (test_deck):** baseline recall 38/40 · false 1 · flicker 2 → after: recall 38/40 · false 1 · flicker 2,
 per-slide trajectories byte-identical. Slide-4 pie relabelled latency → build effort split (was a whitelist mislabel).
 `SMARTPPT_RUN_EVAL=1` grounding test passes; full suite 195 passed, 1 skipped.
+
+## Multi-deck benchmark harness — program step 1/5 (2026-10-01)
+
+**Status:** complete on `feat/deck-bench`. Spec `docs/superpowers/specs/2026-10-01-deck-bench-design.md`,
+plan `docs/superpowers/plans/2026-10-01-deck-bench.md`. Program: 1 harness → 2 PaddleOCR vs Tesseract →
+3 LayoutLM vs pptx → 4 Florence-2 / SmolVLM / CLIP / ViT → 5 deploy winners.
+
+- [x] SherpaEngine `audio_clock` + unpaced `timeline_audit --fast` (byte-identical to real-time on test_deck; ~15 s vs ~2 min)
+- [x] per-segment Piper synthesis, 900 ms gaps, content-hashed + atomic WAV cache
+- [x] `tools/narrate.py` (XML truth parse only; banded reading order; dup alternates)
+- [x] `build_index(ocr=)` + OCR id-invariant test
+- [x] `python3 -m tools.deck_bench` → `out/bench/report_<variant>.{md,json}`; `decks/` git-ignored
+
+**First finding (test_deck, auto-narration):** recall 31/47, precision 1.000, flicker 0. Every miss is a 1–2 word
+mention (table cells "Stage"/"Live", bare chart readings "STT is 180", short labels "STT Engine") — the matcher
+holds the previous element rather than switching on a single-word cue. Real weakness, not a harness artifact;
+not tuned away. Candidate follow-up once real decks confirm it.
+
+**Multi-scale tail (2026-10-01):** fixed the short-mention dilution. Per-phrase windows (`max(4, n+1)` words) +
+2-word short-tail override (raw ≥ 0.73, gap 0.03, new element only) + 8-step revert guard, all inside
+`MatchPolicy.step`; `timeline_audit` now runs through `LiveController`. 3-deck bench: hits 442→519/741,
+1+2-word 82→134/255, 6+-word 193→199/225, false 0, flicker 31→20. Hand fixture 38/40, false 1, flicker 2→1.
+
+**Filler precision (2026-10-01):** `deck_bench` now runs a negative pass (FILLER_HOLDOUT presenter filler per slide,
+expected none) and reports `filler_false`. Holdout baseline: old (cec1f1c) 20, multi-scale 36. Fix: per-element null
+floor (best cosine to fixed `NULL_SPEECH` generic talk) + `null_margin` 0.12 in `MatchPolicy`. Holdout 36→5, tune
+56→9; bench hits 512/741, 1+2w 131/255, 6+ 198/225, false 0, flicker 15; hand 38/40, false 1, flicker 1.
+
+**Pointer behaviour under natural speech (2026-10-02):** presenter_bench adjudicated scoring (5ccd53f); slide furniture
+unpointable (1eabcb3); revert-guard bounce no longer clears (02520e6); select_line punctuation (d7dd866). Real-STT:
+AI 43/48, adj false 10 ids / 19.4 s, 2.40 sw/step, late 2.60 s; Open-Q 91/117, adj 23 / 37.7 s; hand 38/40 f1 fl1;
+filler holdout 5; verbatim 483/741; pytest 265 passed. **Gate NOT met** (AI adj false s ≤ 10.2, sw/step ≤ 1.5):
+every switch-confirmation rule that reaches them breaks the hand fixture (31–37/40) and Open-Q recall (59–68/117).
+Best non-gate candidate (not shipped): confirm only short-override switches + release a hold after 3 unsupported
+updates — AI adj 12.7 s / 2.19 sw / late 2.80, Open-Q adj 27.0 s, hand 38/40, verbatim 471. Decision pending.
+
+**Card-level pointing (2026-10-02):** eval `--device` + per-deck processes (bd464be; presenter 353→106 s, identical
+trajectories); short-override confirm + stale release (e611d5d; AI 2.19 sw/step, adj 12.7 s); pointable units at Index load
+(stack / picture+caption / card panel) — policy, viewer, simulators and benches all at unit level; gap 0.035, clear 16,
+stale off. AI 43/48, 1.58 sw/step, adj 9.4 s; Open-Q 89/117, 2.01, adj 46.2 s (worse, flagged); hand 38/40 f1 fl1;
+filler 3; verbatim 462/741. Next: kicker/title lights.

@@ -96,6 +96,113 @@ class TestGroupPolicy:
         assert active == "B" and why == "switch"
 
 
+class TextStubMatcher:
+    """scored() keyed by the spoken text, so long and short tails differ."""
+
+    def __init__(self, table):
+        self._table = table
+
+    def scored(self, spoken, slide_no):
+        return self._table.get(spoken, [])
+
+
+class TestMultiScaleTail:
+    """Full tail is primary; the last `short_words` words may switch to a new
+    element only on the stricter `short_threshold` bar; the revert guard keeps
+    the displaced element from bouncing straight back."""
+
+    T, S, W = _ref("title", None), _ref("stage", None), _ref("when", None)
+    CFG = dict(threshold=0.65, gap=0.03, stickiness=1, short_words=2,
+               short_threshold=0.73, revert_guard=3)
+
+    def test_dilution_short_tail_names_new_element(self):
+        # 8-word tail still favours the title ("pipe line stages ..."), but the
+        # last two words clearly name the "Stage" cell -> switch once confirmed.
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**self.CFG))
+        assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
+        assert pol.step("pipe line stages stage", 1)[1:] == ("title", "hold")
+        assert pol.step("pipe line stages stage", 1)[1:] == ("stage", "switch")
+
+    def test_short_override_off_keeps_long_tail_decision(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**{**self.CFG, "short_words": 0}))
+        pol.step("pipe line stages", 1)
+        assert pol.step("pipe line stages stage", 1)[1:] == ("title", "hold")
+
+    def test_common_words_in_short_tail_do_not_switch(self):
+        # "and the" sits below the short bar -> the full tail keeps the title
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages and the": [(0.88, self.T), (0.66, self.W)],
+            "and the": [(0.70, self.W), (0.66, self.S)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        assert pol.step("pipe line stages and the", 1)[1:] == ("title", "hold")
+
+    def test_revert_guard_blocks_bounce_back_then_expires(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+            # the old words linger: the full tail swings back to the title while
+            # the short tail is weak
+            "line stages stage um": [(0.90, self.T), (0.75, self.S)],
+            "stage um": [(0.60, self.S), (0.55, self.T)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        pol.step("pipe line stages stage", 1)
+        assert pol.step("pipe line stages stage", 1)[1] == "stage"
+        for _ in range(3):   # revert_guard=3 steps: title barred
+            assert pol.step("line stages stage um", 1)[1:] == ("stage", "hold")
+        assert pol.step("line stages stage um", 1)[1:] == ("title", "switch")
+
+    def test_reset_clears_revert_guard(self):
+        pol = MatchPolicy(TextStubMatcher({
+            "pipe line stages": [(0.92, self.T), (0.70, self.S)],
+            "pipe line stages stage": [(0.92, self.T), (0.80, self.S)],
+            "stages stage": [(0.93, self.S), (0.83, self.T)],
+        }), PolicyConfig(**self.CFG))
+        pol.step("pipe line stages", 1)
+        pol.step("pipe line stages stage", 1)
+        pol.reset()
+        assert pol.step("pipe line stages", 1)[1:] == ("title", "switch")
+
+
+class TestNullFloor:
+    """An element must beat its own similarity to generic presenter talk
+    (Matcher.null_floor) by `null_margin`: a 1-word label like "When" scores
+    ~0.68 against any sentence, so generic filler must not light it."""
+
+    W = _ref("when", None)
+    TABLE = {"so let me just point out a couple of things": [(0.68, W)],
+             "when": [(0.95, W)]}
+
+    def _pol(self, margin):
+        m = TextStubMatcher(self.TABLE)
+        m.null_floor = {"when": 0.63}          # bar = max(0.65, 0.63 + margin)
+        return MatchPolicy(m, PolicyConfig(threshold=0.65, gap=0.03, stickiness=1,
+                                           short_words=0, null_margin=margin))
+
+    def test_generic_sentence_does_not_light_one_word_element(self):
+        pol = self._pol(0.12)
+        assert pol.step("so let me just point out a couple of things", 1)[1:] == (None, "noop")
+
+    def test_own_word_lights_it(self):
+        assert self._pol(0.12).step("when", 1)[1:] == ("when", "switch")
+
+    def test_without_null_margin_the_generic_sentence_lights_it(self):
+        # the mechanism, not the threshold, is what blocks the filler
+        pol = self._pol(None)
+        assert pol.step("so let me just point out a couple of things", 1)[1:] == ("when", "switch")
+
+
 # ---------- stub matcher for policy tests ----------
 
 class StubMatcher:
@@ -252,6 +359,24 @@ def loaded(real_encoder):
 
 
 @pytest.mark.slow
+def test_real_null_floor_blocks_filler_but_not_the_word(loaded):
+    """Real encoder: slide 3's one-word "When" cell stays dark under generic
+    presenter filler and lights when its word is spoken."""
+    matcher, _idx = loaded
+    filler = ("i want to move on to the ne",   # a real STT tail of the filler pass
+              "so what happens next")
+    on = PolicyConfig().null_margin
+    cases = ([(f, None, True) for f in filler]          # without the null floor: lit
+             + [(f, on, False) for f in filler] + [("when", on, True)])
+    for spoken, margin, lit in cases:
+        # gap pinned at the pre-unit 0.03: at 0.035 the ranking gap alone already
+        # drops one filler tail, and this test isolates the null-floor mechanism
+        pol = MatchPolicy(matcher, PolicyConfig(null_margin=margin, gap=0.03))
+        pol.step(spoken, 3)
+        assert (pol.active_id == "s3_e2") is lit, (spoken, margin)
+
+
+@pytest.mark.slow
 class TestSemanticAcceptance:
     @pytest.mark.parametrize("slide,spoken,expected_substr", [
         (6, "let me explain the matcher", "matcher"),
@@ -281,6 +406,28 @@ class TestSemanticAcceptance:
         assert (r.score < PolicyConfig.threshold) or ((r.score - r.runner_up_score) < 0.05), (
             f"filler scored too strongly: {r.score:.3f} vs ru {r.runner_up_score:.3f} on {r.text!r}")
 
+    @pytest.mark.parametrize("filler", ["and the", "so the", "of the", "it is", "this is", "to the", "in a"])
+    def test_common_word_pair_stays_below_short_bar(self, loaded, filler):
+        # the 2-word short tail must not clear the stricter short bar on filler
+        matcher, idx = loaded
+        for sno in idx.slide_numbers():
+            per_el = matcher.scored(filler, sno)
+            if per_el:
+                assert per_el[0][0] < PolicyConfig.short_threshold, (
+                    f"{filler!r} -> {per_el[0][1].text!r} {per_el[0][0]:.3f} on slide {sno}")
+
+    def test_dilution_switches_on_short_tail(self, loaded):
+        # "Pipeline Stages" (title) still dominates the full tail while the
+        # speaker reads the "Stage" header cell; the short tail must switch.
+        matcher, idx = loaded
+        by_text = {(r.text or ""): r.id for r in idx.elements_on(3)}
+        pol = MatchPolicy(matcher, PolicyConfig())
+        _, active, _ = pol.step("pipe line stages", 3)
+        assert active == by_text["Pipeline Stages"]
+        pol.step("pipe line stages stage", 3)            # short win, confirming
+        res, active, why = pol.step("pipe line stages stage", 3)
+        assert active == by_text["Stage"] and why == "switch", res
+
     def test_cross_slide_isolation(self, loaded):
         # same query, two slides → different elements
         matcher, _ = loaded
@@ -289,3 +436,183 @@ class TestSemanticAcceptance:
         assert r_s4.element_id != r_s3.element_id
         assert r_s4.element_id.startswith("s4_")
         assert r_s3.element_id.startswith("s3_")
+
+
+# ---------- slide furniture ----------
+
+def _el(eid, text, y, h=0.1, type="body"):
+    return {"id": eid, "type": type, "text": text, "bbox": {"x": 1.0, "y": y, "w": 2.0, "h": h}}
+
+
+def _furniture_deck():
+    """5 slides, 7.5 in tall: a running footer (with a changing page count) and a
+    page number in the bottom margin on every slide; content that must survive."""
+    slides = []
+    for n in range(1, 6):
+        els = [_el(f"s{n}_title", f"Step {n}", 0.3, type="title"),  # repeats ("Step #"), in the margin
+               _el(f"s{n}_head", f"Part {n}", 0.3),                # same, but not a title -> header
+               _el(f"s{n}_foot", f"Acme Review | Page {n + 1}", 7.1),
+               _el(f"s{n}_pg", str(n), 7.1),
+               _el(f"s{n}_body", "Revenue grew", 3.0)]
+        slides.append({"slide_number": n, "elements": els})
+    slides[2]["elements"].append(_el("s3_stat", "3", 3.5))          # mid-slide stat "3" on slide 3
+    slides[3]["elements"].append(_el("s4_num", "7", 7.1))           # margin number != slide number
+    slides[1]["elements"].append(_el("s2_sup", "²", 7.1))      # footnote marker: isdigit() but not int()
+    return {"slide_size": {"w": 13.33, "h": 7.5}, "slides": slides}
+
+
+def test_furniture_ids_flags_footer_and_page_numbers_only():
+    from src.matcher import furniture_ids
+    got = furniture_ids(_furniture_deck())
+    assert got == {f"s{n}_{k}" for n in range(1, 6) for k in ("foot", "pg", "head")}
+    assert "s3_stat" not in got and "s4_num" not in got      # mid-slide / not its slide number
+    assert "s2_sup" not in got
+    deck = _furniture_deck()
+    for s in deck["slides"]:
+        s["elements"][1]["bbox"]["y"] = 2.0                          # the repeat moved mid-slide
+    assert not {e for e in furniture_ids(deck) if e.endswith("_head")}
+
+
+def test_furniture_needs_a_majority_of_slides():
+    from src.matcher import furniture_ids
+    deck = _furniture_deck()
+    for s in deck["slides"][2:]:                                     # footer on 2 of 5 slides only
+        s["elements"] = [e for e in s["elements"] if not e["id"].endswith("_foot")]
+    assert not {e for e in furniture_ids(deck) if e.endswith("_foot")}
+    assert furniture_ids({"slides": deck["slides"]}) == set()        # no slide size -> no geometry
+
+
+def test_index_makes_furniture_unpointable(tmp_path):
+    import json
+    import numpy as np
+    from src.matcher import Index
+
+    class Enc:
+        dim, model_name = 4, "stub"
+        def encode(self, texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    deck = _furniture_deck()
+    for s in deck["slides"]:
+        for e in s["elements"]:
+            e["trigger_phrases"] = [e["text"]]
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps(deck))
+    refs = {r.id: r for r in Index(p, Enc()).elements_on(1)}
+    assert not refs["s1_foot"].is_pointable and not refs["s1_pg"].is_pointable
+    assert refs["s1_body"].is_pointable and refs["s1_title"].is_pointable
+
+
+def test_barred_bounce_holds_a_still_supported_active():
+    # A -> B, then the displaced A tops the tail for the whole revert guard while
+    # B still clears the bar: B must stay lit (barred steps are not low frames).
+    A, B = _ref("A", "A"), _ref("B", "B")
+    seq = [[(0.80, A), (0.50, B)], [(0.80, B), (0.50, A)]] + [[(0.80, A), (0.70, B)]] * 8
+    pol = MatchPolicy(ScoredStubMatcher(seq),
+                      PolicyConfig(threshold=0.65, revert_guard=8, clear_after_n_low=8,
+                                   short_words=0, null_margin=None))
+    assert pol.step("x", 1)[1:] == ("A", "switch")
+    assert pol.step("x", 1)[1:] == ("B", "switch")
+    for _ in range(8):
+        assert pol.step("x", 1)[1:] == ("B", "hold")
+
+
+def test_barred_bounce_still_clears_an_unsupported_active():
+    A, B = _ref("A", "A"), _ref("B", "B")
+    seq = [[(0.80, A), (0.50, B)], [(0.80, B), (0.50, A)]] + [[(0.80, A), (0.40, B)]] * 8
+    pol = MatchPolicy(ScoredStubMatcher(seq),
+                      PolicyConfig(threshold=0.65, revert_guard=8, clear_after_n_low=8,
+                                   short_words=0, null_margin=None, stale_release=3))
+    pol.step("x", 1), pol.step("x", 1)
+    whys = [pol.step("x", 1)[2] for _ in range(8)]
+    assert whys[:3] == ["hold", "hold", "clear"] and pol.active_id is None   # stale release
+
+
+def test_cuda_encoder_gets_its_own_embedding_cache(tmp_path):
+    # CPU and CUDA embeddings aren't bit-identical: they must never share a cache,
+    # and the CPU key must stay what it was (existing caches remain valid).
+    import json
+    import numpy as np
+    from src.matcher import Index
+
+    class Enc:
+        dim, model_name, device = 4, "stub", "cpu"
+        def encode(self, texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps({"slides": []}))
+    cpu = Index(p, Enc())
+    gpu_enc = Enc()
+    gpu_enc.device = "cuda"
+    gpu = Index(p, gpu_enc)
+    assert cpu._cache_key() != gpu._cache_key()
+    del Enc.device                                   # encoder without a device attr = CPU
+    assert Index(p, Enc())._cache_key() == cpu._cache_key()
+
+
+class TestSwitchConfirmation:
+    """Short-override switches need `short_confirm` consecutive confident wins;
+    full-tail switches stay instant; a lit element whose own full-tail support
+    is gone for `stale_release` updates is released."""
+
+    A, B, C = _ref("A", None), _ref("B", None), _ref("C", None)
+    CFG = dict(threshold=0.65, gap=0.03, short_words=2, short_threshold=0.73,
+               revert_guard=0, null_margin=None, stale_release=3)
+
+    def _pol(self, table, **kw):
+        return MatchPolicy(TextStubMatcher(table), PolicyConfig(**{**self.CFG, **kw}))
+
+    def test_full_tail_switch_is_instant(self):
+        pol = self._pol({"w1 w2 w3": [(0.80, self.A), (0.60, self.B)],
+                         "w1 w2 w4": [(0.85, self.B), (0.70, self.A)]})
+        assert pol.step("w1 w2 w3", 1)[1:] == ("A", "switch")
+        assert pol.step("w1 w2 w4", 1)[1:] == ("B", "switch")
+
+    def test_short_override_needs_two_consecutive_wins(self):
+        t = {"w1 w2 w3": [(0.80, self.A), (0.60, self.B)],
+             "w2 w3": [(0.60, self.A)],
+             "w1 b b": [(0.80, self.A), (0.70, self.B)],
+             "b b": [(0.90, self.B), (0.60, self.A)]}
+        pol = self._pol(t)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("A", "hold")
+        assert pol.step("w1 b b", 1)[1:] == ("B", "switch")
+        # an interrupted streak starts over
+        pol = self._pol(t)
+        pol.step("w1 w2 w3", 1)
+        pol.step("w1 b b", 1)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("A", "hold")
+        # short_confirm=1 restores the instant short path
+        pol = self._pol(t, short_confirm=1)
+        pol.step("w1 w2 w3", 1)
+        assert pol.step("w1 b b", 1)[1:] == ("B", "switch")
+
+    def test_stale_active_released_after_exactly_n_updates(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0)
+        pol.step("lit a", 1)
+        assert [pol.step("um uh", 1)[1:] for _ in range(3)] == [
+            ("A", "hold"), ("A", "hold"), (None, "clear")]
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0, stale_release=0)
+        pol.step("lit a", 1)
+        assert [pol.step("um uh", 1)[2] for _ in range(3)] == ["hold"] * 3
+
+    def test_stale_does_not_clear_on_a_confident_switch(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)],
+                         "see c": [(0.85, self.C), (0.60, self.A)]}, short_words=0)
+        pol.step("lit a", 1)
+        pol.step("um uh", 1), pol.step("um uh", 1)
+        assert pol.step("see c", 1)[1:] == ("C", "switch")
+
+    def test_reset_clears_confirmation_and_stale_state(self):
+        pol = self._pol({"lit a": [(0.80, self.A), (0.50, self.B)],
+                         "um uh": [(0.60, self.A), (0.55, self.B)]}, short_words=0)
+        pol.step("lit a", 1), pol.step("um uh", 1), pol.step("um uh", 1)
+        pol.reset()
+        assert pol._recent == [] and pol._stale == 0
+        pol.step("lit a", 1)
+        assert pol.step("um uh", 1)[1:] == ("A", "hold")

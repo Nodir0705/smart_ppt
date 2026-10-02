@@ -40,8 +40,13 @@ from .matcher import Index, Matcher, PolicyConfig
 # ---- highlight animation parameters ----
 ANIM_MS = 100      # highlight glide duration (snappier; was 180)
 ANIM_FRAMES = 10
-HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"  # dark outline box around the active element
-HIGHLIGHT_OUTER_WIDTH = 3
+# two-tone box: a dark edge under a bright amber line, so the highlight reads on
+# both light and dark slide themes (a dark-only box vanished on dark decks)
+HIGHLIGHT_OUTER_COLOUR = "#1f1f1f"
+HIGHLIGHT_OUTER_WIDTH = 6
+HIGHLIGHT_INNER_COLOUR = "#ffb000"
+HIGHLIGHT_INNER_WIDTH = 3
+HIGHLIGHT_PAD = 4  # px outside the element so the box frames the text instead of covering it
 
 
 class ViewerApp:
@@ -121,7 +126,6 @@ class ViewerApp:
         self._fit: FitTransform = FitTransform(scale=1.0, offset_x=0, offset_y=0, draw_w=0, draw_h=0)
         self._image_id: Optional[int] = None
         self._highlight_outer_id: Optional[int] = None
-        self._highlight_inner_id: Optional[int] = None
         self._axis_label_id: Optional[int] = None        # companion box on the axis label
         self._resize_job = None                          # pending settle-redraw
         self._last_draw_size: Optional[tuple[int, int]] = None  # last drawn canvas size
@@ -183,7 +187,7 @@ class ViewerApp:
         if slide_no < 1 or slide_no > len(self.raw_index["slides"]):
             return
         self.slide_no = slide_no
-        self.policy.reset()
+        self._controller.reset()   # policy + clause pointer: this slide's speech starts now
         self._cancel_anim()
         self._current_canvas_bbox = None
         self._target_canvas_bbox = None
@@ -201,7 +205,7 @@ class ViewerApp:
         if active_id:
             el = self._element_by_id.get(active_id, {})
             line += f"   active={active_id} {el.get('type','')} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(active_id)
+            self._set_target_from_element(active_id, line_bbox=self._controller.unit_bbox(active_id))
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)
@@ -276,7 +280,7 @@ class ViewerApp:
             self._anim_job = None
 
     def _clear_highlight(self) -> None:
-        self.policy.reset()
+        self._controller.reset()
         self._set_target_canvas_bbox(None)
         self._update_status()
 
@@ -326,7 +330,6 @@ class ViewerApp:
             self._fit.offset_x, self._fit.offset_y, anchor="nw", image=self._image_tk,
         )
         self._highlight_outer_id = None
-        self._highlight_inner_id = None
         # if the active element is set, recompute its canvas bbox at the new scale
         if self.policy.active_id:
             self._set_target_from_element(self.policy.active_id)
@@ -338,9 +341,7 @@ class ViewerApp:
         if self._highlight_outer_id is not None:
             self.canvas.delete(self._highlight_outer_id)
             self._highlight_outer_id = None
-        if self._highlight_inner_id is not None:
-            self.canvas.delete(self._highlight_inner_id)
-            self._highlight_inner_id = None
+        self.canvas.delete("hl_inner")
         if self._axis_label_id is not None:
             self.canvas.delete(self._axis_label_id)
             self._axis_label_id = None
@@ -349,10 +350,14 @@ class ViewerApp:
         x, y, w, h = bbox
         if w <= 0 or h <= 0:
             return
-        # single dark outline box around the active element
+        x, y, w, h = x - HIGHLIGHT_PAD, y - HIGHLIGHT_PAD, w + 2 * HIGHLIGHT_PAD, h + 2 * HIGHLIGHT_PAD
         self._highlight_outer_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
             outline=HIGHLIGHT_OUTER_COLOUR, width=HIGHLIGHT_OUTER_WIDTH,
+        )
+        self.canvas.create_rectangle(
+            x, y, x + w, y + h, tags="hl_inner",
+            outline=HIGHLIGHT_INNER_COLOUR, width=HIGHLIGHT_INNER_WIDTH,
         )
         # companion box on the matching x-axis label (chart points), so the data
         # point and its axis value read as related — static, same colour.
@@ -373,7 +378,7 @@ class ViewerApp:
             return
         self._axis_label_id = self.canvas.create_rectangle(
             x, y, x + w, y + h,
-            outline=HIGHLIGHT_OUTER_COLOUR, width=max(1, HIGHLIGHT_OUTER_WIDTH - 1),
+            outline=HIGHLIGHT_INNER_COLOUR, width=HIGHLIGHT_INNER_WIDTH,
         )
 
     def _update_status(self) -> None:
@@ -511,7 +516,7 @@ class ViewerApp:
             el = self._element_by_id.get(ev.active_id, {})
             tag = f" L{ev.line_index}" if ev.line_index is not None else ""
             line += f"   active={ev.active_id}{tag} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(ev.active_id, line_bbox=ev.line_bbox)
+            self._set_target_from_element(ev.active_id, line_bbox=ev.bbox)
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)

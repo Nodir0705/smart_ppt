@@ -48,3 +48,36 @@ def test_repeated_false_id_counts_once():
 def test_silence_is_not_a_false_highlight():
     hits, total, missed, relevant, false = score_slide([["a"]], [None, None])
     assert hits == 0 and relevant == 0 and false == 0
+
+
+def test_eval_items_skips_slides_missing_from_fixture():
+    from tools.timeline_audit import _eval_items
+    manifest = [{"slide": 1, "wav": "a.wav"}, {"slide": 2, "wav": "b.wav"},
+                {"slide": 3, "wav": "c.wav"}]
+    gt = {1: [["s1_e0"]], 3: [["s3_e0"]]}
+    items, skipped = _eval_items(manifest, gt, only=None)
+    assert [i["slide"] for i in items] == [1, 3]
+    assert skipped == [2]
+    items, skipped = _eval_items(manifest, gt, only=3)
+    assert [i["slide"] for i in items] == [3] and skipped == []
+
+
+def test_score_slide_at_unit_level_credits_every_step_of_a_card():
+    from tools.timeline_audit import score_slide, unit_groups
+    uo = {"h": "h", "d": "h", "c": "c", "x": "x"}
+    steps = [["h"], ["d"], ["c"], ["d"]]
+    assert unit_groups(steps, uo) == [(["h"], [["h"], ["d"]]), (["c"], [["c"]]), (["h"], [["d"]])]
+    # heading+description talked through under one steady box: both steps hit
+    assert score_slide(steps, ["h", "c", "h", "x"], uo) == (4, 4, [], 2, 1)
+    # element-level scoring (no unit map) would need the description lit itself
+    assert score_slide(steps, ["h", "c", "h"])[0] == 2
+    # a missed card group misses every step it covers
+    assert score_slide(steps, ["c"], uo)[:3] == (1, 4, [["h"], ["d"], ["d"]])
+
+
+def test_presenter_segments_map_to_units():
+    from tools.presenter_bench import step_sentences, unit_segments
+    segs = [{"refers_to": ["h"]}, {"refers_to": ["d"]}, {"refers_to": []}, {"refers_to": ["c", "d"]}]
+    mapped = unit_segments(segs, {"h": "h", "d": "h", "c": "c"})
+    assert [s["refers_to"] for s in mapped] == [["h"], ["h"], [], ["c", "h"]]
+    assert [ids for ids, _ in step_sentences(mapped)] == [["h"], ["c", "h"]]

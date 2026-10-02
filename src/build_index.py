@@ -39,6 +39,9 @@ def build_index(
     render_slides: bool = True,
     write_intermediates: bool = True,
     expansions_path: str = EXPANSIONS_PATH,
+    ocr: bool = True,
+    vision_link: bool = True,
+    slide_map_dir: str | Path | None = None,
 ) -> dict:
     """Build the index for `deck` and return the richest produced stage.
 
@@ -46,13 +49,16 @@ def build_index(
     serialized to disk *before* the next stage runs — the on-disk files are
     correct snapshots of each stage. `refine`/`scope` require LibreOffice
     (soffice) on PATH; pass `refine=False` to skip the PDF/render dependency.
+    `ocr=False` skips the tesseract fallback (bench "no-ocr" variant).
+    `vision_link=False` skips CLIP picture->text linking (bench "no-clip" variant).
+    `slide_map_dir` applies per-slide understanding maps (bench "map" variant).
     """
     deck = Path(deck)
     out = Path(out_dir)
 
     # OCR alt-text-less pictures when tesseract is present (parse_deck self-gates
     # and no-ops otherwise) so baked-in image text becomes pointable.
-    index = parse_deck(str(deck), ocr=True)
+    index = parse_deck(str(deck), ocr=ocr)
     if write_intermediates:
         _write(out / "index.json", index)
     final = index
@@ -67,8 +73,17 @@ def build_index(
         if slides_dir.exists():
             from .chart_detect import refine_chart_bboxes
             refine_chart_bboxes(final, str(slides_dir))
+            if vision_link:
+                from .vision_link import format_links, link_pictures
+                links = link_pictures(final, slides_dir)
+                if links:
+                    print(format_links(links), flush=True)
         if write_intermediates:
             _write(out / "index.refined.json", final)
+
+    if slide_map_dir is not None:
+        from .slide_map import apply_slide_maps
+        final = apply_slide_maps(final, Path(slide_map_dir))
 
     if scope:
         final = scope_index(final, expansions=expansions_for(final, expansions_path))

@@ -26,3 +26,157 @@ Added an offline OCR step so a picture with text rendered INTO the raster and no
 - **known_gap would have become a lie.** The deck was marked `known_gap` ("no OCR"); once OCR landed via a *gated step the parse-only fast test can't run*, that marker would permanently assert a gap that's actually fixed. Resolution: a `requires_ocr=True` deck flag — the fast no-silent-drops test SKIPS those, a slow OCR test asserts survival. Retired the known_gap.
 - **Landmine:** threading a new positional arg through `_parse_slide` breaks the monkeypatch stub in `test_parse_deck_isolates_a_failing_slide` (`def boom(slide,i,w,h)` → TypeError). Made `ocr` keyword-only and updated the stub to `*, ocr=False`. Don't weaken the isolation test to "fix" the failure.
 - **Lesson:** any feature that injects text into the match decision loop must clear the precision bar with a negative test BEFORE shipping, exactly like the levers that were rejected for failing it. `--psm 3` is the robust default but is under-determined by one centred label (scattered diagram labels may want psm 11) — noted as a knob, not tuned to the single image.
+
+## 2026-10-01 — eval pacing was wall-clock coupled; Piper is not bit-stable
+- `Partial.timestamp` defaulted to `time.monotonic()` and `RollingBuffer` prunes its 4 s window by it, so the audit HAD to replay audio in real time. Stamping partials with audio-time (opt-in `SherpaEngine(audio_clock=True)`) + unpaced `FileSource(chunk_ms=100)` reproduced the real-time trajectories byte-for-byte, 8× faster. Lesson: before parallelising a slow eval, find what couples it to the wall clock — one injected clock beat the whole parallel-runner design.
+- Piper TTS output differs run-to-run (VITS noise). Narration audio is therefore a cached artifact keyed on content (sha of segments+gap+voice), not something to regenerate per run — deleting `out/bench/*/audio` can shift scores slightly. Compare variants on the SAME cached audio.
+- Auto-narration reads only the XML truth parse (`ocr=False`); narrating from the index under test would score an OCR/VLM hallucination as a hit.
+
+## 2026-10-01 — multi-scale tail: the 3-5 word band needed per-phrase windows, not a short override
+Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail is diluted by lingering older words (title "Pipeline Stages" 0.886 beats cell "Stage" 0.763 while "stage" is being said).
+- **Record once, replay many.** The policy only ever sees `buf.tail(8)`, so recording per-update buffer texts (2.5 min of STT) and replaying policy variants with a cached encoder made each 3-deck sweep ~30 s instead of ~4 min, and reproduced the harness baselines exactly. Final numbers still certified on the real harness.
+- **Split recall by phrase-length band.** Every "long tail primary + 2-word override" variant fixed 1-2w but left 3-5w flat (167→170) and plateaued at ~490 hits; half of tail-4's gain was in 3-5w. Different bands need different scales → score each trigger phrase against its own window `max(4, n_words+1)` of the tail (`Matcher.scored_tail`). That alone took 6+ word recall 193→209.
+- **Fleeting mentions kill stickiness.** stickiness=2 / "sustained N updates" cut recall hard (mentions last ~1 update). Dropping the in-progress last word (fragment hypothesis) barely moved flicker (71→65). What worked: a revert guard — the element a switch just left can't come back for 8 steps — flicker 54→20 with no hit cost.
+- **Result** (short_words=2, short_threshold=0.73, revert_guard=8): bench hits 442→519/741, 1+2w 82→134/255, 6+ 193→199/225, false 0, flicker 31→20; hand fixture 38/40, false 1, flicker 2→1. Plateau: Ts 0.71–0.75 and guard 6–9 all pass the gate.
+- **Live = bench:** the multi-scale logic lives in `MatchPolicy.step` (after normalization) and `timeline_audit.record_trajectory` now runs through `LiveController.feed`, the same path the viewer and simulators use.
+
+## 2026-10-01 — filler precision: the bench only measured narration that NAMES things
+- **Measurement gap.** Every eval narrated deck elements, so `false` could only count wrong-element highlights while
+  the presenter was naming something. Nobody measured talk that names nothing ("as you can see here, this is really
+  important"). A negative pass (filler only, expected `[]`) showed most slides lit something: holdout 20 false (old)
+  → 36 after the multi-scale tail. Ablation: the 2-word override adds ~1 (off 35, Ts 0.78 35); the per-phrase windows
+  add the rest, because a 4-word window of filler resembles a short label more than an 8-word one does.
+- **Diagnosis decided the mechanism.** Filler raw scores sat at 0.65–0.71 (true mentions: median 0.73–0.80) and
+  spanned all label lengths (1w 30 / 2w 16 / 3w 10 / 4+ 18 of 74 switches). So a "≤2-word needs lexical support" rule
+  would have left ~40%, and a global threshold of 0.68 cost ~10% of true switches.
+- **Mechanism: per-element null floor.** `Matcher.null_floor[id]` = the element's best cosine to a fixed list of
+  generic presenter lines (`NULL_SPEECH`); `MatchPolicy` requires raw ≥ max(threshold, floor + `null_margin`) on both
+  the full-tail and short-override paths. "When"/"2"/"Display" sit ~0.6 from any sentence, so they get a higher bar
+  than specific labels. One parameter, no new model, one extra encode at load. `NULL_SPEECH` is a decision-loop
+  input like aliases: changing it shifts every bar.
+- **Tune/holdout discipline.** Margin picked on FILLER_TUNE + bench (0.12: tune 9; passing window 0.10–0.13; 0.14
+  drops bench hits to 504) BEFORE recording the holdout. Holdout at 0.12: 5 (old 20, current 36). NULL_SPEECH shares
+  phrasing with FILLER_TUNE ("look at this", "next slide") — tune is optimistic. That's why the holdout shares no
+  content word with tune, NULL_SPEECH or any deck (unit-tested).
+- **Cost:** bench hits 519→512/741, 1+2w 134→131/255, 6+ 199→198/225, flicker 20→15, false 0; hand fixture unchanged
+  (38/40, false 1, flicker 1). Residual: "2" lit by "a couple of things" (0.73–0.74) — semantically fair, left alone.
+- **Lesson:** a precision metric that only runs while the target is being named is blind to the most common real
+  failure (talk that names nothing). Every recall lever needs a negative pass, and a held-out filler set, before it
+  ships.
+
+## Pointer behaviour under natural speech (2026-10-02)
+
+- **Adjudicate before tuning.** presenter_bench now also scores false ids / false seconds with tolerated ids as
+  acceptable. Baseline adj: AI_Handout 13 ids / 20.4 s, Open-Q 24 / 37.5 s — strict (30 / 69 s) overstates the
+  problem ~3x.
+- **Lateness median rewards hops.** 6/40 AI and 12 Open-Q baseline "hits" lit *before* their sentence started
+  (accidental early lights credited by the ordered walk). Any filter that removes hops raises the deck median even
+  when every real switch is only one update (+0.30 s) later. Report the paired per-step delta next to the median.
+- **Switch-count and fast-succession recall are one tradeoff here.** Every confirmation rule tried (stickiness 2,
+  k-of-n, score-conditioned instant path, confirm-only-short-override, confirm-only-while-active-supported,
+  stable-last-word tail) either kept AI switches/step > 2.0 or broke the hand fixture (38 → 31–37) and Open-Q recall
+  (91 → 59–68). Hops and legit single-update wins have overlapping score/gap/support distributions — no feature
+  separated them. Don't re-run that sweep without a new signal.
+- **Furniture is a free win, decided from the deck itself:** running text on ≥ half the slides or own page number,
+  in the top/bottom 15% margin, titles exempt. Marked unpointable post-load (cache untouched).
+- **Harness hygiene:** replay scripts that `os.chdir` into the repo write their outputs there — always write to an
+  absolute scratch path.
+
+## Card-level pointing (2026-10-02)
+
+- **Eval speed: find the dominant cost before parallelising.** 79% of replay was the bge-small encoder. `--device cuda`
+  (eval only) + one spawned process per deck: presenter 353 → 106 s, verbatim+filler 791 → 226 s, with per-slide
+  trajectories identical to sequential CPU on every deck. CUDA kernels aren't bit-identical, so non-CPU encoders get
+  their own embedding-cache key. `deck_bench` rebuilds `<variant>/` unless `--reuse-index` — never forget it on a
+  shared bench tree.
+- **Point at what the audience sees.** 80–85% of presenter switches went between parts of one card. Grouping
+  elements into pointable units at load (stack / picture+caption / card panel; titles, charts, tables never) and
+  letting the policy compete units took AI_Handout 2.19 → 1.88 switches/step with lit and false seconds unchanged
+  or better — the intra-card hops are gone. A panel holding several multi-element units is a board, not a card.
+- **Unit level changes which policy knobs pay.** The rest of the gate (≤ 1.6) came from policy knobs re-tuned on
+  AI: gap 0.03 → 0.035, stale_release 3 → 0 (a released card was re-lit moments later, ~1 in 10 switches), and
+  clear_after_n_low 8 → 16. Holdout Open-Q paid for holding longer: adj false s 27.0 → 46.2. The remaining false
+  switches are mostly kicker labels and slide titles — next lever, not a grouping problem.
+- **Score at the level you point.** Map expected ids AND highlights to units; collapse consecutive same-unit steps
+  but credit every original step, so lit stays on the old ruler (48/117/40/741) and stays comparable.
+
+## Using the slide map's meaning (2026-10-02)
+
+- **A phrase pile poisons the null floor.** The null floor is a per-element MAX over its phrases, so one generic map
+  talk phrase ("the system i want to show you", "what you get at the end") raised the bar of the whole unit — 78
+  elements' floors rose (s1_e1 0.56 → 0.83, bar 0.95 = unlitable). That one mechanism produced the jumpy misses and
+  most of the new "flicker", which was A → None → A (every map-variant clear was a stale release), not A → B → A.
+  Before adding phrases to an element, check what they do to its floor, not just to its score.
+- **Keep only specific map phrases, decided at load:** a map phrase (talk, terms, summary) joins its anchor only if its
+  NULL_SPEECH similarity ≤ the anchor's own text floor + 0.03 and it sits closer to the anchor's text than to any
+  other unit's text on the slide. Title / section-label units get no talk (their talk is slide-intro speech said
+  without pointing). Summaries pass the same filter. Result (orig, jumpy): lit 45/48, 58/61; false s 34.1, 21.8
+  (default 40.8, 25.1); flicker 12 (default 9; gate ≤ 11, missed by one), 8.
+- **Replay harness:** STT is identical across index variants (sherpa ignores hotwords), so cache the STT tails once and
+  replay only the policy — about 40 s per variant instead of a full bench, and it reproduced the bench exactly.
+- **Know the noise band before you tune.** Near the locked point, orig flicker moved 11 ↔ 12 and sw/step ±0.02 with
+  any small change (slack ±0.01, map-phrase weight 0.97/0.98/0.99). The one setting that passed every cell
+  (weight 0.98) passed by giving back 6 s of the false-seconds win. Don't choose the setting that happened to pass;
+  report the miss.
+- **The holdout disagreed:** meaning lit 52/59 vs default 53 (the unfiltered map got 55). False ids, flicker, sw/step
+  and false seconds all improved. The filter drops recall phrases as well as the generic ones. That costs recall on
+  the speech that most needs the map (meaning-style references).
+
+## Fix the root cause, not the phrases (2026-10-02, follow-up)
+
+- **The filter treated a symptom.** The nearest-unit rule plus the 0.03 null filter fixed the tune scripts, but it
+  removed recall phrases along with the generic ones. On the holdout, lit fell to 52/59 (s6_e13 lost every map
+  phrase). The root cause was the floor rule, so fix the floor rule.
+- **Each map phrase gets its own null bar.** An element's null floor now comes from its slide-text phrases only. A
+  map-phrase row is scored minus (its null similarity − that floor, if positive) + MAP_DISCOUNT 0.04. It clears only
+  by beating its own null similarity + null_margin. Adding phrases can't make a unit harder to light any more. On
+  unmapped decks every row is text and nothing shifts, so decisions are byte-identical (hand fixture 38/40, 1, 1).
+- **A per-phrase bar alone over-lights.** With no discount: lit 106 but sw/step 1.77–1.83 (default 1.745) and
+  filler 3. The discount band 0.03–0.05 passes every summed gate. 0.02 fails on filler and flicker. I locked 0.04,
+  the centre of the band. The null filter only touches the far tail now (slack 0.06; None is nearly the same).
+- **Flow bonus off.** 0 was equal to or better than 0.03 and 0.05 in every row; few real transitions follow map flow.
+- **Sum the gate across tune scripts.** ±1 flicker or lit per script is noise at 48–61 steps. Summing over the two
+  tune scripts gave a gate that stable settings pass and that doesn't reward picking a lucky setting.
+- Result, default → map: tune sums lit 100 → 105, false ids 34 → 26, false s 65.9 → 61.7, flicker 23 → 22,
+  sw/step mean 1.745 → 1.695. Holdout (meaning): lit 53 → 57, false 22 → 19, false s 56.9 → 47.9. Holdout
+  sw/step is worse (1.81 → 1.86, not gated). Filler 2 → 2.
+
+## Local LLM decider for the clause pointer (2026-10-02)
+
+- **Letter-scoring prompts carry a letter prior; calibrate it away.** Raw Qwen2.5-1.5B picked the last item (G) 62×
+  vs 24 gold and N 43× vs 7. Subtracting the scores of an empty clause on the same slide prompt (contextual
+  calibration, one cached call per slide) took oracle agreement 54% → 59% (3B: 52% → 61%).
+- **Put the fixed text in the cached prefix.** Moving the question above the clause slot cut the per-call suffix to
+  the clause + chat tokens: 298 → ~160 ms on CPU, and moving `terms` (ASR-style spellings) into the item lines lifted
+  agreement 34% → 54%. Prompt layout mattered more than model size.
+- **The previous clause hurt (−5 pts), so `use_context` defaults off.** Measure inputs instead of assuming context helps.
+- **Bigger wasn't better:** 3B ≈ 1.5B in agreement (61–66% both, CPU/GPU numerics move it ±3), 2× slower on CPU.
+- **`Llama.save_state()` copies the whole n_batch×vocab logits buffer (~300 MB/state).** Use
+  `llama_state_seq_get_data/set_data` for seq 0 instead: ~14 MB per slide, restore ~100 ms, bit-identical scores.
+- **Thread count is measured, not assumed:** i5-14400F (6P+4E) best at 12 threads (131 ms); 16 threads thrashes
+  (p90 1.5 s).
+
+## Clause pointer: decide per clause, point and hold (2026-10-02)
+
+- **Segmenting into clauses fixed hopping; the decider fixed wrong ids.** The same bge-small cosine as today,
+  run per clause (bi decider), cut lateness 2.59 → 1.75 s but kept 1.9 switches/step. A cross-encoder that reads
+  clause and unit description together cut false ids 16/10 → 6/6 and switches to ~1.2/step.
+- **Re-ranker logits are bimodal and absolute.** Unrelated pairs score -9..-12 and a named unit -5..+5 on every
+  slide, so one fixed NONE bar (-7) works. The pass band was -8..-5.5; it fails at -5 on lateness, not on recall.
+- **CPU cost is per token, so measure it on real calls.** MiniLM-L-6 took 387 ms/call on one thread (6-10 units x
+  ~150 tokens); int8 quantization only gave ~1.5x. TinyBERT-L-2 (128 wide) took 15 ms in the live loop and passed the
+  same gate. bge-reranker-base was best on quality (jumpy false ids 2, lateness 2.63 s) but took 2 s per call.
+- **The local LLMs lost recall inside the engine:** lit 41-50 on the tune talks, against 46-59 for the cross-encoder.
+  A tie-break hybrid (LLM only when the cross top-2 are close) never beat the cross-encoder alone.
+- **Put the transcript state on the object that travels.** Every consumer hands `controller.buffer` to
+  `LiveTranscriber`, and the viewer swaps in a fresh buffer per slide. The cumulative words and the pause boundaries
+  therefore live on `RollingBuffer`, and `LiveTranscriber` shows every chunk to it before STT. No consumer can forget
+  the hook.
+- **The replay harness must reproduce known rows before it ranks anything.** `tools/clause_replay` matched today's
+  map system (46/48 1.85 ... on all 3 talks) and the oracle rows exactly. A first parity check against my faster
+  sweep loop caught an off-by-a-partial bug: the pointer was created after the first partial, which dropped that
+  partial's words.
+- **Don't re-run a pipeline stage on its own output.** Re-applying `apply_slide_maps` to the scoped index changed
+  `map_phrases` (scope had added a trigger phrase afterwards). Patch in only the new key and diff the result.
+- **Holdout kept honest.** I locked params on original + jumpy, committed them, and only then ran meaning:
+  57/59 (=), false 11 (19), 1.28 sw/step, dwell 5.4 s, lateness 2.47 s (2.68). All gates passed.

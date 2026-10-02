@@ -1,0 +1,179 @@
+"""Clause pointer: pause detection, clause segmentation + commit rule, and the
+LiveController switch (mapped slides only). Scripted deciders, no models."""
+from __future__ import annotations
+
+import numpy as np
+
+from src.clause_pointer import ClauseParams, ClausePointer, PauseDetector, slide_units
+from src.live import LiveTranscriber
+from src.live_controller import LiveController
+from src.stt import Partial, RollingBuffer
+
+UNITS = [{"uid": u, "text": u, "summary": "", "talk": [], "terms": []} for u in ("t", "a", "b")]
+
+
+class KeywordDecider:
+    """Scores a unit 1 per occurrence of its keyword in the clause; none = 0.5."""
+
+    def __init__(self, kw: dict[str, str]) -> None:
+        self.kw, self.calls = kw, []
+
+    def decide(self, clause, context, units):
+        self.calls.append((clause, context))
+        out = {u["uid"]: float(clause.split().count(self.kw[u["uid"]])) for u in units}
+        out["none"] = 0.5
+        return out
+
+
+def _ptr(**kw):
+    d = KeywordDecider({"t": "title", "a": "alpha", "b": "beta"})
+    p = ClauseParams(**{"min_words": 2, "commit": 0.0, "gap": 0.5, "switch": 1.0, **kw})
+    return ClausePointer(d, UNITS, p, low_prior={"t"}), d
+
+
+def test_commits_mid_clause_and_holds_through_non_referential_clauses():
+    cp, _ = _ptr()
+    w = "so here alpha is".split()
+    assert cp.update(w[:1]).active is None              # below min_words: no decision
+    assert cp.update(w[:2]).why == "noop"
+    assert cp.update(w[:3]).active == "a"               # early commit, mid-clause
+    w += "and then some filler talk".split()
+    d = cp.update(w, [4])                               # new clause names nothing
+    assert (d.active, d.why) == ("a", "hold")
+
+
+def test_hysteresis_inside_a_clause_and_free_choice_after_a_boundary():
+    w = "look alpha then beta beta".split()
+    cp2, _ = _ptr()
+    cp2.update(w[:2])
+    assert cp2.update(w[:4]).active == "a"              # beta 1 vs alpha 1: not +1 better, hold
+    assert cp2.update(w).active == "b"                  # beta 2 vs alpha 1: switch
+    cp3, _ = _ptr()
+    cp3.update("look alpha".split())
+    d = cp3.update("look alpha now beta".split(), [2])  # boundary: clause "now beta" decides afresh
+    assert d.active == "b"
+
+
+def test_title_units_need_the_extra_margin():
+    cp, _ = _ptr(title_extra=1.0)
+    assert cp.update("the title here".split()).active is None
+    assert cp.update("the title title".split()).active == "t"
+
+
+def test_max_words_starts_a_new_clause_and_keeps_context():
+    cp, d = _ptr(max_words=4)
+    cp.update("alpha one two".split())
+    cp.update("alpha one two three".split())            # reaches max_words: cut
+    assert cp.start == 4 and cp.prev == "alpha one two three"
+    cp.update("alpha one two three beta x".split())
+    assert d.calls[-1] == ("beta x", "alpha one two three")
+
+
+def test_pause_detector_fires_when_speech_resumes_after_a_pause():
+    sr = 16000
+    rng = np.random.default_rng(0)
+    speech = (rng.standard_normal(sr // 10) * 3000).astype(np.int16).tobytes()   # one 100 ms chunk
+    silence = np.zeros(sr // 10, dtype=np.int16).tobytes()
+    pd = PauseDetector(sr)
+    seq = [speech] * 5 + [silence] * 2 + [speech] + [silence] * 3 + [speech] * 2
+    fired = [pd.feed(c) for c in seq]
+    # 0.2 s of silence is no boundary; 0.3 s is, on the chunk where speech resumes
+    assert fired == [False] * 5 + [False, False, False] + [False] * 3 + [True, False]
+
+
+def test_buffer_keeps_the_whole_transcript_and_boundaries():
+    b = RollingBuffer(window_seconds=1.0)
+    b.push(Partial("one two", True, 0.0))
+    b.push(Partial("three", True, 5.0))                 # prunes "one two" from the tail window
+    b.push(Partial("four", False, 5.1))
+    assert b.text == "three four"
+    assert b.words() == ["one", "two", "three", "four"]
+    b.boundaries.append(3)
+    b.clear()
+    assert b.words() == [] and b.boundaries == []
+
+
+def test_transcriber_shows_every_chunk_to_the_buffer_before_stt():
+    seen = []
+
+    class Buf(RollingBuffer):
+        def audio(self, chunk, sample_rate=16000):
+            seen.append(chunk)
+
+    class Src:
+        sample_rate = 16000
+
+        def chunks(self):
+            yield b"\x00\x00" * 4
+            yield b"\x01\x00" * 4
+
+    class Eng:
+        def transcribe_stream(self, chunks, hotwords=None):
+            for _c in chunks:
+                assert seen                              # the buffer saw it first
+                yield Partial("x", False, 0.0)
+
+    LiveTranscriber(Src(), Eng(), Buf()).run(lambda *_: None)
+    assert len(seen) == 2
+
+
+def _mapped_index():
+    els = [{"id": "s1_t", "text": "Pipeline", "map_role": "title", "bbox": {"x": 0, "y": 0, "w": 1, "h": 1}},
+           {"id": "s1_a", "text": "Alpha stage", "map_role": "body", "bbox": {"x": 0, "y": 2, "w": 1, "h": 1}},
+           {"id": "s1_b", "text": "Beta stage", "map_role": "body", "bbox": {"x": 0, "y": 4, "w": 1, "h": 1}}]
+    info = {u: {"summary": s, "talk": [], "terms": []} for u, s in (("t", "title"), ("a", "alpha"), ("b", "beta"))}
+    return {"slides": [{"slide_number": 1, "elements": els,
+                        "map": {"units": {"t": ["s1_t"], "a": ["s1_a"], "b": ["s1_b"]}, "info": info}},
+                       {"slide_number": 2, "elements": [{"id": "s2_x", "text": "x", "bbox": {}}]}]}
+
+
+def test_slide_units_reads_the_map():
+    units, head, low = slide_units(_mapped_index()["slides"][0])
+    assert [u["uid"] for u in units] == ["t", "a", "b"]
+    assert units[1]["text"] == "Alpha stage" and units[1]["summary"] == "alpha"
+    assert head == {"t": "s1_t", "a": "s1_a", "b": "s1_b"} and low == {"t"}
+
+
+class _NoScores:
+    """Tail-policy matcher stub: records what reaches it."""
+
+    def __init__(self):
+        self.seen = []
+
+    def scored(self, spoken, slide_no):
+        self.seen.append(spoken)
+        return []
+
+
+def test_controller_uses_the_clause_pointer_on_mapped_slides_only():
+    m = _NoScores()
+    dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
+    c = LiveController(m, _mapped_index(), normalizer=lambda t: t, decider=dec,
+                       clause_params=ClauseParams(min_words=2, gap=0.5))
+    c.push(Partial("now the alpha", False, 1.0))
+    ev = c.feed()
+    assert ev.active_id == "s1_a" and ev.tail == "now the alpha" and not m.seen
+    c.slide_no = 2
+    c.reset()
+    c.push(Partial("now the alpha part", False, 2.0))
+    c.feed()
+    assert m.seen and not dec.calls[1:]                  # unmapped slide: tail policy, no decider
+
+
+def test_controller_tail_pointer_ignores_maps():
+    m = _NoScores()
+    dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
+    c = LiveController(m, _mapped_index(), normalizer=lambda t: t, decider=dec, pointer="tail")
+    c.push(Partial("now the alpha", False, 1.0))
+    c.feed()
+    assert m.seen and not dec.calls
+
+
+def test_controller_slide_speech_starts_at_reset():
+    dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
+    c = LiveController(_NoScores(), _mapped_index(), normalizer=lambda t: t, decider=dec,
+                       clause_params=ClauseParams(min_words=2, gap=0.5))
+    c.push(Partial("beta beta beta", False, 1.0))
+    c.reset()                                            # slide shown again: old words don't count
+    c.push(Partial("beta beta beta and alpha now", False, 2.0))
+    assert c.feed().active_id == "s1_a"

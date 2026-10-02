@@ -4,6 +4,10 @@ The viewer, the PNG simulator, and the video simulator all run the same loop:
 
     buffer.tail(N) -> policy.step(tail, slide_no) -> react to the active element
 
+(``policy.step`` derives the multi-scale tail — per-phrase windows plus the
+short-tail override — itself, so the bench audit, which also runs through this
+class, measures exactly what the live app does.)
+
 They had drifted: the viewer and the video path built the policy *with* the
 deck's alias normalizer, but the PNG path silently omitted it, so PNG previews
 made different highlight decisions than the live app. ``LiveController`` owns
@@ -13,8 +17,11 @@ tested without Tk or a microphone.
 
 from __future__ import annotations
 
+import functools
+import re
 from dataclasses import dataclass
 
+from .clause_pointer import ClauseParams, ClausePointer, slide_units
 from .matcher import Matcher, MatchPolicy, PolicyConfig
 from .stt import Partial, RollingBuffer
 
@@ -22,13 +29,26 @@ from .stt import Partial, RollingBuffer
 @dataclass
 class MatchEvent:
     """One decision over the current buffer window."""
-    active_id: str | None   # element the policy committed to (None = nothing lit)
+    active_id: str | None   # unit the policy committed to (its first element's id; None = nothing lit)
     element_id: str | None  # best raw element this frame (may differ when hold/noop)
     score: float
     why: str                # "switch" | "hold" | "clear" | "noop"
     tail: str               # the windowed text actually matched
     line_index: int | None = None   # within a soft-wrapped element, the line in focus
     line_bbox: dict | None = None    # that line's sub-bbox (None = use the union bbox)
+    unit_bbox: dict | None = None    # a multi-element unit's union bbox (cards)
+
+    @property
+    def bbox(self) -> dict | None:
+        """The box to draw instead of the active element's own bbox, or None:
+        the focused line, else the unit's union box. Every consumer draws this."""
+        return self.line_bbox or self.unit_bbox
+
+
+def _words(text: str) -> list[str]:
+    """Lowercased words without edge punctuation, so a deck's "Extract," matches
+    the STT's bare "extract" (inner apostrophes stay: "teacher's")."""
+    return re.findall(r"\w+(?:'\w+)*", text.lower())
 
 
 def select_line(tail: str, line_texts: list[str]) -> int | None:
@@ -51,10 +71,10 @@ def select_line(tail: str, line_texts: list[str]) -> int | None:
     """
     if not line_texts or len(line_texts) < 2:
         return None
-    words = (tail or "").lower().split()
+    words = _words(tail or "")
     if not words:
         return None
-    line_sets = [set(lt.lower().split()) for lt in line_texts]
+    line_sets = [set(_words(lt)) for lt in line_texts]
     df: dict[str, int] = {}
     for s in line_sets:
         for w in s:
@@ -80,6 +100,14 @@ def _build_normalizer(raw_index: dict):
     return (lambda t: normalize(t, alias)) if alias else None
 
 
+@functools.lru_cache(maxsize=1)
+def _default_decider():
+    """The shipped decider, loaded once per process (consumers build a
+    controller per slide). CPU in every consumer, so the bench measures live."""
+    from .deciders.cross import CrossDecider
+    return CrossDecider()
+
+
 class LiveController:
     """Tk-free, audio-free live grounding decision unit.
 
@@ -98,11 +126,28 @@ class LiveController:
         tail_words: int = 8,
         window_seconds: float = 4.0,
         slide_no: int = 1,
+        pointer: str = "clause",
+        decider=None,
+        clause_params: ClauseParams | None = None,
     ) -> None:
         if normalizer is None:
             normalizer = _build_normalizer(raw_index)
         self.policy = MatchPolicy(matcher, policy_config or PolicyConfig(), normalizer=normalizer)
+        # Clause pointer (src/clause_pointer.py) on slides that have an
+        # understanding map; "tail" (or an unmapped slide) keeps the tail policy.
+        if pointer not in ("clause", "tail"):
+            raise ValueError(f"pointer must be 'clause' or 'tail', got {pointer!r}")
+        self._mapped = {s["slide_number"]: s for s in raw_index.get("slides", [])
+                        if pointer == "clause" and s.get("map")}
+        if decider is None and self._mapped:   # load the model now, not mid-talk
+            decider = _default_decider()
+        self._decider = decider
+        self._clause_params = clause_params or ClauseParams()
+        self._clause: ClausePointer | None = None
+        self._clause_slide: int | None = None
+        self._clause_head: dict[str, str] = {}
         self.buffer = RollingBuffer(window_seconds=window_seconds)
+        self._origin = (self.buffer, 0)   # (buffer, word count) when the slide's speech began
         self.tail_words = tail_words
         self.slide_no = slide_no
         # id -> (line_texts, line_bboxes) for elements that soft-wrap into >1
@@ -121,27 +166,58 @@ class LiveController:
         # draw the identical rectangle (the drift LiveController exists to prevent).
         self._line_active_id: str | None = None
         self._line_index: int | None = None
+        index = getattr(matcher, "index", None)
+        self.unit_bbox = getattr(index, "unit_bbox", lambda _u: None)
 
     def push(self, partial: Partial) -> None:
         self.buffer.push(partial)
 
     def reset(self) -> None:
+        """New slide (or restart): forget decisions; the next clause starts at the
+        words heard from now on."""
         self.policy.reset()
+        self._clause = self._clause_slide = None
+        self._origin = (self.buffer, len(self.buffer.words()))
         self._line_active_id = None
         self._line_index = None
+
+    def _clause_step(self) -> tuple[str | None, str | None, float, str, str]:
+        """One clause-pointer update on a mapped slide ->
+        (active unit id, best unit id, margin, why, clause text)."""
+        if self._clause is None or self._clause_slide != self.slide_no:
+            units, self._clause_head, low = slide_units(self._mapped[self.slide_no])
+            # the slide's speech starts at the last reset (a swapped-in buffer is
+            # all this slide's); a slide change without reset starts now
+            buf, n = self._origin
+            start = (n if self._clause_slide is None else len(self.buffer.words())) if buf is self.buffer else 0
+            self._clause = ClausePointer(self._decider, units, self._clause_params, low_prior=low,
+                                         start=start,
+                                         normalizer=self.policy.normalizer)
+            self._clause_slide = self.slide_no
+        d = self._clause.update(self.buffer.words(), self.buffer.boundaries)
+        head = self._clause_head.get
+        return head(d.active) if d.active else None, head(d.best) if d.best else None, d.margin, d.why, d.clause
 
     def feed(self, text: str | None = None) -> MatchEvent | None:
         """Run one decision over the current buffer tail (falling back to `text`
         when the buffer is empty). Returns None when there's nothing to match."""
-        tail = self.buffer.tail(self.tail_words) or (text or "")
-        if not tail.strip():
-            return None
-        res, active, why = self.policy.step(tail, self.slide_no)
+        if self.slide_no in self._mapped:
+            if not self.buffer.words():
+                return None
+            active, best, score, why, tail = self._clause_step()
+        else:
+            tail = self.buffer.tail(self.tail_words) or (text or "")
+            if not tail.strip():
+                return None
+            res, active, why = self.policy.step(tail, self.slide_no)
+            best, score = res.element_id, res.score
         if active != self._line_active_id:
             self._line_active_id = active
             self._line_index = None          # new (or no) active element → forget the line
         line_index = line_bbox = None
-        lines = self._lines_by_id.get(active) if active else None
+        unit_bbox = self.unit_bbox(active)
+        # a multi-element unit draws its union box; line focus is per paragraph
+        lines = self._lines_by_id.get(active) if active and unit_bbox is None else None
         if lines is not None:
             texts, boxes = lines
             # Select on the NORMALIZED tail so it's in the same space as the
@@ -154,7 +230,7 @@ class LiveController:
                 self._line_index = idx
                 line_index, line_bbox = idx, boxes[idx]
         return MatchEvent(
-            active_id=active, element_id=res.element_id,
-            score=res.score, why=why, tail=tail,
-            line_index=line_index, line_bbox=line_bbox,
+            active_id=active, element_id=best,
+            score=score, why=why, tail=tail,
+            line_index=line_index, line_bbox=line_bbox, unit_bbox=unit_bbox,
         )

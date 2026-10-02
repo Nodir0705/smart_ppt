@@ -39,11 +39,19 @@ class LiveTranscriber:
         `on_update(buffer_text, partial)` is called for every Partial emitted,
         with the buffer's text *after* the partial has been folded in.
         """
-        for partial in self.engine.transcribe_stream(self.source.chunks(), hotwords=self.hotwords):
+        for partial in self.engine.transcribe_stream(self._chunks(), hotwords=self.hotwords):
             if self._stop.is_set():
                 break
             self.buffer.push(partial)
             on_update(self.buffer.text, partial)
+
+    def _chunks(self):
+        """Source chunks, each shown to the buffer (pause detection) before STT."""
+        sr = getattr(self.source, "sample_rate", 16000)
+        for chunk in self.source.chunks():
+            if chunk:
+                self.buffer.audio(chunk, sr)
+            yield chunk
 
     def start_in_thread(
         self,
