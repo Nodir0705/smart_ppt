@@ -140,3 +140,18 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
 - Result, default → map: tune sums lit 100 → 105, false ids 34 → 26, false s 65.9 → 61.7, flicker 23 → 22,
   sw/step mean 1.745 → 1.695. Holdout (meaning): lit 53 → 57, false 22 → 19, false s 56.9 → 47.9. Holdout
   sw/step is worse (1.81 → 1.86, not gated). Filler 2 → 2.
+
+## Local LLM decider for the clause pointer (2026-10-02)
+
+- **Letter-scoring prompts carry a letter prior; calibrate it away.** Raw Qwen2.5-1.5B picked the last item (G) 62×
+  vs 24 gold and N 43× vs 7. Subtracting the scores of an empty clause on the same slide prompt (contextual
+  calibration, one cached call per slide) took oracle agreement 54% → 59% (3B: 52% → 61%).
+- **Put the fixed text in the cached prefix.** Moving the question above the clause slot cut the per-call suffix to
+  the clause + chat tokens: 298 → ~160 ms on CPU, and moving `terms` (ASR-style spellings) into the item lines lifted
+  agreement 34% → 54%. Prompt layout mattered more than model size.
+- **The previous clause hurt (−5 pts), so `use_context` defaults off.** Measure inputs instead of assuming context helps.
+- **Bigger wasn't better:** 3B ≈ 1.5B in agreement (61–66% both, CPU/GPU numerics move it ±3), 2× slower on CPU.
+- **`Llama.save_state()` copies the whole n_batch×vocab logits buffer (~300 MB/state).** Use
+  `llama_state_seq_get_data/set_data` for seq 0 instead: ~14 MB per slide, restore ~100 ms, bit-identical scores.
+- **Thread count is measured, not assumed:** i5-14400F (6P+4E) best at 12 threads (131 ms); 16 threads thrashes
+  (p90 1.5 s).
