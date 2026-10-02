@@ -4,10 +4,10 @@ A picture with no alt text / OCR text (``type == "image"``, ``needs_vision``) is
 unpointable. Here CLIP (open_clip ViT-B-32 LAION-2B, via transformers) scores the
 picture's crop from the rendered slide PNG against each of the slide's text
 elements; when the best text clears an absolute bar AND beats the runner-up by a
-margin, the picture is linked to it and gets *visual* trigger phrases ("the photo
-of X", "X photo", ...) — never a copy of the text's own phrases, which would tie
-with the text element so the gap check lit neither. So "...the Snapdragon 845"
-lights the text and "...that's the package in the photo" lights the picture.
+margin, the picture is linked to it and gets *visual* trigger phrases ("in the
+photo", ...) — never the text's own words, which would compete with the text
+element. So "...the Snapdragon 845" lights the text and "...that's the package
+in the photo" lights the picture. Abstaining keeps panels/diagrams unpointable.
 
 Build-time only (CPU fp32 for bit-stable scores); the live loop never loads CLIP.
 Missing torch / model -> log and skip; pictures stay needs_vision.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from pathlib import Path
 
 from .geom import inches_to_image_px
@@ -34,7 +33,6 @@ TEXT_TYPES_EXCLUDED = {"chart", "chart_category", "image", "picture", "arrow"}
 # driver slide, a diagram strip, a placeholder glyph) <= 0.271. Abstain-biased.
 MIN_SCORE = 0.28
 MIN_MARGIN = 0.02
-PHRASE_WORDS = 4         # X in "the photo of X" = first few words of the linked text
 
 
 # ------------------------------------------------------------- geometry
@@ -113,23 +111,14 @@ def decide(scores: dict[str, float], min_score: float = MIN_SCORE,
 
 # ---------------------------------------------------------------- phrases
 
-_PAREN = re.compile(r"\([^)]*\)")
-_NONWORD = re.compile(r"[^\w\s\-.]")
-
-
-def subject(text: str, max_words: int = PHRASE_WORDS) -> str:
-    """Short spoken subject from the linked text: first line/clause, no parentheses
-    or symbols, at most `max_words` words, lowercase."""
-    first = re.split(r"[\n:;,|]", text.strip(), maxsplit=1)[0]
-    clean = _NONWORD.sub(" ", _PAREN.sub(" ", first)).lower()
-    return " ".join(clean.split()[:max_words]).strip(" .-")
-
-
-def visual_phrases(text: str) -> list[str]:
-    x = subject(text)
-    if not x:
-        return []
-    return [f"the photo of {x}", f"{x} photo", f"the picture of {x}", f"the image of {x}"]
+# What a presenter says when pointing at a picture ("...that's the package in the
+# photo"). Deliberately free of the linked text: on the Open-Q bench, "the photo
+# of X" / "X photo" phrasings let the picture steal X's own mentions (verbatim
+# narration -3 hits, +3 false highlights), while these lit all 3 annotated
+# pictures and never fired on verbatim or filler speech.
+# ponytail: two linked pictures on one slide tie on these and neither lights
+# (abstain); add "the photo of X" forms for that case if a deck needs it.
+VISUAL_PHRASES = ("in the photo", "shown in the photo", "in the picture", "the photo shows")
 
 
 # ---------------------------------------------------------------- scorer
@@ -141,7 +130,7 @@ def load_clip_scorer():
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         import torch
         from transformers import CLIPModel, CLIPProcessor
-        proc = CLIPProcessor.from_pretrained(MODEL_ID)
+        proc = CLIPProcessor.from_pretrained(MODEL_ID, use_fast=False)  # pin: fast differs numerically
         model = CLIPModel.from_pretrained(MODEL_ID, torch_dtype=torch.float32).eval()
     except Exception as e:  # torch/transformers/model missing -> skip the stage
         _log.warning("vision_link: CLIP unavailable (%s: %s); pictures stay needs_vision",
@@ -197,7 +186,7 @@ def link_pictures(index: dict, slides_dir: str | Path, scorer=None,
                 tid, s, m = d
                 text = next(t["text"] for t in texts if t["id"] == tid)
                 pic.update(linked_to=tid, link_score=s, needs_vision=False,
-                           trigger_phrases=visual_phrases(text))
+                           trigger_phrases=list(VISUAL_PHRASES))
                 rec.update(linked_to=tid, score=s, margin=round(m, 4), text=text)
             records.append(rec)
     return records

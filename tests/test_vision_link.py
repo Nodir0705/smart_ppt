@@ -1,8 +1,8 @@
 """Pure parts of src/vision_link (no model download: the scorer is stubbed)."""
 from PIL import Image
 
-from src.vision_link import (crop_box, decide, link_pictures, picture_candidates,
-                             subject, visual_phrases)
+from src.vision_link import (VISUAL_PHRASES, crop_box, decide, link_pictures,
+                             picture_candidates)
 
 W, H = 40 / 3, 7.5   # 16:9 in inches -> exactly 150 px/in at 2000 px
 
@@ -47,16 +47,6 @@ def test_decide_needs_bar_and_margin_and_is_deterministic():
     assert decide({}) is None
 
 
-def test_visual_phrases_are_visual_not_copies():
-    assert subject("Keypad Controller: TCA8418 via I2C") == "keypad controller"
-    assert subject("Qualcomm Snapdragon 845") == "qualcomm snapdragon 845"
-    assert subject("Android 10 (API Level 29) and more words here") == "android 10 and more"
-    ph = visual_phrases("Qualcomm Snapdragon 845")
-    assert "the photo of qualcomm snapdragon 845" in ph
-    assert "qualcomm snapdragon 845" not in ph
-    assert visual_phrases("  ") == []
-
-
 def test_link_pictures_with_stub_scorer(tmp_path):
     Image.new("RGB", (2000, 1125), "white").save(tmp_path / "slide_001.png")
     photo = el("photo", "image", 8.5, 1.2, 2.6, 1.5)
@@ -74,7 +64,8 @@ def test_link_pictures_with_stub_scorer(tmp_path):
     recs = link_pictures(idx, tmp_path, scorer=scorer)
     assert calls[0] == (390, 225)          # crop of the photo bbox at 150 px/in
     assert photo["linked_to"] == "t1" and photo["needs_vision"] is False
-    assert photo["trigger_phrases"][0] == "the photo of qualcomm snapdragon 845"
+    assert photo["link_score"] == 0.40
+    assert photo["trigger_phrases"] == list(VISUAL_PHRASES)  # visual, never a copy of t1
     assert "linked_to" not in other and other["needs_vision"] is True   # abstained
     assert [r["linked_to"] for r in recs] == ["t1", None]
 
