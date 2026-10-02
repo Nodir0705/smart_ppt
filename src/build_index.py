@@ -41,6 +41,7 @@ def build_index(
     expansions_path: str = EXPANSIONS_PATH,
     ocr: bool = True,
     vision_link: bool = True,
+    slide_map_dir: str | Path | None = None,
 ) -> dict:
     """Build the index for `deck` and return the richest produced stage.
 
@@ -50,6 +51,7 @@ def build_index(
     (soffice) on PATH; pass `refine=False` to skip the PDF/render dependency.
     `ocr=False` skips the tesseract fallback (bench "no-ocr" variant).
     `vision_link=False` skips CLIP picture->text linking (bench "no-clip" variant).
+    `slide_map_dir` applies per-slide understanding maps (bench "map" variant).
     """
     deck = Path(deck)
     out = Path(out_dir)
@@ -78,6 +80,10 @@ def build_index(
                     print(format_links(links), flush=True)
         if write_intermediates:
             _write(out / "index.refined.json", final)
+
+    if slide_map_dir is not None:
+        from .slide_map import apply_slide_maps
+        final = apply_slide_maps(final, Path(slide_map_dir))
 
     if scope:
         final = scope_index(final, expansions=expansions_for(final, expansions_path))

@@ -9,15 +9,18 @@ stays quiet otherwise".
 
     python3 -m tools.presenter_bench                 # every deck that has a script
     python3 -m tools.presenter_bench --only test_deck
-Writes out/bench/<deck>/presenter/{narration,expected,manifest,trace}.json and
-out/bench/report_presenter.md.
+    python3 -m tools.presenter_bench --variant map --script presenter_script_jumpy.json
+Writes out/bench/<deck>/<outdir>/{narration,expected,manifest,trace}.json and
+out/bench/report_presenter.md; <outdir> is `presenter` for presenter_script.json
+and `presenter_<style>` for presenter_script_<style>.json. A non-default
+`--variant` (index dir out/bench/<deck>/<variant>/) suffixes trace and report.
 
 Beyond lit/false/flicker it measures how the highlight MOVES, on the audio clock:
 switches per expected step (1.0 = one jump per thing talked about), median dwell
 between switches, false seconds (time spent on an element nobody referred to) and
 lateness (first lit minus the start of the sentence that introduced it).
 
-When `presenter/adjudication.json` exists (a human verdict per false switch:
+When `<outdir>/adjudication.json` exists (a human verdict per false switch:
 tolerated / wrong / wrong_timing), false ids and false seconds are ALSO reported
 adjudicated: per slide, acceptable = every `refers_to` id on the slide plus every
 id adjudicated `tolerated` on that slide. Strict numbers stay the primary ruler.
@@ -76,9 +79,20 @@ def unit_segments(segments: list[dict], unit_of: dict[str, str]) -> list[dict]:
             for seg in segments]
 
 
-def tolerated_ids(deck_dir: Path) -> dict[int, set[str]] | None:
+DEFAULT_SCRIPT = "presenter_script.json"
+
+
+def out_dir_name(script: str) -> str:
+    """presenter_script.json -> presenter; presenter_script_<style>.json -> presenter_<style>."""
+    stem = Path(script).stem
+    if not stem.startswith("presenter_script"):
+        raise ValueError(f"script must be presenter_script[_<style>].json, got {script}")
+    return "presenter" + stem[len("presenter_script"):]
+
+
+def tolerated_ids(out_dir: Path) -> dict[int, set[str]] | None:
     """slide -> ids a human adjudicated `tolerated`; None without adjudication.json."""
-    p = deck_dir / "presenter" / "adjudication.json"
+    p = out_dir / "adjudication.json"
     if not p.exists():
         return None
     out: dict[int, set[str]] = {}
@@ -140,10 +154,10 @@ def _wav_seconds(path: str) -> float:
         return w.getnframes() / w.getframerate()
 
 
-def prepare(deck_dir: Path) -> Path:
-    """Script -> narration/expected/audio under deck_dir/presenter; returns that dir."""
-    script = json.loads((deck_dir / "presenter_script.json").read_text())
-    d = deck_dir / "presenter"
+def prepare(deck_dir: Path, script_name: str = DEFAULT_SCRIPT) -> Path:
+    """Script -> narration/expected/audio under deck_dir/<outdir>; returns that dir."""
+    script = json.loads((deck_dir / script_name).read_text())
+    d = deck_dir / out_dir_name(script_name)
     slides = [{"slide": s["slide"], "segments": [seg["text"] for seg in s["segments"]]}
               for s in script["slides"]]
     _write(d / "narration.json", {"voice": str(VOICE), "gap_ms": PAUSE_MS, "slides": slides})
@@ -154,14 +168,15 @@ def prepare(deck_dir: Path) -> Path:
     return d
 
 
-def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
+def score_motion(deck_dir: Path, events: dict, variant: str = "default",
+                 script_name: str = DEFAULT_SCRIPT) -> tuple[dict, list[dict]]:
     """Deck motion summary and the per-switch trace (for adjudication)."""
-    tolerated = tolerated_ids(deck_dir)
+    out = deck_dir / out_dir_name(script_name)
+    tolerated = tolerated_ids(out)
     script = {s["slide"]: s["segments"]
-              for s in json.loads((deck_dir / "presenter_script.json").read_text())["slides"]}
-    manifest = {m["slide"]: m for m in
-                json.loads((deck_dir / "presenter" / "manifest.json").read_text())}
-    index = json.loads((deck_dir / "default" / "index.scoped.json").read_text())
+              for s in json.loads((deck_dir / script_name).read_text())["slides"]}
+    manifest = {m["slide"]: m for m in json.loads((out / "manifest.json").read_text())}
+    index = json.loads((deck_dir / variant / "index.scoped.json").read_text())
     text = {e["id"]: e.get("text") for s in index["slides"] for e in s["elements"]}
     unit_of = pointable_units(index)
     if tolerated is not None:
@@ -192,16 +207,18 @@ def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
     return summary, trace
 
 
-def bench_deck(deck: Path, device: str) -> tuple[dict, str]:
-    """One deck, own process + models: prepare, replay, score; writes trace.json."""
+def bench_deck(deck: Path, device: str, variant: str = "default",
+               script_name: str = DEFAULT_SCRIPT) -> tuple[dict, str]:
+    """One deck, own process + models: prepare, replay, score; writes trace.json
+    (trace_<variant>.json for a non-default variant)."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        d = prepare(deck)
-        res = audit(deck / "default" / "index.scoped.json", manifest_path=d / "manifest.json",
+        d = prepare(deck, script_name)
+        res = audit(deck / variant / "index.scoped.json", manifest_path=d / "manifest.json",
                     fixture_path=d / "expected.json", fast=True, models=load_models(device))
         o = res["overall"]
-        motion, trace = score_motion(deck, res["events"])
-        _write(d / "trace.json", trace)
+        motion, trace = score_motion(deck, res["events"], variant, script_name)
+        _write(d / ("trace.json" if variant == "default" else f"trace_{variant}.json"), trace)
     return {"deck": deck.name, "status": "OK", **motion, **{k: o[k] for k in
             ("hits", "steps", "relevant", "false", "flicker", "precision")}}, buf.getvalue()
 
@@ -212,19 +229,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="deck folder name")
     ap.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
                     help="text-encoder device (auto = cuda if available); STT stays CPU")
+    ap.add_argument("--variant", default="default",
+                    help="index dir to score: out/bench/<deck>/<variant>/ (default: default)")
+    ap.add_argument("--script", default=DEFAULT_SCRIPT,
+                    help=f"script file in each deck dir (default: {DEFAULT_SCRIPT})")
     args = ap.parse_args(argv)
+    out_dir_name(args.script)   # fail fast on a bad script name
 
-    decks = sorted(p.parent for p in Path(args.bench).glob("*/presenter_script.json"))
+    decks = sorted(p.parent for p in Path(args.bench).glob(f"*/{args.script}"))
     if args.only:
         decks = [d for d in decks if d.name == args.only]
     device = eval_device(args.device)
     records = []
-    for deck, (rec, log) in zip(decks, per_deck_processes(bench_deck, [(d, device) for d in decks])):
+    for deck, (rec, log) in zip(decks, per_deck_processes(
+            bench_deck, [(d, device, args.variant, args.script) for d in decks])):
         print(f"=== {deck.name} ===\n{log}", end="", flush=True)
         records.append(rec)
     tot = totals(records)
     adj = lambda v, f: "–" if v is None else format(v, f)  # noqa: E731
     lines = ["# Presenter-script bench (natural speech, annotated pointing)", "",
+             f"Variant `{args.variant}` · script `{args.script}`", "",
              "Adjudicated (adj) = `refers_to` ids plus ids a human judged *tolerated* on that slide.",
              "Unit level: highlights and `refers_to` ids are mapped to pointable units (cards); "
              "switches/step is over unit steps, sw/elem step over the script's element steps.", "",
@@ -242,7 +266,9 @@ def main(argv: list[str] | None = None) -> int:
               f"precision {tot['precision']:.3f} · flicker {tot['flicker']} · "
               f"false {sum(r['false_s'] for r in records):.1f} s", ""]
     md = "\n".join(lines)
-    (Path(args.bench) / "report_presenter.md").write_text(md)
+    suffix = ("" if args.variant == "default" else f"_{args.variant}") \
+        + out_dir_name(args.script)[len("presenter"):]
+    (Path(args.bench) / f"report_presenter{suffix}.md").write_text(md)
     print(md)
     return 0
 

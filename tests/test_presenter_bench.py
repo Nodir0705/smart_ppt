@@ -58,7 +58,7 @@ def test_adjudicated_false_counts_tolerated_as_acceptable(tmp_path):
         {"slide": 1, "active_id": "x", "verdict": "tolerated"},
         {"slide": 1, "active_id": "y", "verdict": "wrong"},
         {"slide": 2, "active_id": "y", "verdict": "tolerated"}]}))
-    tol = tolerated_ids(tmp_path)
+    tol = tolerated_ids(tmp_path / "presenter")
     assert tol == {1: {"x"}, 2: {"y"}}
     events = [(1.0, "x", ""), (2.0, "a", ""), (3.0, "y", ""), (4.0, None, ""), (6.0, "y", "")]
     strict, adj = {"a"}, {"a"} | tol[1]

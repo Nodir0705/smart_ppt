@@ -34,9 +34,18 @@ from tools.timeline_audit import audit
 ROOT = Path(__file__).resolve().parents[1]
 VOICE = ROOT / "out" / "voices" / "en_US-amy-low.onnx"
 GAP_MS = 900
-# variant name -> build_index kwargs; later steps (PaddleOCR, VLMs) add entries
+# variant name -> build_index kwargs; later steps (PaddleOCR, VLMs) add entries.
+# A path containing DECK_STEM is resolved per deck (variant_kwargs).
+DECK_STEM = "{deck_stem}"
 VARIANTS: dict[str, dict] = {"default": {}, "no-ocr": {"ocr": False},
-                             "no-clip": {"vision_link": False}}
+                             "no-clip": {"vision_link": False},
+                             "map": {"slide_map_dir": ROOT / "out" / "maps" / DECK_STEM}}
+
+
+def variant_kwargs(variant: str, deck: Path) -> dict:
+    """build_index kwargs for `variant` on `deck`, per-deck paths resolved."""
+    return {k: Path(str(v).replace(DECK_STEM, deck.stem)) if isinstance(v, Path) else v
+            for k, v in VARIANTS[variant].items()}
 
 # Negative pass: presenter filler that names NO element, so every highlight is
 # false. TUNE is what matcher thresholds may be fitted on; HOLDOUT (reported)
@@ -115,7 +124,7 @@ def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict,
 
     t = time.monotonic()
     if not (reuse_index and (d / variant / "index.scoped.json").exists()):
-        build_index(deck, d / variant, **VARIANTS[variant])
+        build_index(deck, d / variant, **variant_kwargs(variant, deck))
     rec["build_s"] = round(time.monotonic() - t, 1)
 
     t = time.monotonic()

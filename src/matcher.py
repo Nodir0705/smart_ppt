@@ -120,12 +120,15 @@ def furniture_ids(raw: dict) -> set[str]:
     * a page number — a bare integer equal to its slide's number.
 
     Titles are never furniture: "Step 1" … "Step 5" headings repeat by the same
-    rule but are the slide's subject.
+    rule but are the slide's subject. Also every element a slide map marks
+    `pointable: false`.
     """
     slides = raw.get("slides", [])
+    # ponytail: additive — a map can't un-furniture what the heuristic flags
+    unpointable = {el["id"] for s in slides for el in s["elements"] if el.get("pointable") is False}
     height = (raw.get("slide_size") or {}).get("h")
     if not height:
-        return set()
+        return unpointable
     key = lambda t: re.sub(r"\d+", "#", " ".join(t.lower().split()))  # noqa: E731
     on: dict[str, set[int]] = {}
     for s in slides:
@@ -145,7 +148,7 @@ def furniture_ids(raw: dict) -> set[str]:
                 continue
             if key(t) in running or (t.isdecimal() and int(t) == s["slide_number"]):
                 out.add(el["id"])
-    return out
+    return out | unpointable
 
 
 # ---------- pointable units (cards) ----------
@@ -294,6 +297,10 @@ def pointable_units(raw: dict) -> dict[str, str]:
 
     Never grouped: titles, charts and their categories, tables and cells,
     furniture, non-pointable elements (icons), anything not adjacent.
+
+    A slide with an understanding map (``slide["map"]``) takes its units from the
+    map instead; the unit id is its first member in reading order (members are
+    stored in that order by ``slide_map.apply_slide_maps``).
     """
     size = raw.get("slide_size") or {}
     W, H = size.get("w"), size.get("h")
@@ -302,7 +309,21 @@ def pointable_units(raw: dict) -> dict[str, str]:
     skip = furniture_ids(raw)
     out: dict[str, str] = {}
     for s in raw.get("slides", []):
-        out.update(_slide_units(s["elements"], W, H, skip))
+        if s.get("map"):
+            out.update({m: ms[0] for ms in s["map"]["units"].values() for m in ms})
+        else:
+            out.update(_slide_units(s["elements"], W, H, skip))
+    return out
+
+
+def flow_successors(raw: dict) -> dict[str, set[str]]:
+    """unit id -> unit ids its slide map says come next (`flow` relations)."""
+    out: dict[str, set[str]] = {}
+    for s in raw.get("slides", []):
+        units = (s.get("map") or {}).get("units") or {}
+        for r in (s.get("map") or {}).get("relations") or []:
+            if r["type"] == "flow":
+                out.setdefault(units[r["from"]][0], set()).add(units[r["to"]][0])
     return out
 
 
@@ -340,6 +361,7 @@ class Index:
         self._unit_members: dict[str, list[str]] = {}
         for eid, u in self.unit_of.items():
             self._unit_members.setdefault(u, []).append(eid)
+        self.flow_next: dict[str, set[str]] = flow_successors(self.raw)
 
     def unit_bbox(self, unit_id: str | None) -> dict | None:
         """Union bbox of a multi-element unit (None for a singleton / no unit)."""
@@ -624,6 +646,10 @@ class PolicyConfig:
     #     Off by default since pointable units: the released card was mostly
     #     re-lit moments later (~1 in 10 AI_Handout switches). ---
     stale_release: int = 3
+    # --- flow hint: a unit the slide map says comes next (`flow` relation) after
+    #     the active unit gets this on its effective score. 0 disables; decks
+    #     without maps have no flow relations, so it never applies there. ---
+    flow_bonus: float = 0.03
 
 
 def _floor(ref: ElementRef) -> str:
@@ -752,7 +778,12 @@ class MatchPolicy:
             and top_rival.group == self._active_group
         )
 
+        nxt = getattr(getattr(self.matcher, "index", None), "flow_next", {}).get(self.active_id, ())
+
         def effective(raw: float, ref: ElementRef) -> float:
+            return base(raw, ref) + (self.cfg.flow_bonus if ref.id in nxt else 0.0)
+
+        def base(raw: float, ref: ElementRef) -> float:
             if ref.id == self.active_id:
                 return raw + (self.cfg.stay_bonus if challenged_same_group else 0.0)
             if self._active_group is not None and ref.group == self._active_group:
