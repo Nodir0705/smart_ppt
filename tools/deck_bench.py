@@ -35,7 +35,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VOICE = ROOT / "out" / "voices" / "en_US-amy-low.onnx"
 GAP_MS = 900
 # variant name -> build_index kwargs; later steps (PaddleOCR, VLMs) add entries
-VARIANTS: dict[str, dict] = {"default": {}, "no-ocr": {"ocr": False}}
+VARIANTS: dict[str, dict] = {"default": {}, "no-ocr": {"ocr": False},
+                             "no-clip": {"vision_link": False}}
 
 # Negative pass: presenter filler that names NO element, so every highlight is
 # false. TUNE is what matcher thresholds may be fitted on; HOLDOUT (reported)

@@ -40,6 +40,7 @@ def build_index(
     write_intermediates: bool = True,
     expansions_path: str = EXPANSIONS_PATH,
     ocr: bool = True,
+    vision_link: bool = True,
 ) -> dict:
     """Build the index for `deck` and return the richest produced stage.
 
@@ -48,6 +49,7 @@ def build_index(
     correct snapshots of each stage. `refine`/`scope` require LibreOffice
     (soffice) on PATH; pass `refine=False` to skip the PDF/render dependency.
     `ocr=False` skips the tesseract fallback (bench "no-ocr" variant).
+    `vision_link=False` skips CLIP picture->text linking (bench "no-clip" variant).
     """
     deck = Path(deck)
     out = Path(out_dir)
@@ -69,6 +71,11 @@ def build_index(
         if slides_dir.exists():
             from .chart_detect import refine_chart_bboxes
             refine_chart_bboxes(final, str(slides_dir))
+            if vision_link:
+                from .vision_link import format_links, link_pictures
+                links = link_pictures(final, slides_dir)
+                if links:
+                    print(format_links(links), flush=True)
         if write_intermediates:
             _write(out / "index.refined.json", final)
 
