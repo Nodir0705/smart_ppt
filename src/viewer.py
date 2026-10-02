@@ -126,7 +126,6 @@ class ViewerApp:
         self._fit: FitTransform = FitTransform(scale=1.0, offset_x=0, offset_y=0, draw_w=0, draw_h=0)
         self._image_id: Optional[int] = None
         self._highlight_outer_id: Optional[int] = None
-        self._highlight_inner_id: Optional[int] = None
         self._axis_label_id: Optional[int] = None        # companion box on the axis label
         self._resize_job = None                          # pending settle-redraw
         self._last_draw_size: Optional[tuple[int, int]] = None  # last drawn canvas size
@@ -331,7 +330,6 @@ class ViewerApp:
             self._fit.offset_x, self._fit.offset_y, anchor="nw", image=self._image_tk,
         )
         self._highlight_outer_id = None
-        self._highlight_inner_id = None
         # if the active element is set, recompute its canvas bbox at the new scale
         if self.policy.active_id:
             self._set_target_from_element(self.policy.active_id)
@@ -344,9 +342,6 @@ class ViewerApp:
             self.canvas.delete(self._highlight_outer_id)
             self._highlight_outer_id = None
         self.canvas.delete("hl_inner")
-        if self._highlight_inner_id is not None:
-            self.canvas.delete(self._highlight_inner_id)
-            self._highlight_inner_id = None
         if self._axis_label_id is not None:
             self.canvas.delete(self._axis_label_id)
             self._axis_label_id = None

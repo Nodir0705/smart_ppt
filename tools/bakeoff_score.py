@@ -22,9 +22,9 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RAW_DIR = Path("/home/netvision/smartppt/out/bakeoff/raw")
-DEFAULT_TRUTH_DIR = Path("/home/netvision/smartppt/out/image_decks")
-DEFAULT_OUT = Path("/home/netvision/smartppt/out/bakeoff/ocr_report.md")
+DEFAULT_RAW_DIR = ROOT / "out" / "bakeoff" / "raw"
+DEFAULT_TRUTH_DIR = ROOT / "out" / "image_decks"
+DEFAULT_OUT = ROOT / "out" / "bakeoff" / "ocr_report.md"
 
 ICON_MAX_AREA_SQIN = 0.5
 IOU_THRESHOLD = 0.3

@@ -20,6 +20,7 @@ Engines:
 from __future__ import annotations
 
 import argparse
+import os
 import csv
 import io
 import json
@@ -33,9 +34,10 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-TRUTH_DIR = Path("/home/netvision/smartppt/out/image_decks")
-SMARTPPT_ROOT = Path("/home/netvision/smartppt")
-OUT_DIR = Path("/home/netvision/smartppt/out/bakeoff")
+# repo whose out/ holds the inputs; override when running from a worktree
+SMARTPPT_ROOT = Path(os.environ.get("SMARTPPT_ROOT", ROOT))
+TRUTH_DIR = SMARTPPT_ROOT / "out" / "image_decks"
+OUT_DIR = SMARTPPT_ROOT / "out" / "bakeoff"
 RAW_DIR = OUT_DIR / "raw"
 DECK_NAMES = [
     "test_deck",
