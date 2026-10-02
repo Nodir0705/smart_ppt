@@ -452,6 +452,7 @@ def _furniture_deck():
         slides.append({"slide_number": n, "elements": els})
     slides[2]["elements"].append(_el("s3_stat", "3", 3.5))          # mid-slide stat "3" on slide 3
     slides[3]["elements"].append(_el("s4_num", "7", 7.1))           # margin number != slide number
+    slides[1]["elements"].append(_el("s2_sup", "²", 7.1))      # footnote marker: isdigit() but not int()
     return {"slide_size": {"w": 13.33, "h": 7.5}, "slides": slides}
 
 
@@ -460,6 +461,7 @@ def test_furniture_ids_flags_footer_and_page_numbers_only():
     got = furniture_ids(_furniture_deck())
     assert got == {f"s{n}_{k}" for n in range(1, 6) for k in ("foot", "pg", "head")}
     assert "s3_stat" not in got and "s4_num" not in got      # mid-slide / not its slide number
+    assert "s2_sup" not in got
     deck = _furniture_deck()
     for s in deck["slides"]:
         s["elements"][1]["bbox"]["y"] = 2.0                          # the repeat moved mid-slide

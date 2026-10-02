@@ -141,7 +141,7 @@ def furniture_ids(raw: dict) -> set[str]:
             cy = (box["y"] + box["h"] / 2) / height
             if FURNITURE_EDGE <= cy <= 1 - FURNITURE_EDGE:
                 continue
-            if key(t) in running or (t.isdigit() and int(t) == s["slide_number"]):
+            if key(t) in running or (t.isdecimal() and int(t) == s["slide_number"]):
                 out.add(el["id"])
     return out
 
