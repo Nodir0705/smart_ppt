@@ -16,6 +16,11 @@ Beyond lit/false/flicker it measures how the highlight MOVES, on the audio clock
 switches per expected step (1.0 = one jump per thing talked about), median dwell
 between switches, false seconds (time spent on an element nobody referred to) and
 lateness (first lit minus the start of the sentence that introduced it).
+
+When `presenter/adjudication.json` exists (a human verdict per false switch:
+tolerated / wrong / wrong_timing), false ids and false seconds are ALSO reported
+adjudicated: per slide, acceptable = every `refers_to` id on the slide plus every
+id adjudicated `tolerated` on that slide. Strict numbers stay the primary ruler.
 """
 from __future__ import annotations
 
@@ -51,6 +56,29 @@ def expected_steps(segments: list[dict]) -> list[list[str]]:
     return [ids for ids, _ in step_sentences(segments)]
 
 
+def false_seconds(events: list, ok: set, end: float) -> float:
+    """Seconds an id outside `ok` is lit (None is free); events as in slide_motion."""
+    return sum(max(0.0, (events[k + 1][0] if k + 1 < len(events) else end) - t)
+               for k, (t, a, *_) in enumerate(events) if a is not None and a not in ok)
+
+
+def false_ids(events: list, ok: set) -> int:
+    """Distinct lit ids outside `ok`."""
+    return len({a for _t, a, *_ in events if a is not None and a not in ok})
+
+
+def tolerated_ids(deck_dir: Path) -> dict[int, set[str]] | None:
+    """slide -> ids a human adjudicated `tolerated`; None without adjudication.json."""
+    p = deck_dir / "presenter" / "adjudication.json"
+    if not p.exists():
+        return None
+    out: dict[int, set[str]] = {}
+    for r in json.loads(p.read_text())["rows"]:
+        if r["verdict"] == "tolerated":
+            out.setdefault(r["slide"], set()).add(r["active_id"])
+    return out
+
+
 def slide_motion(events: list, steps: list[list[str]], step_starts: list[float],
                  end: float) -> dict:
     """Motion metrics for one slide from `events` [(t, active_id, tail)] (audio s,
@@ -63,8 +91,7 @@ def slide_motion(events: list, steps: list[list[str]], step_starts: list[float],
     """
     ok = set().union(*steps) if steps else set()
     on = [(t, a) for t, a, *_ in events if a is not None]
-    false_s = sum(max(0.0, (events[k + 1][0] if k + 1 < len(events) else end) - t)
-                  for k, (t, a, *_) in enumerate(events) if a is not None and a not in ok)
+    false_s = false_seconds(events, ok, end)
     runs = [(t, a) for k, (t, a) in enumerate(on) if k == 0 or on[k - 1][1] != a]
     late, ptr = [], 0
     for ids, start in zip(steps, step_starts):
@@ -84,9 +111,12 @@ def p90(xs: list[float]) -> float:
 def motion_summary(per_slide: list[dict], n_steps: int) -> dict:
     dwells = [d for m in per_slide for d in m["dwells"]]
     late = [x for m in per_slide for x in m["lateness"]]
+    adj = all("false_s_adj" in m for m in per_slide)
     return {"switches_per_step": sum(m["switches"] for m in per_slide) / n_steps if n_steps else 0.0,
             "median_dwell": statistics.median(dwells) if dwells else float("nan"),
             "false_s": sum(m["false_s"] for m in per_slide),
+            "false_s_adj": sum(m["false_s_adj"] for m in per_slide) if adj else None,
+            "false_adj": sum(m["false_adj"] for m in per_slide) if adj else None,
             "late_median": statistics.median(late) if late else float("nan"),
             "late_p90": p90(late)}
 
@@ -117,6 +147,7 @@ def prepare(deck_dir: Path) -> Path:
 
 def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
     """Deck motion summary and the per-switch trace (for adjudication)."""
+    tolerated = tolerated_ids(deck_dir)
     script = {s["slide"]: s["segments"]
               for s in json.loads((deck_dir / "presenter_script.json").read_text())["slides"]}
     manifest = {m["slide"]: m for m in
@@ -129,9 +160,12 @@ def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
         steps = step_sentences(segs)
         ok = set().union(*(ids for ids, _ in steps)) if steps else set()
         n_steps += len(steps)
-        per_slide.append(slide_motion(evs, [ids for ids, _ in steps],
-                                      [starts[k] for _, k in steps],
-                                      _wav_seconds(manifest[sno]["wav"])))
+        end = _wav_seconds(manifest[sno]["wav"])
+        m = slide_motion(evs, [ids for ids, _ in steps], [starts[k] for _, k in steps], end)
+        if tolerated is not None:
+            adj_ok = {i for seg in segs for i in seg.get("refers_to") or []} | tolerated.get(sno, set())
+            m.update(false_s_adj=false_seconds(evs, adj_ok, end), false_adj=false_ids(evs, adj_ok))
+        per_slide.append(m)
         for t, a, tail in evs:
             k = sentence_at(starts, t)
             trace.append({"slide": sno, "t": round(t, 2), "active_id": a,
@@ -162,13 +196,17 @@ def main(argv: list[str] | None = None) -> int:
         records.append({"deck": deck.name, "status": "OK", **motion, **{k: o[k] for k in
                         ("hits", "steps", "relevant", "false", "flicker", "precision")}})
     tot = totals(records)
+    adj = lambda v, f: "–" if v is None else format(v, f)  # noqa: E731
     lines = ["# Presenter-script bench (natural speech, annotated pointing)", "",
-             "| deck | referenced elements lit (in order) | false highlights | precision | flicker "
-             "| switches/step | median dwell s | false s | late median s | late p90 s |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
-    lines += [f"| {r['deck']} | {r['hits']}/{r['steps']} | {r['false']} | {r['precision']:.3f} "
-              f"| {r['flicker']} | {r['switches_per_step']:.2f} | {r['median_dwell']:.2f} "
-              f"| {r['false_s']:.1f} | {r['late_median']:.2f} | {r['late_p90']:.2f} |"
+             "Adjudicated (adj) = `refers_to` ids plus ids a human judged *tolerated* on that slide.", "",
+             "| deck | referenced elements lit (in order) | false highlights | false adj | precision "
+             "| flicker | switches/step | median dwell s | false s | false s adj | late median s "
+             "| late p90 s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines += [f"| {r['deck']} | {r['hits']}/{r['steps']} | {r['false']} | {adj(r['false_adj'], 'd')} "
+              f"| {r['precision']:.3f} | {r['flicker']} | {r['switches_per_step']:.2f} "
+              f"| {r['median_dwell']:.2f} | {r['false_s']:.1f} | {adj(r['false_s_adj'], '.1f')} "
+              f"| {r['late_median']:.2f} | {r['late_p90']:.2f} |"
               for r in records]
     lines += ["", f"**Total:** {tot['hits']}/{tot['steps']} lit · false {tot['false']} · "
               f"precision {tot['precision']:.3f} · flicker {tot['flicker']} · "

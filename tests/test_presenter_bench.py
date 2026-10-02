@@ -2,8 +2,10 @@ import math
 
 import pytest
 
-from tools.presenter_bench import (expected_steps, motion_summary, p90, sentence_at,
-                                   slide_motion, step_sentences)
+import json
+
+from tools.presenter_bench import (expected_steps, false_ids, false_seconds, motion_summary,
+                                   p90, sentence_at, slide_motion, step_sentences, tolerated_ids)
 
 
 def test_expected_steps_skip_non_pointing_and_collapse_repeats():
@@ -44,6 +46,26 @@ def test_motion_summary_pools_slides():
     assert s["switches_per_step"] == 2.0 and s["median_dwell"] == 2.0
     assert s["false_s"] == 1.5 and s["late_median"] == 0.4 and s["late_p90"] == 3.0
     assert math.isnan(motion_summary([], 0)["late_p90"])
+    assert s["false_s_adj"] is None and s["false_adj"] is None       # no adjudication
+    s = motion_summary([{**a, "false_s_adj": 0.1, "false_adj": 1},
+                        {**b, "false_s_adj": 0.2, "false_adj": 0}], n_steps=3)
+    assert s["false_s_adj"] == pytest.approx(0.3) and s["false_adj"] == 1
+
+
+def test_adjudicated_false_counts_tolerated_as_acceptable(tmp_path):
+    (tmp_path / "presenter").mkdir()
+    (tmp_path / "presenter" / "adjudication.json").write_text(json.dumps({"rows": [
+        {"slide": 1, "active_id": "x", "verdict": "tolerated"},
+        {"slide": 1, "active_id": "y", "verdict": "wrong"},
+        {"slide": 2, "active_id": "y", "verdict": "tolerated"}]}))
+    tol = tolerated_ids(tmp_path)
+    assert tol == {1: {"x"}, 2: {"y"}}
+    events = [(1.0, "x", ""), (2.0, "a", ""), (3.0, "y", ""), (4.0, None, ""), (6.0, "y", "")]
+    strict, adj = {"a"}, {"a"} | tol[1]
+    assert false_ids(events, strict) == 2 and false_ids(events, adj) == 1
+    assert false_seconds(events, strict, end=8.0) == pytest.approx(1.0 + 1.0 + 2.0)
+    assert false_seconds(events, adj, end=8.0) == pytest.approx(3.0)   # only y (wrong) counts
+    assert tolerated_ids(tmp_path / "nowhere") is None
 
 
 def test_p90_and_sentence_at():
