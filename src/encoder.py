@@ -98,5 +98,13 @@ class BGEEncoder:
         return cls.cpu().numpy().astype(np.float32)
 
 
-def load_default_encoder() -> Encoder:
-    return BGEEncoder()
+def load_default_encoder(device: str | None = None) -> Encoder:
+    return BGEEncoder(device=device)
+
+
+def eval_device(device: str = "auto") -> str:
+    """Eval tools only (the live app stays on CPU): 'auto' -> 'cuda' when available."""
+    if device != "auto":
+        return device
+    import torch
+    return "cuda" if torch.cuda.is_available() else "cpu"

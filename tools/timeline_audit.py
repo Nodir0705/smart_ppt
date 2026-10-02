@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from src.audio import FileSource, PlaybackSource
-from src.encoder import load_default_encoder
+from src.encoder import eval_device, load_default_encoder
 from src.live import LiveTranscriber
 from src.live_controller import LiveController
 from src.matcher import Index, Matcher
@@ -129,7 +129,7 @@ def _eval_items(manifest, gt, only):
 
 
 def run(index_path, only=None, normalize=None, manifest_path=None, fixture_path=None,
-        fast=False, models=None):
+        fast=False, models=None, device="cpu"):
     raw = json.loads(Path(index_path).read_text())
     manifest_path = Path(manifest_path or ROOT / "out" / "narration" / "manifest.json")
     manifest = json.loads(manifest_path.read_text())
@@ -138,7 +138,7 @@ def run(index_path, only=None, normalize=None, manifest_path=None, fixture_path=
 
     if models is None:
         print(f"loading models (BGE + STT)…  index={index_path}", flush=True)
-        models = (load_default_encoder(), load_default_stt_engine(sample_rate=16000, audio_clock=fast))
+        models = (load_default_encoder(device), load_default_stt_engine(sample_rate=16000, audio_clock=fast))
     enc, engine = models
     idx = Index(Path(index_path), enc)
     matcher = Matcher(idx, enc)
@@ -202,6 +202,8 @@ def main(argv=None):
     ap.add_argument("--fixture", default=None, help="expected highlights JSON")
     ap.add_argument("--fast", action="store_true",
                     help="unpaced replay on the STT audio clock (bench mode)")
+    ap.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
+                    help="text-encoder device for this eval (auto = cuda if available); STT stays CPU")
     args = ap.parse_args(argv)
     normalize = None
     if args.normalize:
@@ -210,7 +212,7 @@ def main(argv=None):
         amap = build_alias_map(raw)
         normalize = lambda t: _norm(t, amap)
     run(args.index, only=args.only, normalize=normalize, manifest_path=args.manifest,
-        fixture_path=args.fixture, fast=args.fast)
+        fixture_path=args.fixture, fast=args.fast, device=eval_device(args.device))
     return 0
 
 

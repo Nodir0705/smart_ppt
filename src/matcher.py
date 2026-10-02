@@ -185,6 +185,11 @@ class Index:
         h.update(model_name.encode())
         h.update(b"|")
         h.update(self.CACHE_VERSION.encode())
+        # CPU and CUDA kernels aren't bit-identical: a non-CPU encoder gets its own
+        # cache (CPU keys unchanged, so existing CPU caches stay valid).
+        device = str(getattr(self.encoder, "device", "cpu"))
+        if device != "cpu":
+            h.update(f"|{device}".encode())
         return h.hexdigest()[:16]
 
     # ElementRef fields persisted to the JSON sidecar (embeddings live in the .npz).

@@ -521,3 +521,26 @@ def test_barred_bounce_still_clears_an_unsupported_active():
     pol.step("x", 1), pol.step("x", 1)
     whys = [pol.step("x", 1)[2] for _ in range(8)]
     assert whys[-1] == "clear" and pol.active_id is None
+
+
+def test_cuda_encoder_gets_its_own_embedding_cache(tmp_path):
+    # CPU and CUDA embeddings aren't bit-identical: they must never share a cache,
+    # and the CPU key must stay what it was (existing caches remain valid).
+    import json
+    import numpy as np
+    from src.matcher import Index
+
+    class Enc:
+        dim, model_name, device = 4, "stub", "cpu"
+        def encode(self, texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps({"slides": []}))
+    cpu = Index(p, Enc())
+    gpu_enc = Enc()
+    gpu_enc.device = "cuda"
+    gpu = Index(p, gpu_enc)
+    assert cpu._cache_key() != gpu._cache_key()
+    del Enc.device                                   # encoder without a device attr = CPU
+    assert Index(p, Enc())._cache_key() == cpu._cache_key()

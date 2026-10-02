@@ -25,16 +25,17 @@ id adjudicated `tolerated` on that slide. Strict numbers stay the primary ruler.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import math
 import statistics
 import wave
 from pathlib import Path
 
-from src.encoder import load_default_encoder
-from src.stt import load_default_stt_engine
+from src.encoder import eval_device
 from src.tts import synthesize_slides
-from tools.deck_bench import VOICE, _write, totals
+from tools.deck_bench import VOICE, _write, load_models, per_deck_processes, totals
 from tools.timeline_audit import audit
 
 PAUSE_MS = 350  # sentence gap: a natural pause, not the 900 ms element gap of the ruler
@@ -175,26 +176,36 @@ def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
     return motion_summary(per_slide, n_steps), trace
 
 
+def bench_deck(deck: Path, device: str) -> tuple[dict, str]:
+    """One deck, own process + models: prepare, replay, score; writes trace.json."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        d = prepare(deck)
+        res = audit(deck / "default" / "index.scoped.json", manifest_path=d / "manifest.json",
+                    fixture_path=d / "expected.json", fast=True, models=load_models(device))
+        o = res["overall"]
+        motion, trace = score_motion(deck, res["events"])
+        _write(d / "trace.json", trace)
+    return {"deck": deck.name, "status": "OK", **motion, **{k: o[k] for k in
+            ("hits", "steps", "relevant", "false", "flicker", "precision")}}, buf.getvalue()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Grounding score on annotated presenter scripts.")
     ap.add_argument("--bench", default="out/bench")
     ap.add_argument("--only", default=None, help="deck folder name")
+    ap.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
+                    help="text-encoder device (auto = cuda if available); STT stays CPU")
     args = ap.parse_args(argv)
 
     decks = sorted(p.parent for p in Path(args.bench).glob("*/presenter_script.json"))
     if args.only:
         decks = [d for d in decks if d.name == args.only]
-    models = (load_default_encoder(), load_default_stt_engine(sample_rate=16000, audio_clock=True))
+    device = eval_device(args.device)
     records = []
-    for deck in decks:
-        d = prepare(deck)
-        res = audit(deck / "default" / "index.scoped.json", manifest_path=d / "manifest.json",
-                    fixture_path=d / "expected.json", fast=True, models=models)
-        o = res["overall"]
-        motion, trace = score_motion(deck, res["events"])
-        _write(d / "trace.json", trace)
-        records.append({"deck": deck.name, "status": "OK", **motion, **{k: o[k] for k in
-                        ("hits", "steps", "relevant", "false", "flicker", "precision")}})
+    for deck, (rec, log) in zip(decks, per_deck_processes(bench_deck, [(d, device) for d in decks])):
+        print(f"=== {deck.name} ===\n{log}", end="", flush=True)
+        records.append(rec)
     tot = totals(records)
     adj = lambda v, f: "–" if v is None else format(v, f)  # noqa: E731
     lines = ["# Presenter-script bench (natural speech, annotated pointing)", "",

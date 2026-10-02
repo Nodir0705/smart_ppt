@@ -12,15 +12,19 @@ docs/superpowers/specs/2026-10-01-deck-bench-design.md.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
+import multiprocessing
 import sys
 import time
 import traceback
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from src.build_index import build_index
-from src.encoder import load_default_encoder
+from src.encoder import eval_device, load_default_encoder
 from src.parser import parse_deck
 from src.stt import load_default_stt_engine
 from src.tts import synthesize_slides
@@ -95,8 +99,10 @@ def totals(records: list[dict]) -> dict:
             "filler_false": sum(r.get("filler_false", 0) for r in ok)}
 
 
-def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> dict:
-    """Fill `rec` in place, so a deck that fails mid-way keeps its inventory."""
+def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict,
+               reuse_index: bool = False) -> dict:
+    """Fill `rec` in place, so a deck that fails mid-way keeps its inventory.
+    `reuse_index` scores an existing <variant>/index.scoped.json instead of rebuilding it."""
     d = out_root / deck.stem
     truth = parse_deck(str(deck), ocr=False)          # narration source: XML only
     rec["inventory"] = inventory(truth)
@@ -107,7 +113,8 @@ def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> d
     _write(d / "manifest.json", synthesize_slides(script, VOICE, d / "audio", GAP_MS))
 
     t = time.monotonic()
-    build_index(deck, d / variant, **VARIANTS[variant])
+    if not (reuse_index and (d / variant / "index.scoped.json").exists()):
+        build_index(deck, d / variant, **VARIANTS[variant])
     rec["build_s"] = round(time.monotonic() - t, 1)
 
     t = time.monotonic()
@@ -131,6 +138,34 @@ def bench_deck(deck: Path, variant: str, out_root: Path, models, rec: dict) -> d
                filler_lit={s: v["trajectory"] for s, v in fr["slides"].items() if v["trajectory"]},
                status="OK")
     return rec
+
+
+def load_models(device: str = "cpu"):
+    """(text encoder on `device`, CPU sherpa STT on the audio clock) for one process."""
+    return load_default_encoder(device), load_default_stt_engine(sample_rate=16000, audio_clock=True)
+
+
+def per_deck_processes(job, arg_tuples: list[tuple]):
+    """Run `job(*args)` for each deck in its own spawned process (each loads its
+    own models), yielding results in input order so reports stay deterministic.
+    `job` must be a module-level function returning (result, captured_stdout)."""
+    ctx = multiprocessing.get_context("spawn")   # CUDA can't be forked
+    with ProcessPoolExecutor(max_workers=max(1, len(arg_tuples)), mp_context=ctx) as ex:
+        futs = [ex.submit(job, *a) for a in arg_tuples]
+        for f in futs:
+            yield f.result()
+
+
+def _deck_job(deck: Path, variant: str, out_root: Path, device: str,
+              reuse_index: bool) -> tuple[dict, str]:
+    rec, buf = {"deck": deck.stem}, io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            bench_deck(deck, variant, out_root, load_models(device), rec, reuse_index)
+        except Exception as e:  # one bad deck never aborts the run
+            traceback.print_exc(file=buf)
+            rec["status"] = f"FAILED: {type(e).__name__}: {e}"
+    return rec, buf.getvalue()
 
 
 def _markdown(variant: str, records: list[dict], tot: dict) -> str:
@@ -162,6 +197,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="out/bench", help="output root (default: out/bench)")
     ap.add_argument("--variant", default="default", choices=sorted(VARIANTS))
     ap.add_argument("--only", default=None, help="bench just this deck (file stem)")
+    ap.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
+                    help="text-encoder device (auto = cuda if available); STT stays CPU")
+    ap.add_argument("--reuse-index", action="store_true",
+                    help="score an existing <variant>/index.scoped.json instead of rebuilding it")
     args = ap.parse_args(argv)
 
     decks = sorted(Path(args.decks).glob("*.pptx"))
@@ -172,16 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     out_root = Path(args.out)
-    models = (load_default_encoder(), load_default_stt_engine(sample_rate=16000, audio_clock=True))
+    device = eval_device(args.device)
     records = []
-    for deck in decks:
-        print(f"=== {deck.stem} ===", flush=True)
-        rec = {"deck": deck.stem}
-        try:
-            bench_deck(deck, args.variant, out_root, models, rec)
-        except Exception as e:  # one bad deck never aborts the run
-            traceback.print_exc()
-            rec["status"] = f"FAILED: {type(e).__name__}: {e}"
+    for deck, (rec, log) in zip(decks, per_deck_processes(
+            _deck_job, [(d, args.variant, out_root, device, args.reuse_index) for d in decks])):
+        print(f"=== {deck.stem} ===\n{log}", end="", flush=True)
         records.append(rec)
     tot = totals(records)
     # --only writes its own report so a debug re-run never clobbers the full one
