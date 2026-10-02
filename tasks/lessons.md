@@ -180,3 +180,37 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   `map_phrases` (scope had added a trigger phrase afterwards). Patch in only the new key and diff the result.
 - **Holdout kept honest.** I locked params on original + jumpy, committed them, and only then ran meaning:
   57/59 (=), false 11 (19), 1.28 sw/step, dwell 5.4 s, lateness 2.47 s (2.68). All gates passed.
+
+## Wrong topic jumps: jump gap, title word gate, position terms (2026-10-03)
+
+- **Replay the pointer on recorded inputs, not on audio.** Record what `ClausePointer.update` sees on every feed
+  (t, words, boundaries) once (13 s for both decks) and cache decider scores by (slide, unit descriptions, clause).
+  After that a policy variant costs about 2 s for all 4 tune runs instead of minutes, and the baseline matched
+  `clause_replay` and the bench row for row. Check that match before ranking anything.
+- **Damping buys precision with recall, and lit is gated per run.** In-clause EMA (alpha 0.3-0.6), a raised global
+  gap, a higher NONE bar, lexical-evidence switching and titles-never all cut wrong moves 20-45%, but each one lost
+  6-20 lit. In this data a lost hit is usually a short correct stop that damping smooths away.
+- **Gate only the move that causes the jump.** Most wrong moves were new-clause commits away from a box that was
+  already lit. A separate `jump_gap` (2) for that case only, with first lights left at gap 1, kept every run's lit
+  and lateness within 0.08 s of the old values. The global gap 2 had cost OQ +0.19 s lateness.
+- **Titles: gate on the title's own words.** A title unit is a candidate only when the clause contains a word of
+  4 or more letters that no other unit on the slide has. With 3-letter words allowed, "so **how** does it actually"
+  lit "How does it work?". Titles-never cost 5 lit; the word gate costs 0 and cut title false seconds 105 -> 50.
+- **Position terms ("on the right") add recall:** +3 to +6 lit for about +7 false s; they cover the lit the gates cost.
+- **A bigger teacher would not fix what is left.** bge-reranker-base at matched lit scored the same OQ false seconds
+  (318 vs 309), so I did not try distillation. The remaining OQ false seconds are mostly "other" (158 s: a sibling
+  entity named in the same sentence, e.g. "reads the key over I2C" -> I2C controller), units linked by part_of /
+  explains to the referenced one (49 s), and sentences with no `refers_to` (49 s, several plainly name a unit:
+  "Battery life and performance are the usual tradeoff" next to Battery Life / Performance cards). Those need
+  human adjudication (see `candidate_adjudication.json` in the diagnosis scratch), not tuning.
+- **ASR aliases from map terms: no.** None of the garbles ("esa memu", "codak", "linox") appear in any map's terms.
+- Result, 4 tune runs summed (before -> after): lit 291 -> 291 (each run equal), false ids 82 -> 63 (-23%),
+  sentence-level wrong moves 117 -> 95 (-19%), false s 364.6 -> 304.1 (-17%; AI 36.1 -> 15.0, OQ 328.5 -> 289.1),
+  sw/step lower on every run. **The 25% gate missed on both counts, because Open-Q's floor sits above it.**
+  Holdout (meaning x2): lit 173 -> 173, false ids 34 -> 26, false s 116.0 -> 83.5, lateness 2.49 -> 2.45.
+- **Check the adjudicated columns too.** Open-Q original has a human adjudication. On it, false adj went 14 -> 16 and
+  false s adj 48.9 -> 56.8 (AI unchanged at 1 / 0.3). The adjudicator had tolerated intro title lights. The title
+  gate removes those, so it gains nothing on the adjudicated measure, and the unit that lights in the title's place
+  is sometimes an error. Position terms add two of those errors: "on the right are the four ..." lights the
+  right-hand card. Without position terms it is 16 / 51.5 and costs 3 lit. The raw false-seconds win is partly
+  tolerated title time.
