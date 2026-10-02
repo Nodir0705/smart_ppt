@@ -142,6 +142,7 @@ class LiveController:
         if decider is None and self._mapped:   # load the model now, not mid-talk
             decider = _default_decider()
         self._decider = decider
+        self._slide_size = raw_index.get("slide_size")
         self._clause_params = clause_params or ClauseParams()
         self._clause: ClausePointer | None = None
         self._clause_slide: int | None = None
@@ -185,7 +186,7 @@ class LiveController:
         """One clause-pointer update on a mapped slide ->
         (active unit id, best unit id, margin, why, clause text)."""
         if self._clause is None or self._clause_slide != self.slide_no:
-            units, self._clause_head, low = slide_units(self._mapped[self.slide_no])
+            units, self._clause_head, low = slide_units(self._mapped[self.slide_no], self._slide_size)
             # the slide's speech starts at the last reset (a swapped-in buffer is
             # all this slide's); a slide change without reset starts now
             buf, n = self._origin

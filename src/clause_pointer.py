@@ -12,7 +12,12 @@ the previous clause as context) refers to:
   clause reaching ``max_words``;
 * commit: move to unit U once U beats NONE by ``commit`` (plus ``title_extra``
   for title / section-label units) and the runner-up by ``gap`` — mid-clause,
-  as soon as the clause has ``min_words`` words;
+  as soon as the clause has ``min_words`` words; a new clause that would move a
+  box that is already lit needs ``jump_gap`` over the runner-up instead (the
+  wrong jumps were confident 5-word fragments: "and on the right is");
+* a title / section-label unit is a candidate only when the clause says one of
+  its own words that no other unit on the slide has (intro talk otherwise lights
+  the title as the slide's first box);
 * after a commit in this clause, change only when another unit beats the
   committed one by ``switch`` (hysteresis);
 * a clause that commits to nothing HOLDS the box; boundaries keep the box.
@@ -28,6 +33,7 @@ boundaries (live: ``stt.RollingBuffer`` does both on the audio thread).
 """
 from __future__ import annotations
 
+import re
 from collections import deque
 from dataclasses import dataclass
 
@@ -75,9 +81,22 @@ class PauseDetector:
         return resumed
 
 
-def slide_units(slide: dict) -> tuple[list[dict], dict[str, str], set[str]]:
+def _side(boxes: list[dict], size: dict) -> str:
+    """'on the left top' etc. from the members' bbox centres (empty in the middle)."""
+    cx = sum(b["x"] + b["w"] / 2 for b in boxes) / len(boxes) / size["w"]
+    cy = sum(b["y"] + b["h"] / 2 for b in boxes) / len(boxes) / size["h"]
+    pos = (["left"] if cx < 0.4 else ["right"] if cx > 0.6 else []) + \
+          (["top"] if cy < 0.35 else ["bottom"] if cy > 0.7 else [])
+    return "on the " + " ".join(pos) if pos else ""
+
+
+def slide_units(slide: dict, size: dict | None = None) -> tuple[list[dict], dict[str, str], set[str]]:
     """A mapped index slide -> (decider units, uid -> unit id the policy emits
-    (its first member), uids of title / section-label units)."""
+    (its first member), uids of title / section-label units).
+
+    With the deck's ``slide_size``, each unit's terms gain where it sits ("on the
+    right"): speakers point by place ("the number on the top right"), and a
+    text-only re-ranker can't resolve that."""
     m = slide["map"]
     info = m.get("info") or {}
     by_id = {e["id"]: e for e in slide["elements"]}
@@ -87,6 +106,9 @@ def slide_units(slide: dict) -> tuple[list[dict], dict[str, str], set[str]]:
         units.append({"uid": uid, "text": " ".join(by_id[x].get("text") or "" for x in members).strip(),
                       "summary": i.get("summary", ""), "talk": list(i.get("talk", [])),
                       "terms": list(i.get("terms", []))})
+        boxes = [by_id[x]["bbox"] for x in members if (by_id[x].get("bbox") or {}).get("w") is not None]
+        if size and boxes and (side := _side(boxes, size)):
+            units[-1]["terms"].append(side)
         head[uid] = members[0]
         if all(by_id[x].get("map_role") in TITLE_ROLES for x in members):
             low.add(uid)
@@ -97,13 +119,16 @@ def slide_units(slide: dict) -> tuple[list[dict], dict[str, str], set[str]]:
 class ClauseParams:
     """Locked on the original + jumpy talks (AI_Handout) with the default cross
     decider; every setting in commit -8..-5.5 (as the decider's NONE bar),
-    switch 0.5..1.5, title_extra 2..3 at min_words 5 passed the gate."""
+    switch 0.5..1.5, title_extra 2..3 at min_words 5 passed the gate.
+    jump_gap 2 / title_extra 4 (with the title word gate and position terms):
+    locked on original + jumpy of AI_Handout and Open-Q (tasks/lessons.md)."""
     min_words: int = 5        # clause words before its first decision (a boundary leaks 1-2 words of the last sentence; 6 is too late)
     max_words: int = 35       # fallback boundary when nobody pauses (oracle clauses: median 15, max 35)
     commit: float = 0.0       # winner over NONE (the decider's own bar)
     gap: float = 1.0          # winner over the runner-up
+    jump_gap: float = 2.0     # winner over the runner-up when a new clause would move a lit box
     switch: float = 1.0       # rival over the unit already committed in this clause
-    title_extra: float = 2.0  # extra over NONE for title / section-label units
+    title_extra: float = 4.0  # extra over NONE for title / section-label units
 
 
 @dataclass
@@ -128,6 +153,11 @@ class ClausePointer:
         self.active: str | None = None
         self.committed: str | None = None   # unit committed in THIS clause
         self._last_clause: str | None = None
+        # title words no other unit on the slide has (``_words`` stems)
+        others = {u["uid"]: _words(" ".join([u["summary"], u["text"], *u["talk"], *u["terms"]]))
+                  for u in units}
+        self.title_words = {t: _words(u["text"]) - set().union(*(w for v, w in others.items() if v != t))
+                            for u in units if (t := u["uid"]) in self.low_prior}
 
     def update(self, words: list[str], boundaries: list[int] = ()) -> Decision:
         """Fold in boundaries (word indices, ascending) and decide on the current clause."""
@@ -150,6 +180,9 @@ class ClausePointer:
 
     def _commit(self, scores: dict[str, float], clause: str) -> Decision:
         none = scores.get("none", float("-inf"))
+        said = _words(clause)
+        scores = {u: (float("-inf") if u in self.title_words and not said & self.title_words[u] else s)
+                  for u, s in scores.items()}
         ranked = sorted((u["uid"] for u in self.units), key=lambda u: -scores.get(u, float("-inf")))
         best = ranked[0]
         s = scores[best]
@@ -158,7 +191,8 @@ class ClausePointer:
         clears = s - none >= need
         why = "hold" if self.active else "noop"
         if self.committed is None:
-            if clears and s - second >= self.p.gap:
+            gap = self.p.jump_gap if self.active is not None else self.p.gap
+            if clears and s - second >= gap:
                 self.committed = best
                 if best != self.active:
                     self.active, why = best, "switch"
@@ -167,3 +201,8 @@ class ClausePointer:
             if best != self.active:
                 self.active, why = best, "switch"
         return Decision(self.active, why, best, s - none, clause)
+
+
+def _words(text: str) -> set[str]:
+    """Content-word stems (first 5 letters of words >= 4 long) for the title gate."""
+    return {w[:5] for w in re.findall(r"[a-z0-9][a-z0-9']+", text.lower()) if len(w) >= 4}

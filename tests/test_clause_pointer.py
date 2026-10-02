@@ -9,7 +9,8 @@ from src.live import LiveTranscriber
 from src.live_controller import LiveController
 from src.stt import Partial, RollingBuffer
 
-UNITS = [{"uid": u, "text": u, "summary": "", "talk": [], "terms": []} for u in ("t", "a", "b")]
+UNITS = [{"uid": u, "text": t, "summary": "", "talk": [], "terms": []}
+         for u, t in (("t", "title"), ("a", "alpha"), ("b", "beta"))]
 
 
 class KeywordDecider:
@@ -27,7 +28,8 @@ class KeywordDecider:
 
 def _ptr(**kw):
     d = KeywordDecider({"t": "title", "a": "alpha", "b": "beta"})
-    p = ClauseParams(**{"min_words": 2, "commit": 0.0, "gap": 0.5, "switch": 1.0, **kw})
+    p = ClauseParams(**{"min_words": 2, "commit": 0.0, "gap": 0.5, "jump_gap": 0.5, "switch": 1.0,
+                        "title_extra": 2.0, **kw})
     return ClausePointer(d, UNITS, p, low_prior={"t"}), d
 
 
@@ -58,6 +60,26 @@ def test_title_units_need_the_extra_margin():
     cp, _ = _ptr(title_extra=1.0)
     assert cp.update("the title here".split()).active is None
     assert cp.update("the title title".split()).active == "t"
+
+
+def test_a_new_clause_needs_jump_gap_to_move_a_lit_box():
+    cp, _ = _ptr(jump_gap=1.5)
+    cp.update("look alpha".split())
+    assert cp.update("look alpha now beta".split(), [2]).active == "a"        # beta 1 vs alpha 0: < 1.5
+    assert cp.update("look alpha now beta beta".split()).active == "b"        # 2 vs 0
+    fresh, _ = _ptr(jump_gap=1.5)
+    assert fresh.update("now beta".split()).active == "b"                     # first light: plain gap
+
+
+def test_titles_light_only_on_their_own_words():
+    class Loud(KeywordDecider):                     # scores the title high whatever is said
+        def decide(self, clause, context, units):
+            return {**super().decide(clause, context, units), "t": 9.0}
+    p = ClauseParams(min_words=2, commit=0.0, gap=0.5, title_extra=1.0)
+    cp = ClausePointer(Loud({"t": "title", "a": "alpha", "b": "beta"}), UNITS, p, low_prior={"t"})
+    assert cp.title_words == {"t": {"title"}}
+    assert cp.update("so how alpha".split()).active == "a"          # title gated out: alpha wins
+    assert cp.update("so how alpha the title".split()).active == "t"
 
 
 def test_max_words_starts_a_new_clause_and_keeps_context():
@@ -132,6 +154,8 @@ def test_slide_units_reads_the_map():
     assert [u["uid"] for u in units] == ["t", "a", "b"]
     assert units[1]["text"] == "Alpha stage" and units[1]["summary"] == "alpha"
     assert head == {"t": "s1_t", "a": "s1_a", "b": "s1_b"} and low == {"t"}
+    units, _, _ = slide_units(_mapped_index()["slides"][0], {"w": 4.0, "h": 5.0})
+    assert [u["terms"] for u in units] == [["on the left top"], ["on the left"], ["on the left bottom"]]
 
 
 class _NoScores:
