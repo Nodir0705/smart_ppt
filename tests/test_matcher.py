@@ -495,3 +495,27 @@ def test_index_makes_furniture_unpointable(tmp_path):
     assert not refs["s1_foot"].is_pointable and not refs["s1_pg"].is_pointable
     assert refs["s1_body"].is_pointable and refs["s1_title"].is_pointable
 
+
+def test_barred_bounce_holds_a_still_supported_active():
+    # A -> B, then the displaced A tops the tail for the whole revert guard while
+    # B still clears the bar: B must stay lit (barred steps are not low frames).
+    A, B = _ref("A", "A"), _ref("B", "B")
+    seq = [[(0.80, A), (0.50, B)], [(0.80, B), (0.50, A)]] + [[(0.80, A), (0.70, B)]] * 8
+    pol = MatchPolicy(ScoredStubMatcher(seq),
+                      PolicyConfig(threshold=0.65, revert_guard=8, clear_after_n_low=8,
+                                   short_words=0, null_margin=None))
+    assert pol.step("x", 1)[1:] == ("A", "switch")
+    assert pol.step("x", 1)[1:] == ("B", "switch")
+    for _ in range(8):
+        assert pol.step("x", 1)[1:] == ("B", "hold")
+
+
+def test_barred_bounce_still_clears_an_unsupported_active():
+    A, B = _ref("A", "A"), _ref("B", "B")
+    seq = [[(0.80, A), (0.50, B)], [(0.80, B), (0.50, A)]] + [[(0.80, A), (0.40, B)]] * 8
+    pol = MatchPolicy(ScoredStubMatcher(seq),
+                      PolicyConfig(threshold=0.65, revert_guard=8, clear_after_n_low=8,
+                                   short_words=0, null_margin=None))
+    pol.step("x", 1), pol.step("x", 1)
+    whys = [pol.step("x", 1)[2] for _ in range(8)]
+    assert whys[-1] == "clear" and pol.active_id is None

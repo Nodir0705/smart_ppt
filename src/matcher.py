@@ -553,8 +553,9 @@ class MatchPolicy:
             spoken = self.normalizer(spoken)
         # Group-aware rerank when the matcher exposes scored() (the real Matcher);
         # otherwise fall back to the plain match() result (legacy / scripted stubs).
+        ranked: list[tuple[float, ElementRef]] = []
         if hasattr(self.matcher, "scored"):
-            res, _ranked = self._ranked(spoken, slide_no)
+            res, ranked = self._ranked(spoken, slide_no)
             res = self._short_override(spoken, slide_no, res)
         else:
             res = self.matcher.match(spoken, slide_no)
@@ -562,6 +563,15 @@ class MatchPolicy:
         if self._guard_left > 0:
             self._guard_left -= 1
             barred = res.element_id == self._displaced
+        if barred and self.active_id is not None:
+            # The displaced element topping the tail is the bounce the guard
+            # exists to stop, not evidence the active one went stale: hold it
+            # while it still clears its own bar (no step toward clearing).
+            act = next((s for s, r in ranked if r.id == self.active_id), None)
+            if act is not None and act >= self._bar(self.active_id, self.cfg.threshold):
+                self._candidate = None
+                self._cand_count = 0
+                return res, self.active_id, "hold"
         confident = (
             not barred
             and res.element_id is not None
