@@ -591,3 +591,9 @@ filler holdout 5; verbatim 483/741; pytest 265 passed. **Gate NOT met** (AI adj 
 every switch-confirmation rule that reaches them breaks the hand fixture (31–37/40) and Open-Q recall (59–68/117).
 Best non-gate candidate (not shipped): confirm only short-override switches + release a hold after 3 unsupported
 updates — AI adj 12.7 s / 2.19 sw / late 2.80, Open-Q adj 27.0 s, hand 38/40, verbatim 471. Decision pending.
+
+**Card-level pointing (2026-10-02):** eval `--device` + per-deck processes (bd464be; presenter 353→106 s, identical
+trajectories); short-override confirm + stale release (e611d5d; AI 2.19 sw/step, adj 12.7 s); pointable units at Index load
+(stack / picture+caption / card panel) — policy, viewer, simulators and benches all at unit level; gap 0.035, clear 16,
+stale off. AI 43/48, 1.58 sw/step, adj 9.4 s; Open-Q 89/117, 2.01, adj 46.2 s (worse, flagged); hand 38/40 f1 fl1;
+filler 3; verbatim 462/741. Next: kicker/title lights.

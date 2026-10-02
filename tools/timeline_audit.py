@@ -75,8 +75,28 @@ def record_trajectory(sno, wav, raw_index, engine, matcher, normalize=None,
     return events, flicker
 
 
-def score_slide(expected_steps, trajectory_ids):
+def unit_groups(expected_steps, unit_of):
+    """Expected steps at unit level: each step's ids mapped to their pointable
+    units; consecutive steps naming the same unit(s) are ONE point (talking
+    through a card's heading then its description keeps one box). Returns
+    [(unit ids, original steps it covers)]."""
+    groups: list[tuple[list[str], list[list[str]]]] = []
+    for step in expected_steps:
+        us = sorted({unit_of.get(i, i) for i in step})
+        if groups and groups[-1][0] == us:
+            groups[-1][1].append(step)
+        else:
+            groups.append((us, [step]))
+    return groups
+
+
+def score_slide(expected_steps, trajectory_ids, unit_of=None):
     """Ordered recall with alternates, plus precision.
+
+    With `unit_of` (element id -> pointable unit id) both sides are compared at
+    unit level: a highlight counts for a step when it is the unit of one of the
+    step's ids, and a unit group that hits credits every original step it
+    covers, so totals stay on the original-step ruler.
 
     Returns (hits, total, missed_steps, relevant, false):
       - hits/total: ordered-recall (did each expected step get highlighted, in
@@ -93,21 +113,23 @@ def score_slide(expected_steps, trajectory_ids):
             continue
         if not actual or actual[-1] != x:
             actual.append(x)
+    groups = (unit_groups(expected_steps, unit_of) if unit_of
+              else [(step, [step]) for step in expected_steps])
     ptr = 0
     hits = 0
     missed = []
-    for step in expected_steps:
+    for ids, covered in groups:
         found_at = None
         for j in range(ptr, len(actual)):
-            if actual[j] in step:
+            if actual[j] in ids:
                 found_at = j
                 break
         if found_at is not None:
-            hits += 1
+            hits += len(covered)
             ptr = found_at + 1
         else:
-            missed.append(step)
-    acceptable = set().union(*expected_steps) if expected_steps else set()
+            missed.extend(covered)
+    acceptable = set().union(*(ids for ids, _ in groups)) if groups else set()
     distinct = set(actual)
     relevant = sum(1 for x in distinct if x in acceptable)
     false = len(distinct) - relevant
@@ -154,7 +176,7 @@ def run(index_path, only=None, normalize=None, manifest_path=None, fixture_path=
                                              normalize=normalize, fast=fast)
         events_by_slide[sno] = events
         traj = [e[1] for e in events]
-        hits, steps, missed, relevant, false = score_slide(gt[sno], traj)
+        hits, steps, missed, relevant, false = score_slide(gt[sno], traj, idx.unit_of)
         tot_hits += hits
         tot_steps += steps
         tot_flicker += flicker

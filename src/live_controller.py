@@ -27,13 +27,20 @@ from .stt import Partial, RollingBuffer
 @dataclass
 class MatchEvent:
     """One decision over the current buffer window."""
-    active_id: str | None   # element the policy committed to (None = nothing lit)
+    active_id: str | None   # unit the policy committed to (its first element's id; None = nothing lit)
     element_id: str | None  # best raw element this frame (may differ when hold/noop)
     score: float
     why: str                # "switch" | "hold" | "clear" | "noop"
     tail: str               # the windowed text actually matched
     line_index: int | None = None   # within a soft-wrapped element, the line in focus
     line_bbox: dict | None = None    # that line's sub-bbox (None = use the union bbox)
+    unit_bbox: dict | None = None    # a multi-element unit's union bbox (cards)
+
+    @property
+    def bbox(self) -> dict | None:
+        """The box to draw instead of the active element's own bbox, or None:
+        the focused line, else the unit's union box. Every consumer draws this."""
+        return self.line_bbox or self.unit_bbox
 
 
 def _words(text: str) -> list[str]:
@@ -132,6 +139,8 @@ class LiveController:
         # draw the identical rectangle (the drift LiveController exists to prevent).
         self._line_active_id: str | None = None
         self._line_index: int | None = None
+        index = getattr(matcher, "index", None)
+        self.unit_bbox = getattr(index, "unit_bbox", lambda _u: None)
 
     def push(self, partial: Partial) -> None:
         self.buffer.push(partial)
@@ -152,7 +161,9 @@ class LiveController:
             self._line_active_id = active
             self._line_index = None          # new (or no) active element → forget the line
         line_index = line_bbox = None
-        lines = self._lines_by_id.get(active) if active else None
+        unit_bbox = self.unit_bbox(active)
+        # a multi-element unit draws its union box; line focus is per paragraph
+        lines = self._lines_by_id.get(active) if active and unit_bbox is None else None
         if lines is not None:
             texts, boxes = lines
             # Select on the NORMALIZED tail so it's in the same space as the
@@ -167,5 +178,5 @@ class LiveController:
         return MatchEvent(
             active_id=active, element_id=res.element_id,
             score=res.score, why=why, tail=tail,
-            line_index=line_index, line_bbox=line_bbox,
+            line_index=line_index, line_bbox=line_bbox, unit_bbox=unit_bbox,
         )

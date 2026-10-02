@@ -81,3 +81,21 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   in the top/bottom 15% margin, titles exempt. Marked unpointable post-load (cache untouched).
 - **Harness hygiene:** replay scripts that `os.chdir` into the repo write their outputs there — always write to an
   absolute scratch path.
+
+## Card-level pointing (2026-10-02)
+
+- **Eval speed: find the dominant cost before parallelising.** 79% of replay was the bge-small encoder. `--device cuda`
+  (eval only) + one spawned process per deck: presenter 353 → 106 s, verbatim+filler 791 → 226 s, with per-slide
+  trajectories identical to sequential CPU on every deck. CUDA kernels aren't bit-identical, so non-CPU encoders get
+  their own embedding-cache key. `deck_bench` rebuilds `<variant>/` unless `--reuse-index` — never forget it on a
+  shared bench tree.
+- **Point at what the audience sees.** 80–85% of presenter switches went between parts of one card. Grouping
+  elements into pointable units at load (stack / picture+caption / card panel; titles, charts, tables never) and
+  letting the policy compete units took AI_Handout 2.19 → 1.88 switches/step with lit and false seconds unchanged
+  or better — the intra-card hops are gone. A panel holding several multi-element units is a board, not a card.
+- **Unit level changes which policy knobs pay.** The rest of the gate (≤ 1.6) came from policy knobs re-tuned on
+  AI: gap 0.03 → 0.035, stale_release 3 → 0 (a released card was re-lit moments later, ~1 in 10 switches), and
+  clear_after_n_low 8 → 16. Holdout Open-Q paid for holding longer: adj false s 27.0 → 46.2. The remaining false
+  switches are mostly kicker labels and slide titles — next lever, not a grouping problem.
+- **Score at the level you point.** Map expected ids AND highlights to units; collapse consecutive same-unit steps
+  but credit every original step, so lit stays on the old ruler (48/117/40/741) and stays comparable.

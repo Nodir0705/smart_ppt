@@ -84,7 +84,7 @@ def _record_events(slide_no: int, wav_path: Path, raw_index: dict,
         key = (ev.active_id, ev.line_index)
         if key != last_key:
             t = partial.timestamp if fast else time.monotonic() - t0
-            events.append((t, ev.active_id, ev.line_bbox))
+            events.append((t, ev.active_id, ev.bbox))
             last_key = key
 
     transcriber.run(on_update=on_update)
@@ -160,7 +160,8 @@ def _render_and_encode(slide_no: int, wav_path: Path, slides_dir: Path,
     img_w, img_h = base.size
 
     # Pre-compute target bboxes from events (data box + its x-axis label box).
-    # A focused wrapped-line sub-box, when present, overrides the union box.
+    # The event's box (focused wrapped line, else a card unit's union box), when
+    # present, overrides the element's own box.
     def _target_box(eid, line_bbox):
         if line_bbox is not None:
             return inches_to_image_px(
@@ -326,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  running simulation…")
         events = _record_events(sno, wav, raw_index, engine, matcher, hotwords, fast=args.fast)
         for t, eid, lb in events:
-            tag = " (line)" if lb else ""
+            tag = " (box)" if lb else ""
             print(f"    t={t:5.1f}s  active={eid}{tag}")
         print(f"  rendering + encoding @ {args.fps} fps → {out_mp4.name}")
         n = _render_and_encode(

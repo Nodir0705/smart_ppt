@@ -206,7 +206,7 @@ class ViewerApp:
         if active_id:
             el = self._element_by_id.get(active_id, {})
             line += f"   active={active_id} {el.get('type','')} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(active_id)
+            self._set_target_from_element(active_id, line_bbox=self._controller.unit_bbox(active_id))
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)
@@ -521,7 +521,7 @@ class ViewerApp:
             el = self._element_by_id.get(ev.active_id, {})
             tag = f" L{ev.line_index}" if ev.line_index is not None else ""
             line += f"   active={ev.active_id}{tag} {(el.get('text') or '')[:40]!r}"
-            self._set_target_from_element(ev.active_id, line_bbox=ev.line_bbox)
+            self._set_target_from_element(ev.active_id, line_bbox=ev.bbox)
         else:
             line += "   active=none"
             self._set_target_canvas_bbox(None)

@@ -369,7 +369,9 @@ def test_real_null_floor_blocks_filler_but_not_the_word(loaded):
     cases = ([(f, None, True) for f in filler]          # without the null floor: lit
              + [(f, on, False) for f in filler] + [("when", on, True)])
     for spoken, margin, lit in cases:
-        pol = MatchPolicy(matcher, PolicyConfig(null_margin=margin))
+        # gap pinned at the pre-unit 0.03: at 0.035 the ranking gap alone already
+        # drops one filler tail, and this test isolates the null-floor mechanism
+        pol = MatchPolicy(matcher, PolicyConfig(null_margin=margin, gap=0.03))
         pol.step(spoken, 3)
         assert (pol.active_id == "s3_e2") is lit, (spoken, margin)
 
@@ -520,7 +522,7 @@ def test_barred_bounce_still_clears_an_unsupported_active():
     seq = [[(0.80, A), (0.50, B)], [(0.80, B), (0.50, A)]] + [[(0.80, A), (0.40, B)]] * 8
     pol = MatchPolicy(ScoredStubMatcher(seq),
                       PolicyConfig(threshold=0.65, revert_guard=8, clear_after_n_low=8,
-                                   short_words=0, null_margin=None))
+                                   short_words=0, null_margin=None, stale_release=3))
     pol.step("x", 1), pol.step("x", 1)
     whys = [pol.step("x", 1)[2] for _ in range(8)]
     assert whys[:3] == ["hold", "hold", "clear"] and pol.active_id is None   # stale release
@@ -556,7 +558,7 @@ class TestSwitchConfirmation:
 
     A, B, C = _ref("A", None), _ref("B", None), _ref("C", None)
     CFG = dict(threshold=0.65, gap=0.03, short_words=2, short_threshold=0.73,
-               revert_guard=0, null_margin=None)
+               revert_guard=0, null_margin=None, stale_release=3)
 
     def _pol(self, table, **kw):
         return MatchPolicy(TextStubMatcher(table), PolicyConfig(**{**self.CFG, **kw}))

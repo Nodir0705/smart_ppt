@@ -17,6 +17,7 @@ cached on disk keyed by index path + mtime.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -45,6 +46,7 @@ class ElementRef:
     group_id: str | None = None    # group this element belongs to (parent chart, etc.)
     group_label: str | None = None
     order: int = 0                 # position within the slide (reading order)
+    floor_id: str | None = None    # unit ref: the member whose null floor applies (None = own id)
 
     @property
     def is_pointable(self) -> bool:
@@ -146,6 +148,164 @@ def furniture_ids(raw: dict) -> set[str]:
     return out
 
 
+# ---------- pointable units (cards) ----------
+
+# A presenter points at a visual unit — a card's heading + its description, a
+# big number + its caption, a captioned picture — not at each text run inside
+# it. Elements forming one unit share one highlight: the policy switches
+# between units and draws the union box. Decided from the index's geometry and
+# text at load (deck-agnostic, deterministic, no wordlist). Lengths are shares
+# of the slide size.
+UNIT_GAP = 0.04          # stacked: vertical gap <= 4% of slide height ...
+UNIT_GAP_LINES = 1.5     # ... and <= 1.5x the upper element's line height
+UNIT_ALIGN = 0.02        # same column: left edges or centres within 2% of slide width
+HEAD_MAX_WORDS = 5       # a heading is short ...
+HEAD_LARGER = 1.15       # ... and has fewer words than its body, or taller glyphs
+BREAK_MAX_WORDS = 3      # a <=3-word element heading its own body starts a new unit
+PANEL_MAX_AREA = 0.4     # a card's shape covers <= 40% of the slide ...
+PANEL_MIN_HEIGHT = 3.0   # ... and is >= 3x as tall as the label text it holds
+NEVER_GROUPED = {"title", "chart", "chart_category", "table", "table_cell"}
+
+
+def _n_words(el: dict) -> int:
+    return len(re.findall(r"\w+", el.get("text") or ""))
+
+
+def _line_h(el: dict) -> float:
+    return max([b["h"] for b in el.get("line_bboxes") or []] or [el["bbox"]["h"]])
+
+
+def _heads(a: dict, b: dict) -> bool:
+    """`a` reads as a heading of `b`: short, not a sentence or code line, and
+    either fewer words or visibly larger type."""
+    t = (a.get("text") or "").rstrip()
+    return (_n_words(a) <= HEAD_MAX_WORDS and "=" not in t
+            and not t.endswith((".", "!", "?", ";", ",", "{"))
+            and (_n_words(a) < _n_words(b) or _line_h(a) >= HEAD_LARGER * _line_h(b)))
+
+
+def _centre_in(box: dict, el: dict) -> bool:
+    b = el["bbox"]
+    cx, cy = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
+    return box["x"] <= cx <= box["x"] + box["w"] and box["y"] <= cy <= box["y"] + box["h"]
+
+
+def _slide_units(elements: list[dict], W: float, H: float, skip: set[str]) -> dict[str, str]:
+    els = [dict(e, _order=k) for k, e in enumerate(elements)]
+    cand = sorted((e for e in els if e.get("trigger_phrases") and e.get("bbox")
+                   and e["id"] not in skip and e["type"] not in NEVER_GROUPED),
+                  key=lambda e: (e["bbox"]["y"], e["bbox"]["x"], e["_order"]))
+    rank = {e["id"]: k for k, e in enumerate(cand)}
+    blockers = [e for e in els if e.get("bbox") and e["type"] in NEVER_GROUPED - {"title"}]
+
+    def gap(a: dict, b: dict) -> float | None:
+        """Vertical gap when `b` sits directly below `a` in the same column."""
+        A, B = a["bbox"], b["bbox"]
+        g = B["y"] - (A["y"] + A["h"])
+        if not -0.01 * H <= g <= min(UNIT_GAP * H, UNIT_GAP_LINES * _line_h(a)):
+            return None
+        same_col = (abs(A["x"] - B["x"]) <= UNIT_ALIGN * W
+                    or abs(A["x"] + A["w"] / 2 - B["x"] - B["w"] / 2) <= UNIT_ALIGN * W)
+        return g if same_col else None
+
+    below: dict[str, dict] = {}
+    for a in cand:
+        opts = [(g, rank[b["id"]], b) for b in cand if b is not a and (g := gap(a, b)) is not None]
+        if opts:
+            below[a["id"]] = min(opts, key=lambda t: t[:2])[2]
+    members = {e["id"]: [e] for e in cand}      # unit key -> members
+    key = {e["id"]: e["id"] for e in cand}      # element id -> unit key
+
+    def single(e: dict) -> bool:
+        return len(members[key[e["id"]]]) == 1
+
+    def join(a: dict, b: dict) -> None:
+        ka, kb = key[a["id"]], key[b["id"]]
+        if ka != kb:
+            for m in members[kb]:
+                key[m["id"]] = ka
+            members[ka] += members.pop(kb)
+
+    # 1. stack: a heading, the body under it, and what follows in that column
+    #    until the gap opens or a short element heads its own body.
+    for a in cand:
+        b = below.get(a["id"])
+        if (b is None or not single(a) or not single(b) or "image" in (a["type"], b["type"])
+                or not _heads(a, b)):
+            continue
+        join(a, b)
+        prev = b
+        while (c := below.get(prev["id"])) is not None and single(c) and c["type"] != "image":
+            n = below.get(c["id"])
+            if n is not None and _n_words(c) <= BREAK_MAX_WORDS and _heads(c, n):
+                break
+            join(a, c)
+            prev = c
+    # 2. a pointable picture and its caption (<= 2 lines) directly above/below
+    for im in cand:
+        if im["type"] != "image" or not single(im):
+            continue
+        opts = []
+        for t in cand:
+            if t["type"] != "image" and single(t) and len(t.get("line_texts") or [1]) <= 2:
+                g = gap(im, t)
+                g = gap(t, im) if g is None else g
+                if g is not None:
+                    opts.append((g, rank[t["id"]], t))
+        if opts:
+            join(im, min(opts, key=lambda t: t[:2])[2])
+    # 3. card: a label whose own shape is a panel around other elements joins
+    #    them — unless the panel holds several multi-element units (then it is a
+    #    board of cards, not one card). Smallest panels first, so cards form
+    #    before the boards that contain them.
+    panels = [p for p in cand if (sb := p.get("shape_bbox"))
+              and sb["w"] * sb["h"] <= PANEL_MAX_AREA * W * H
+              and sb["h"] >= PANEL_MIN_HEIGHT * p["bbox"]["h"] and _centre_in(sb, p)]
+    panels.sort(key=lambda p: (p["shape_bbox"]["w"] * p["shape_bbox"]["h"], rank[p["id"]]))
+    for p in panels:
+        sb = p["shape_bbox"]
+        inside = [e for e in cand if e is not p and _centre_in(sb, e)]
+        if not inside or any(_centre_in(sb, x) for x in blockers):
+            continue
+        units = sorted({key[e["id"]] for e in inside} - {key[p["id"]]}, key=lambda k: rank[k])
+        if any(not all(_centre_in(sb, m) for m in members[k]) for k in units):
+            continue
+        if sum(len(members[k]) > 1 for k in units) > 1:
+            continue
+        for k in units:
+            join(p, members[k][0])
+    out = {}
+    for ms in members.values():
+        head = min(ms, key=lambda e: e["_order"])["id"]   # first in reading order
+        for m in ms:
+            out[m["id"]] = head
+    return out
+
+
+def pointable_units(raw: dict) -> dict[str, str]:
+    """element id -> unit id (the unit's first member in reading order) for every
+    pointable element; a singleton maps to itself. Rules, per slide:
+
+    * stack — a short heading directly above its body in the same column, plus
+      the elements that continue that column (description, bullets);
+    * picture — a pointable image and its <= 2-line caption directly above/below;
+    * card — a label whose shape is a panel joins what the panel holds, unless
+      the panel holds several multi-element units.
+
+    Never grouped: titles, charts and their categories, tables and cells,
+    furniture, non-pointable elements (icons), anything not adjacent.
+    """
+    size = raw.get("slide_size") or {}
+    W, H = size.get("w"), size.get("h")
+    if not W or not H:
+        return {}
+    skip = furniture_ids(raw)
+    out: dict[str, str] = {}
+    for s in raw.get("slides", []):
+        out.update(_slide_units(s["elements"], W, H, skip))
+    return out
+
+
 # ---------- index loader with embedding cache ----------
 
 class Index:
@@ -170,6 +330,27 @@ class Index:
             for r in refs:
                 if r.id in furniture:
                     r.emb_end = r.emb_start
+        # Pointable units (cards): element id -> unit id, decided post-load like
+        # furniture, so the embedding cache is untouched.
+        self.unit_of: dict[str, str] = pointable_units(self.raw)
+        self.ref_by_id: dict[str, ElementRef] = {
+            r.id: r for _embs, refs in self._by_slide.values() for r in refs}
+        self._bbox_by_id = {el["id"]: el["bbox"] for s in self.raw["slides"]
+                            for el in s["elements"] if el.get("bbox")}
+        self._unit_members: dict[str, list[str]] = {}
+        for eid, u in self.unit_of.items():
+            self._unit_members.setdefault(u, []).append(eid)
+
+    def unit_bbox(self, unit_id: str | None) -> dict | None:
+        """Union bbox of a multi-element unit (None for a singleton / no unit)."""
+        ms = self._unit_members.get(unit_id or "", [])
+        if len(ms) < 2:
+            return None
+        bs = [self._bbox_by_id[m] for m in ms]
+        x0, y0 = min(b["x"] for b in bs), min(b["y"] for b in bs)
+        x1 = max(b["x"] + b["w"] for b in bs)
+        y1 = max(b["y"] + b["h"] for b in bs)
+        return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0, "units": bs[0].get("units", "inches")}
 
     # ---- cache key based on index content + encoder model ----
     # Bump CACHE_VERSION whenever the ElementRef schema changes so stale pickles
@@ -409,9 +590,9 @@ class PolicyConfig:
     """Tunables for emit/hold decisions."""
 
     threshold: float = 0.65       # minimum cosine sim to consider any emission (bge-small: its cosines run ~0.05-0.10 higher than bge-large, so the bar is raised to keep filler-rejection equivalent)
-    gap: float = 0.03             # best must beat runner-up by at least this (on effective score)
+    gap: float = 0.035            # best must beat runner-up by at least this (on effective score; units compete, not card parts)
     stickiness: int = 1           # consecutive frames needed before switching active element (raise to 2–3 for streaming partials)
-    clear_after_n_low: int = 8    # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps so group stickiness survives)
+    clear_after_n_low: int = 16   # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps; a card stays lit while its parts are talked through)
     # --- group-aware temporal bonuses (added to raw score to form the effective
     #     score the gap/ranking operate on; threshold still applies to RAW score
     #     so bonuses never promote a genuinely-irrelevant element) ---
@@ -439,8 +620,15 @@ class PolicyConfig:
     short_confirm: int = 2
     # --- stale release: the lit element is cleared after this many consecutive
     #     updates on which its own full-tail score is below its bar (the talk has
-    #     moved on), unless that update switches to something else. 0 disables. ---
-    stale_release: int = 3
+    #     moved on), unless that update switches to something else. 0 disables.
+    #     Off by default since pointable units: the released card was mostly
+    #     re-lit moments later (~1 in 10 AI_Handout switches). ---
+    stale_release: int = 0
+
+
+def _floor(ref: ElementRef) -> str:
+    """Id whose null floor gates `ref` (a unit ref carries its winning member)."""
+    return getattr(ref, "floor_id", None) or ref.id
 
 
 class MatchPolicy:
@@ -456,6 +644,10 @@ class MatchPolicy:
     `spoken` is the full (≤ tail_words) tail; the short-tail scale is derived
     from it here, after normalization, so every caller gets identical
     multi-scale decisions.
+
+    The policy moves between pointable UNITS (``pointable_units``): ids it
+    emits are unit ids (the unit's first member; a singleton's own id), so
+    talking about any part of a card keeps one steady highlight.
 
     Returns (emitted_id, why) where `why` is "hold" | "switch" | "clear" | "noop".
     """
@@ -490,9 +682,24 @@ class MatchPolicy:
         self._recent = (self._recent + [winner])[-max(1, self.cfg.short_confirm):]
 
     def _score(self, spoken: str, slide_no: int) -> list[tuple[float, ElementRef]]:
+        """Scores per pointable UNIT, high→low: a unit (card) takes its best
+        member's score and is represented by its head ref, carrying that
+        member's null floor (`floor_id`). Singletons pass through unchanged."""
         # the real Matcher windows the tail per phrase; scripted stubs only expose scored()
         fn = getattr(self.matcher, "scored_tail", None) or self.matcher.scored
-        return fn(spoken, slide_no)
+        per_el = fn(spoken, slide_no)
+        index = getattr(self.matcher, "index", None)
+        unit_of = getattr(index, "unit_of", None)
+        if not unit_of:
+            return per_el
+        out, seen = [], set()
+        for s, r in per_el:
+            u = unit_of.get(r.id, r.id)
+            if u in seen:
+                continue
+            seen.add(u)
+            out.append((s, r if u == r.id else dataclasses.replace(index.ref_by_id[u], floor_id=r.id)))
+        return out
 
     def _bar(self, element_id: str | None, base: float) -> float:
         """Raw score `element_id` needs: `base`, raised to its null floor + margin."""
@@ -514,13 +721,14 @@ class MatchPolicy:
             return res
         best_raw, best = per_el[0]
         ru_raw, ru_id = (per_el[1][0], per_el[1][1].id) if len(per_el) > 1 else (0.0, None)
-        if (best_raw < self._bar(best.id, self.cfg.short_threshold) or best_raw - ru_raw < self.cfg.gap
+        if (best_raw < self._bar(_floor(best), self.cfg.short_threshold) or best_raw - ru_raw < self.cfg.gap
                 or best.id in (res.element_id, self.active_id)):
             return res
         out = MatchResult(element_id=best.id, type=best.type, text=best.text,
                           score=best_raw, runner_up_score=ru_raw,
                           runner_up_id=ru_id, slide_no=slide_no)
         out._eff_best, out._eff_runner, out._best_group = best_raw, ru_raw, best.group  # type: ignore[attr-defined]
+        out._floor = _floor(best)  # type: ignore[attr-defined]
         return out
 
     def _ranked(self, spoken: str, slide_no: int) -> tuple[MatchResult, list[tuple[float, ElementRef]]]:
@@ -567,7 +775,16 @@ class MatchPolicy:
         res._eff_best = effective(best_raw, best)   # type: ignore[attr-defined]
         res._eff_runner = ru_eff                    # type: ignore[attr-defined]
         res._best_group = best.group                # type: ignore[attr-defined]
+        res._floor = _floor(best)                   # type: ignore[attr-defined]
         return res, ranked
+
+    def _supported(self, ranked: list[tuple[float, ElementRef]]) -> bool | None:
+        """Whether the active unit's full-tail score clears its own bar
+        (None when it isn't scored at all)."""
+        act = next(((s, r) for s, r in ranked if r.id == self.active_id), None)
+        if act is None:
+            return None
+        return act[0] >= self._bar(_floor(act[1]), self.cfg.threshold)
 
     def step(self, spoken: str, slide_no: int) -> tuple[MatchResult, str | None, str]:
         if self.normalizer is not None:
@@ -591,8 +808,7 @@ class MatchPolicy:
             # The displaced element topping the tail is the bounce the guard
             # exists to stop, not evidence the active one went stale: hold it
             # while it still clears its own bar (no step toward clearing).
-            act = next((s for s, r in ranked if r.id == self.active_id), None)
-            if act is not None and act >= self._bar(self.active_id, self.cfg.threshold):
+            if self._supported(ranked):
                 self._remember(None)
                 self._candidate = None
                 self._cand_count = 0
@@ -600,15 +816,14 @@ class MatchPolicy:
         confident = (
             not barred
             and res.element_id is not None
-            and res.score >= self._bar(res.element_id, self.cfg.threshold)
+            and res.score >= self._bar(getattr(res, "_floor", res.element_id), self.cfg.threshold)
             and (getattr(res, "_eff_best", res.score) - getattr(res, "_eff_runner", res.runner_up_score)) >= self.cfg.gap
         )
         self._remember(res.element_id if confident else None)
         # Stale release: the active's own full-tail support is gone for
         # `stale_release` updates and nothing else is taking over this update.
         if self.active_id is not None and self.cfg.stale_release > 0 and hasattr(self.matcher, "scored"):
-            act = next((s for s, r in ranked if r.id == self.active_id), None)
-            if act is None or act < self._bar(self.active_id, self.cfg.threshold):
+            if not self._supported(ranked):
                 self._stale += 1
             else:
                 self._stale = 0

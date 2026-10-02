@@ -99,7 +99,7 @@ def simulate_slide(slide_no: int, wav_path: Path, slides_dir: Path,
             return
         key = (ev.active_id, ev.line_index)
         if ev.active_id and key != last_key:
-            visits.append((time.monotonic() - t0, ev.active_id, ev.line_bbox))
+            visits.append((time.monotonic() - t0, ev.active_id, ev.bbox))
             last_key = key
 
     transcriber.run(on_update=on_update)

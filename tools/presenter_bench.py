@@ -34,6 +34,7 @@ import wave
 from pathlib import Path
 
 from src.encoder import eval_device
+from src.matcher import pointable_units
 from src.tts import synthesize_slides
 from tools.deck_bench import VOICE, _write, load_models, per_deck_processes, totals
 from tools.timeline_audit import audit
@@ -66,6 +67,13 @@ def false_seconds(events: list, ok: set, end: float) -> float:
 def false_ids(events: list, ok: set) -> int:
     """Distinct lit ids outside `ok`."""
     return len({a for _t, a, *_ in events if a is not None and a not in ok})
+
+
+def unit_segments(segments: list[dict], unit_of: dict[str, str]) -> list[dict]:
+    """Segments with `refers_to` mapped to pointable units (cards), so steps,
+    acceptable sets and switches are all counted at unit level."""
+    return [{**seg, "refers_to": sorted({unit_of.get(i, i) for i in seg.get("refers_to") or []})}
+            for seg in segments]
 
 
 def tolerated_ids(deck_dir: Path) -> dict[int, set[str]] | None:
@@ -155,9 +163,13 @@ def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
                 json.loads((deck_dir / "presenter" / "manifest.json").read_text())}
     index = json.loads((deck_dir / "default" / "index.scoped.json").read_text())
     text = {e["id"]: e.get("text") for s in index["slides"] for e in s["elements"]}
-    per_slide, trace, n_steps = [], [], 0
+    unit_of = pointable_units(index)
+    if tolerated is not None:
+        tolerated = {sno: {unit_of.get(i, i) for i in ids} for sno, ids in tolerated.items()}
+    per_slide, trace, n_steps, n_orig = [], [], 0, 0
     for sno, evs in sorted(events.items()):
-        segs, starts = script[sno], manifest[sno]["starts"]
+        n_orig += len(step_sentences(script[sno]))
+        segs, starts = unit_segments(script[sno], unit_of), manifest[sno]["starts"]
         steps = step_sentences(segs)
         ok = set().union(*(ids for ids, _ in steps)) if steps else set()
         n_steps += len(steps)
@@ -173,7 +185,11 @@ def score_motion(deck_dir: Path, events: dict) -> tuple[dict, list[dict]]:
                           "active_text": text.get(a) if a else None, "tail": tail,
                           "ok": (a in ok) if a else None, "sentence": segs[k]["text"],
                           "sentence_refers_to": segs[k].get("refers_to") or []})
-    return motion_summary(per_slide, n_steps), trace
+    summary = motion_summary(per_slide, n_steps)
+    # the same switches over the element-level steps of the script (the ruler
+    # before card units existed)
+    summary["switches_per_orig_step"] = sum(m["switches"] for m in per_slide) / n_orig if n_orig else 0.0
+    return summary, trace
 
 
 def bench_deck(deck: Path, device: str) -> tuple[dict, str]:
@@ -209,13 +225,16 @@ def main(argv: list[str] | None = None) -> int:
     tot = totals(records)
     adj = lambda v, f: "–" if v is None else format(v, f)  # noqa: E731
     lines = ["# Presenter-script bench (natural speech, annotated pointing)", "",
-             "Adjudicated (adj) = `refers_to` ids plus ids a human judged *tolerated* on that slide.", "",
+             "Adjudicated (adj) = `refers_to` ids plus ids a human judged *tolerated* on that slide.",
+             "Unit level: highlights and `refers_to` ids are mapped to pointable units (cards); "
+             "switches/step is over unit steps, sw/elem step over the script's element steps.", "",
              "| deck | referenced elements lit (in order) | false highlights | false adj | precision "
-             "| flicker | switches/step | median dwell s | false s | false s adj | late median s "
-             "| late p90 s |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| flicker | switches/step | sw/elem step | median dwell s | false s | false s adj "
+             "| late median s | late p90 s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     lines += [f"| {r['deck']} | {r['hits']}/{r['steps']} | {r['false']} | {adj(r['false_adj'], 'd')} "
               f"| {r['precision']:.3f} | {r['flicker']} | {r['switches_per_step']:.2f} "
+              f"| {r['switches_per_orig_step']:.2f} "
               f"| {r['median_dwell']:.2f} | {r['false_s']:.1f} | {adj(r['false_s_adj'], '.1f')} "
               f"| {r['late_median']:.2f} | {r['late_p90']:.2f} |"
               for r in records]
