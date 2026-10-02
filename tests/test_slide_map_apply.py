@@ -65,11 +65,14 @@ def test_apply_sets_roles_units_and_anchor_phrases(tmp_path):
     assert els["s1_logo"]["pointable"] is False and els["s1_logo"]["map_role"] == "decoration"
     assert "map_unit" not in els["s1_logo"]
     assert els["s1_body1"]["map_unit"] == els["s1_head1"]["map_unit"] == "u1"
-    # anchor = first member in reading order (head1 sits above body1)
-    assert els["s1_head1"]["trigger_phrases"] == [
-        "Stage A", "the reading stage", "how we turn pixels into text", "o c r"]
-    assert els["s1_body1"]["trigger_phrases"] == ["Reads the page with a model"]
-    assert els["s1_t"]["trigger_phrases"] == ["Pipeline", "the pipeline", "how it works"]
+    # anchor = first member in reading order (head1 sits above body1); map phrases
+    # (talk, terms, summary) kept apart from the slide's own trigger phrases
+    assert els["s1_head1"]["trigger_phrases"] == ["Stage A"]
+    assert els["s1_head1"]["map_phrases"] == [
+        "the reading stage", "how we turn pixels into text", "o c r", "reading"]
+    assert "map_phrases" not in els["s1_body1"]
+    # a title unit's talk is slide-intro speech: summary + terms only
+    assert els["s1_t"]["map_phrases"] == ["title"]
     assert ix["slides"][0]["map"] == {
         "message": "Two stages turn a page into checked claims.",
         "relations": _map()["relations"], "order": ["u0", "u1", "u2"],
@@ -172,3 +175,33 @@ def test_index_loads_map_units_flow_and_unpointables(tmp_path):
     box = ix.unit_bbox("s1_head1")                            # union of the map unit's members
     assert box.pop("units") == "inches"
     assert box == pytest.approx({"x": 1.0, "y": 2.0, "w": 2.0, "h": 0.9})
+
+
+def test_index_keeps_only_specific_map_phrases(tmp_path):
+    """A map phrase joins its anchor's span only when it is no closer to generic
+    talk (NULL_SPEECH) than the anchor's own text, and closer to its own unit's
+    text than to any other unit's."""
+    import numpy as np
+    from src.matcher import NULL_SPEECH, Index
+
+    vec = {"Stage A": [1, 0, 0.3, 0], "Stage B": [0, 1, 0, 0],   # null axis = dim 2
+           "the reading stage": [0.9, 0.1, 0.25, 0],    # specific -> kept
+           "how we turn pixels into text": [0.3, 0, 0.95, 0],   # generic (near null) -> dropped
+           "o c r": [0.2, 0.9, 0, 0]}                   # closer to Stage B -> dropped
+
+    class Enc:
+        dim, model_name = 4, "stub"
+        def encode(self, texts):
+            v = np.array([vec.get(t, [0, 0, 1, 0] if t in NULL_SPEECH else [0, 0, 0.1, 0.1])
+                          for t in texts], dtype=np.float32)
+            return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+    _write_map(tmp_path, _map())
+    ix = apply_slide_maps(_index(), tmp_path)
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps(ix))
+    refs = {r.id: r for r in Index(p, Enc()).elements_on(1)}
+    assert refs["s1_head1"].phrases == ["Stage A", "the reading stage"]
+    assert refs["s1_body1"].phrases == ["Reads the page with a model"]
+    spans = sorted((r.emb_start, r.emb_end) for r in refs.values())
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))   # contiguous re-lay

@@ -3,7 +3,7 @@ before scope). Spec: docs/superpowers/specs/2026-10-02-slide-understanding-map-d
 
 A map (`<map_dir>/slide_NNN.json`, format + validator in tools/slide_map.py) marks
 each element's role and pointability, groups pointable elements into units, and
-gives each unit spoken references. Slides without a valid map are untouched.
+gives each unit spoken references and a summary. Slides without a valid map are untouched.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from pathlib import Path
 
 from tools.slide_map import validate
 
+TITLE_ROLES = {"title", "section_label"}
+
 
 def slide_packet(slide: dict) -> dict:
     """The part of a slide packet the validator needs (slide number + element ids)."""
@@ -21,9 +23,13 @@ def slide_packet(slide: dict) -> dict:
 
 def apply_slide_maps(index: dict, map_dir: Path) -> dict:
     """Mutate + return `index`: on every slide with a valid map set `map_role`,
-    `pointable`, `map_unit` on its elements, add each unit's talk + terms to the
-    trigger phrases of its first member in reading order (y, then x), and store
-    `slide["map"] = {message, relations, order, units: {uid: [members, reading order]}}`."""
+    `pointable`, `map_unit` on its elements, put each unit's talk + terms +
+    summary in `map_phrases` of its first member in reading order (y, then x) —
+    title units get no talk — and store
+    `slide["map"] = {message, relations, order, units: {uid: [members, reading order]}}`.
+
+    Map phrases stay apart from `trigger_phrases`: `matcher.Index` embeds them
+    and keeps only the specific ones (see `Index._map_rows`)."""
     map_dir = Path(map_dir)
     if not map_dir.is_dir():
         return index
@@ -52,13 +58,19 @@ def apply_slide_maps(index: dict, map_dir: Path) -> dict:
             units[u["uid"]] = members
             for i in members:
                 by_id[i]["map_unit"] = u["uid"]
-            phrases = by_id[members[0]].setdefault("trigger_phrases", [])
-            have = {ph.lower() for ph in phrases}
-            for ph in list(u["talk"]) + list(u.get("terms") or []):
+            anchor = by_id[members[0]]
+            have = {ph.lower() for ph in anchor.get("trigger_phrases") or []}
+            # a title unit's talk is slide-intro speech ("so how does it work"),
+            # said without pointing at anything
+            talk = [] if all(m["items"][i]["role"] in TITLE_ROLES for i in members) else u["talk"]
+            out = []
+            for ph in list(talk) + list(u.get("terms") or []) + [u["summary"]]:
                 ph = " ".join(ph.lower().split())
                 if ph and ph not in have:
-                    phrases.append(ph)
+                    out.append(ph)
                     have.add(ph)
+            if out:
+                anchor["map_phrases"] = out
         slide["map"] = {"message": m["message"], "relations": m.get("relations") or [],
                         "order": m["order"], "units": units}
     return index

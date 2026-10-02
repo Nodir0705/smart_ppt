@@ -393,6 +393,9 @@ class Index:
         device = str(getattr(self.encoder, "device", "cpu"))
         if device != "cpu":
             h.update(f"|{device}".encode())
+        # map-phrase selection depends on its constants (unmapped keys unchanged)
+        if any(s.get("map") for s in self.raw.get("slides", [])):
+            h.update(f"|map{self.MAP_NULL_SLACK}".encode())
         return h.hexdigest()[:16]
 
     # ElementRef fields persisted to the JSON sidecar (embeddings live in the .npz).
@@ -478,7 +481,57 @@ class Index:
                     order=order,
                 ))
             embs = self.encoder.encode(phrases) if phrases else np.zeros((0, self.encoder.dim), dtype=np.float32)
+            extra = self._map_rows(slide, refs, embs)
+            if extra:   # re-lay the spans with each anchor's kept map phrases after its own
+                blocks, pos = [], 0
+                for r in refs:
+                    own = embs[r.emb_start:r.emb_end]
+                    add_p, add_e = extra.get(r.id, ([], own[:0]))
+                    blocks += [own, add_e]
+                    r.phrases = r.phrases + add_p
+                    r.emb_start, r.emb_end = pos, pos + len(own) + len(add_p)
+                    pos = r.emb_end
+                embs = np.concatenate(blocks).astype(np.float32)
             self._by_slide[sno] = (embs, refs)
+
+    # A slide-map phrase (talk, terms, summary on a unit's anchor) is kept only
+    # when it is SPECIFIC: no closer to generic presenter talk (NULL_SPEECH) than
+    # the anchor's own slide text is (+ MAP_NULL_SLACK), and closer to the
+    # anchor's text than to any other map unit's text on the slide. A generic
+    # phrase ("the results", "under the hood") would otherwise light on any
+    # sentence and, through the per-element null floor, raise the bar of the
+    # whole unit (stale clears, misses).
+    MAP_NULL_SLACK = 0.03
+
+    def _map_rows(self, slide: dict, refs: list[ElementRef], embs: np.ndarray) -> dict:
+        """anchor id -> (kept map phrases, their embeddings) for a mapped slide."""
+        units = list(((slide.get("map") or {}).get("units") or {}).values())
+        if not units:
+            return {}
+        by_ref = {r.id: r for r in refs}
+        by_el = {e["id"]: e for e in slide["elements"]}
+
+        def rows(ids: list[str]) -> np.ndarray:
+            return np.concatenate([embs[by_ref[i].emb_start:by_ref[i].emb_end] for i in ids] or [embs[:0]])
+
+        null = self.encoder.encode(list(NULL_SPEECH))
+        out = {}
+        for members in units:
+            phrases = by_el[members[0]].get("map_phrases") or []
+            own = rows(members[:1])
+            # ponytail: an anchor without slide text has nothing to calibrate
+            # against, so its map phrases are dropped; anchor on a texted member if
+            # picture-only units matter
+            if not phrases or not len(own):
+                continue
+            others = rows([i for ms in units if ms is not members for i in ms])
+            pe = self.encoder.encode(phrases)
+            keep = (pe @ null.T).max(1) <= float((own @ null.T).max()) + self.MAP_NULL_SLACK
+            if len(others):
+                keep &= (pe @ own.T).max(1) > (pe @ others.T).max(1)
+            if keep.any():
+                out[members[0]] = ([p for p, k in zip(phrases, keep) if k], pe[keep])
+        return out
 
     # ---- public ----
     def slide_numbers(self) -> list[int]:
@@ -649,7 +702,7 @@ class PolicyConfig:
     # --- flow hint: a unit the slide map says comes next (`flow` relation) after
     #     the active unit gets this on its effective score. 0 disables; decks
     #     without maps have no flow relations, so it never applies there. ---
-    flow_bonus: float = 0.03
+    flow_bonus: float = 0.05
 
 
 def _floor(ref: ElementRef) -> str:

@@ -99,3 +99,25 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   switches are mostly kicker labels and slide titles — next lever, not a grouping problem.
 - **Score at the level you point.** Map expected ids AND highlights to units; collapse consecutive same-unit steps
   but credit every original step, so lit stays on the old ruler (48/117/40/741) and stays comparable.
+
+## Using the slide map's meaning (2026-10-02)
+
+- **A phrase pile poisons the null floor.** The null floor is a per-element MAX over its phrases, so one generic map
+  talk phrase ("the system i want to show you", "what you get at the end") raised the bar of the whole unit — 78
+  elements' floors rose (s1_e1 0.56 → 0.83, bar 0.95 = unlitable). That one mechanism produced the jumpy misses and
+  most of the new "flicker", which was A → None → A (every map-variant clear was a stale release), not A → B → A.
+  Before adding phrases to an element, check what they do to its floor, not just to its score.
+- **Keep only specific map phrases, decided at load:** a map phrase (talk, terms, summary) joins its anchor only if its
+  NULL_SPEECH similarity ≤ the anchor's own text floor + 0.03 and it sits closer to the anchor's text than to any
+  other unit's text on the slide. Title / section-label units get no talk (their talk is slide-intro speech said
+  without pointing). Summaries pass the same filter. Result (orig, jumpy): lit 45/48, 58/61; false s 34.1, 21.8
+  (default 40.8, 25.1); flicker 12 (default 9; gate ≤ 11, missed by one), 8.
+- **Replay harness:** STT is identical across index variants (sherpa ignores hotwords), so cache the STT tails once and
+  replay only the policy — about 40 s per variant instead of a full bench, and it reproduced the bench exactly.
+- **Know the noise band before you tune.** Near the locked point, orig flicker moved 11 ↔ 12 and sw/step ±0.02 with
+  any small change (slack ±0.01, map-phrase weight 0.97/0.98/0.99). The one setting that passed every cell
+  (weight 0.98) passed by giving back 6 s of the false-seconds win. Don't choose the setting that happened to pass;
+  report the miss.
+- **The holdout disagreed:** meaning lit 52/59 vs default 53 (the unfiltered map got 55). False ids, flicker, sw/step
+  and false seconds all improved. The filter drops recall phrases as well as the generic ones. That costs recall on
+  the speech that most needs the map (meaning-style references).
