@@ -4,7 +4,8 @@ The python-pptx parser gives each shape's container box, not where the glyphs
 land inside it. This transform opens the cached PDF (same one the renderer
 produces), reads per-glyph coordinates with pypdfium2 (tight glyph boxes — the
 exact ink extent), assembles them into words, assigns words to elements by
-geometric containment, and rewrites each text element's `bbox` to the tight glyph
+locating each element's text in the page's content stream (geometric containment
+only as the fallback, filtered to words that spell the element's text), and rewrites each text element's `bbox` to the tight glyph
 union plus per-line `line_bboxes`. PDF points / 72 = inches — the units the parser
 already emits. pypdfium2's word extraction is ~29x faster than pdfminer's and its
 tight glyph boxes land directly on the rasterised glyphs (see SHIFT_FRAC below).
@@ -13,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -37,8 +40,9 @@ def words_to_inches(words: list[dict], sx: float, sy: float) -> list[dict]:
     text/x0/y0/x1/y1 in inches (top-left origin).
     """
     out = []
-    for w in words:
+    for i, w in enumerate(words):
         out.append({
+            "i": i,  # PDF content-stream position: a shape's glyphs are one contiguous run
             "text": w["text"],
             "x0": w["x0"] / PT_PER_INCH * sx,
             "y0": w["top"] / PT_PER_INCH * sy,
@@ -60,27 +64,187 @@ def _contains(b: dict, cx: float, cy: float) -> bool:
     return (b["x"] <= cx <= b["x"] + b["w"]) and (b["y"] <= cy <= b["y"] + b["h"])
 
 
-def assign_words(elements: list[tuple[str, dict]], words: list[dict]) -> dict:
+def _norm(s: str) -> str:
+    """Case-folded alphanumerics only — what PDF glyphs and parsed text agree on
+    (bullets, autonumber dots, quotes and spacing differ between the two)."""
+    return "".join(c for c in unicodedata.normalize("NFKC", s).casefold() if c.isalnum())
+
+
+def assign_words(elements: list[tuple[str, dict]], words: list[dict],
+                 texts: dict[str, str] | None = None) -> dict:
     """Map element id -> list of inch-words whose center it owns.
 
     `elements` is a list of (element_id, shape_bbox). Each word is assigned to
     the smallest-area element whose box contains the word center; words inside no
-    box are dropped.
+    box are dropped. With `texts` (id -> element text), containers whose own text
+    contains the word win over smaller ones that do not.
     """
     assigned: dict[str, list[dict]] = {eid: [] for eid, _ in elements}
+    norm = {eid: _norm(t) for eid, t in (texts or {}).items()}
     for w in words:
         cx, cy = _center(w)
+        tok = _norm(w["text"])
+        best_key = None
         best_id = None
-        best_area = None
         for eid, bbox in elements:
             if _contains(bbox, cx, cy):
-                area = _box_area(bbox)
-                if best_area is None or area < best_area:
-                    best_area = area
+                mismatch = bool(tok) and eid in norm and tok not in norm[eid]
+                key = (mismatch, _box_area(bbox))
+                if best_key is None or key < best_key:
+                    best_key = key
                     best_id = eid
         if best_id is not None:
             assigned[best_id].append(w)
     return assigned
+
+
+def _gap(b: dict, words: list[dict]) -> float:
+    """Distance (inches) from box `b` to the union of `words` (0 if they touch)."""
+    x0, y0 = min(w["x0"] for w in words), min(w["y0"] for w in words)
+    x1, y1 = max(w["x1"] for w in words), max(w["y1"] for w in words)
+    dx = max(0.0, x0 - (b["x"] + b["w"]), b["x"] - x1)
+    dy = max(0.0, y0 - (b["y"] + b["h"]), b["y"] - y1)
+    return (dx * dx + dy * dy) ** 0.5
+
+
+# inches: a run wholly outside its box must still be near it (render line spacing
+# can drift ~1.4 in from the parser's estimate down a long code listing), and
+# 1-3 char texts ("2", "F4") must land inside their box.
+ALIGN_MAX_GAP = 2.0
+BESIDE_GAP = 0.5  # inches: bullet indent / punctuation spacing on one line
+
+
+def _beside(p: dict, q: dict) -> bool:
+    """Same line (vertical overlap) and horizontally within BESIDE_GAP."""
+    return (min(p["y1"], q["y1"]) > max(p["y0"], q["y0"])
+            and max(p["x0"] - q["x1"], q["x0"] - p["x1"]) <= BESIDE_GAP)
+
+
+def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dict:
+    """Map element id -> the stream run of words that spells its text.
+
+    The PDF draws each shape's text as one contiguous run of the content stream,
+    so an element's glyphs are found by locating its (normalised) text in the
+    page's word stream — independent of where the parser thinks the box is
+    (overflowing text, boxes offset from the render, full-slide label boxes).
+    A match must start and end on word boundaries; among several, the one most
+    inside the element's box wins, and one wholly outside it must lie within
+    ALIGN_MAX_GAP. Longer texts claim first so short ones can't steal their words.
+    Elements whose text isn't found (autonumbering, glyph drift) are left to
+    geometric `assign_words`.
+    """
+    norms = [_norm(w["text"]) for w in words]
+    stream = "".join(norms)
+    owner: list[int] = []
+    starts, ends, pos = set(), set(), 0
+    for k, n in enumerate(norms):
+        if n:
+            starts.add(pos)
+            pos += len(n)
+            ends.add(pos)
+            owner += [k] * len(n)
+    taken = [False] * len(words)
+    spans: dict[str, list] = {}
+    for eid, bbox, text in sorted(elements, key=lambda e: -len(_norm(e[2]))):
+        target = _norm(text)
+        best = None
+        at = stream.find(target) if target else -1
+        while at != -1:
+            end = at + len(target)
+            if at in starts and end in ends:
+                a, b = owner[at], owner[end - 1]
+                span = words[a:b + 1]
+                if not any(taken[a:b + 1]):
+                    inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
+                    gap = _gap(bbox, span)
+                    if inside > 0 or (len(target) >= 4 and gap <= ALIGN_MAX_GAP):
+                        key = (-inside, gap)
+                        if best is None or key < best[0]:
+                            best = (key, a, b)
+            at = stream.find(target, at + 1)
+        if best is not None:
+            _, a, b = best
+            taken[a:b + 1] = [True] * (b + 1 - a)
+            spans[eid] = [a, b, text]
+    # Grow spans over punctuation-only words beside them on the same line:
+    # trailing ones only if the text has those chars ("!", ";"), so the next
+    # shape keeps its bullet; then leading ones (bullets, "<").
+    def free_punct(k: int, nb: int) -> bool:
+        return (0 <= k < len(words) and not norms[k] and not taken[k]
+                and _beside(words[k], words[nb]))
+
+    for span in spans.values():
+        while (free_punct(span[1] + 1, span[1])
+               and all(c in span[2] for c in words[span[1] + 1]["text"])):
+            span[1] += 1
+            taken[span[1]] = True
+    for span in spans.values():
+        while free_punct(span[0] - 1, span[0]):
+            span[0] -= 1
+            taken[span[0]] = True
+    return {eid: words[a:b + 1] for eid, (a, b, _) in spans.items()}
+
+
+# A refined box must account for at least this fraction of the element's own text
+# (alphanumeric chars); below it the glyphs found are strays (another shape's
+# overflow, a lone full stop) and the shape box is the honest answer.
+MIN_COVER = 0.5
+MIN_LINE_H = 0.03  # inches (~2 pt): no real text line is shorter
+
+
+def _runs(words: list[dict]) -> list[list[dict]]:
+    """Split stream-ordered words into runs of consecutive stream positions
+    (hand-built words without a position are one run)."""
+    if not words or "i" not in words[0]:
+        return [list(words)] if words else []
+    runs: list[list[dict]] = []
+    for w in words:
+        if runs and w["i"] == runs[-1][-1]["i"] + 1:
+            runs[-1].append(w)
+        else:
+            runs.append([w])
+    return runs
+
+
+def select_text_words(text: str, words: list[dict]) -> tuple[list[dict], float]:
+    """Keep the words that spell the element's own `text`; return (kept, coverage).
+
+    Containment alone lets an element absorb any glyph inside its box — a
+    full-slide label swallows every other shape's overflow. A shape's glyphs are a
+    contiguous run of the PDF content stream, so each run of assigned words must
+    match a not-yet-covered span of the element's text (exactly, or >=80% via the
+    longest common block for autonumber/ligature drift); runs that don't — or that
+    only repeat text already covered — are strays. `coverage` is the fraction of
+    the text's alphanumerics matched. Text with no alphanumerics keeps everything.
+    """
+    target = _norm(text)
+    if not target:
+        return list(words), 1.0
+    covered = [False] * len(target)
+    kept: list[dict] = []
+    for run in sorted(_runs(words), key=lambda r: -len(_norm("".join(w["text"] for w in r)))):
+        r = _norm("".join(w["text"] for w in run))
+        if not r:
+            continue
+        span = None
+        pos = target.find(r)
+        while pos != -1:
+            if not any(covered[pos:pos + len(r)]):
+                span = (pos, len(r))
+                break
+            pos = target.find(r, pos + 1)
+        if span is None and len(r) >= 4:
+            m = SequenceMatcher(None, r, target, autojunk=False).find_longest_match(
+                0, len(r), 0, len(target))
+            if m.size >= 0.8 * len(r) and not any(covered[m.b:m.b + m.size]):
+                span = (m.b, m.size)
+        if span is None:
+            continue
+        covered[span[0]:span[0] + span[1]] = [True] * span[1]
+        kept.extend(run)
+    order = {id(w): n for n, w in enumerate(words)}
+    kept.sort(key=lambda w: order[id(w)])
+    return kept, sum(covered) / len(target)
 
 
 def cluster_lines(words: list[dict], y_tol: float = 0.03) -> list[list[dict]]:
@@ -178,15 +342,18 @@ def _is_refinable(e: dict) -> bool:
 def _apply_refinement(e: dict, words: list[dict]) -> None:
     """Mutate element `e` in place: preserve shape_bbox, set bbox/line_bboxes."""
     e["shape_bbox"] = dict(e["bbox"])
-    if not words:
+    words, coverage = select_text_words(e.get("text") or "", words)
+    lines = cluster_lines(words) if coverage >= MIN_COVER else []
+    line_bboxes = [_baseline_correct(union_bbox(line)) for line in lines]
+    if not lines or (_norm(e.get("text") or "")
+                     and max(b["h"] for b in line_bboxes) < MIN_LINE_H):
         e["line_bboxes"] = []
         e["line_texts"] = []
         e["bbox_source"] = "shape"
         return
-    lines = cluster_lines(words)
     # Correct each line by its own height (font size), then rebuild the element
     # box from the corrected lines so multi-line elements shift correctly.
-    e["line_bboxes"] = [_baseline_correct(union_bbox(line)) for line in lines]
+    e["line_bboxes"] = line_bboxes
     # Per-line text, parallel to line_bboxes — the handle line-level highlighting
     # uses to pick WHICH wrapped line the speaker is on (a soft-wrapped paragraph
     # stays one element, so this is the only per-line text we keep).
@@ -294,9 +461,14 @@ def refine_index(index: dict, pdf_path) -> dict:
         sx = slide_size["w"] / (page_w / PT_PER_INCH)
         sy = slide_size["h"] / (page_h / PT_PER_INCH)
         words = words_to_inches(page_words, sx, sy)
-        refinable = [(e["id"], e["bbox"]) for e in slide["elements"]
-                     if _is_refinable(e)]
-        assigned = assign_words(refinable, words)
+        refinable = [e for e in slide["elements"] if _is_refinable(e)]
+        # stream alignment first; containment only for what it couldn't place
+        assigned = align_words([(e["id"], e["bbox"], e["text"]) for e in refinable], words)
+        claimed = {id(w) for ws in assigned.values() for w in ws}
+        rest = [e for e in refinable if e["id"] not in assigned]
+        assigned.update(assign_words([(e["id"], e["bbox"]) for e in rest],
+                                     [w for w in words if id(w) not in claimed],
+                                     {e["id"]: e["text"] for e in rest}))
         for e in slide["elements"]:
             if _is_refinable(e):
                 _apply_refinement(e, assigned.get(e["id"], []))
