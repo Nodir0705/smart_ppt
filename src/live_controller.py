@@ -17,6 +17,7 @@ tested without Tk or a microphone.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .matcher import Matcher, MatchPolicy, PolicyConfig
@@ -33,6 +34,12 @@ class MatchEvent:
     tail: str               # the windowed text actually matched
     line_index: int | None = None   # within a soft-wrapped element, the line in focus
     line_bbox: dict | None = None    # that line's sub-bbox (None = use the union bbox)
+
+
+def _words(text: str) -> list[str]:
+    """Lowercased words without edge punctuation, so a deck's "Extract," matches
+    the STT's bare "extract" (inner apostrophes stay: "teacher's")."""
+    return re.findall(r"\w+(?:'\w+)*", text.lower())
 
 
 def select_line(tail: str, line_texts: list[str]) -> int | None:
@@ -55,10 +62,10 @@ def select_line(tail: str, line_texts: list[str]) -> int | None:
     """
     if not line_texts or len(line_texts) < 2:
         return None
-    words = (tail or "").lower().split()
+    words = _words(tail or "")
     if not words:
         return None
-    line_sets = [set(lt.lower().split()) for lt in line_texts]
+    line_sets = [set(_words(lt)) for lt in line_texts]
     df: dict[str, int] = {}
     for s in line_sets:
         for w in s:

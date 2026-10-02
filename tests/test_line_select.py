@@ -65,3 +65,12 @@ def test_tie_breaks_to_later_line():
     # both score equally → reading-forward tie-break picks the later line
     lines = ["alpha unique", "alpha unique"]
     assert select_line("alpha", lines) == 1
+
+
+def test_deck_punctuation_does_not_hide_words():
+    # line_texts keep the author's punctuation; STT output has none. Each line's
+    # only distinctive word carries punctuation, so a bare split() never sees it.
+    lines = ["the pipeline will Extract,", "the pipeline then renders.", "the pipeline (offline)"]
+    assert select_line("so we extract", lines) == 0
+    assert select_line("and it renders", lines) == 1
+    assert select_line("all offline", lines) == 2
