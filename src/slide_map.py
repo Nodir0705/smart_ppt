@@ -26,7 +26,8 @@ def apply_slide_maps(index: dict, map_dir: Path) -> dict:
     `pointable`, `map_unit` on its elements, put each unit's talk + terms +
     summary in `map_phrases` of its first member in reading order (y, then x) —
     title units get no talk — and store
-    `slide["map"] = {message, relations, order, units: {uid: [members, reading order]}}`.
+    `slide["map"] = {message, relations, order, units: {uid: [members, reading order]},
+    info: {uid: {summary, talk, terms}}}`.
 
     Map phrases stay apart from `trigger_phrases`: `matcher.Index` embeds them
     and keeps only the specific ones (see `Index._map_rows`)."""
@@ -72,5 +73,8 @@ def apply_slide_maps(index: dict, map_dir: Path) -> dict:
             if out:
                 anchor["map_phrases"] = out
         slide["map"] = {"message": m["message"], "relations": m.get("relations") or [],
-                        "order": m["order"], "units": units}
+                        "order": m["order"], "units": units,
+                        # what each unit is about, for the clause pointer's decider
+                        "info": {u["uid"]: {"summary": u["summary"], "talk": list(u["talk"]),
+                                            "terms": list(u.get("terms") or [])} for u in m["units"]}}
     return index

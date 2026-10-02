@@ -73,10 +73,14 @@ def test_apply_sets_roles_units_and_anchor_phrases(tmp_path):
     assert "map_phrases" not in els["s1_body1"]
     # a title unit's talk is slide-intro speech: summary + terms only
     assert els["s1_t"]["map_phrases"] == ["title"]
+    m = _map()
     assert ix["slides"][0]["map"] == {
         "message": "Two stages turn a page into checked claims.",
-        "relations": _map()["relations"], "order": ["u0", "u1", "u2"],
-        "units": {"u0": ["s1_t"], "u1": ["s1_head1", "s1_body1"], "u2": ["s1_head2", "s1_body2"]}}
+        "relations": m["relations"], "order": ["u0", "u1", "u2"],
+        "units": {"u0": ["s1_t"], "u1": ["s1_head1", "s1_body1"], "u2": ["s1_head2", "s1_body2"]},
+        # full unit info (title talk included) for the clause pointer's decider
+        "info": {u["uid"]: {"summary": u["summary"], "talk": u["talk"], "terms": u.get("terms", [])}
+                 for u in m["units"]}}
     assert "map" not in ix["slides"][1]                       # no map file -> untouched
     assert ix["slides"][1] == _index()["slides"][1]
 

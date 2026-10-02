@@ -73,18 +73,40 @@ class RollingBuffer:
 
     `text` returns the concatenation of those two — that's what the matcher
     operates on each tick.
+
+    It also keeps what the clause pointer needs, travelling with the buffer to
+    every consumer: the whole transcript since the last ``clear`` (finals never
+    pruned + the current partial, ``words``) and ``boundaries`` — word indices
+    where a new clause starts, recorded by ``audio`` when speech resumes after a
+    pause (LiveTranscriber feeds every PCM chunk there before STT sees it).
     """
 
     def __init__(self, window_seconds: float = 4.0) -> None:
         self.window_seconds = window_seconds
         self._finals: deque[tuple[float, str]] = deque()
         self._current_partial: str = ""
+        self._said: list[str] = []          # words of every final since clear()
+        self.boundaries: list[int] = []
+        self._pauses = None                 # PauseDetector, made on the first chunk
+
+    def audio(self, chunk: bytes, sample_rate: int = 16000) -> None:
+        """One PCM16 mono chunk, before STT consumes it: mark a clause boundary
+        at the current word count when speech resumes after a pause."""
+        if self._pauses is None:
+            from .clause_pointer import PauseDetector
+            self._pauses = PauseDetector(sample_rate)
+        if self._pauses.feed(chunk):
+            self.boundaries.append(len(self.words()))
+
+    def words(self) -> list[str]:
+        return self._said + self._current_partial.split()
 
     def push(self, partial: Partial) -> None:
         if partial.is_final:
             txt = partial.text.strip()
             if txt:
                 self._finals.append((partial.timestamp, txt))
+                self._said += txt.split()
             self._current_partial = ""
             self._prune(partial.timestamp)
         else:
@@ -120,6 +142,9 @@ class RollingBuffer:
     def clear(self) -> None:
         self._finals.clear()
         self._current_partial = ""
+        self._said = []
+        self.boundaries = []
+        self._pauses = None
 
 
 # ---------- hotword extraction ----------

@@ -187,7 +187,7 @@ class ViewerApp:
         if slide_no < 1 or slide_no > len(self.raw_index["slides"]):
             return
         self.slide_no = slide_no
-        self.policy.reset()
+        self._controller.reset()   # policy + clause pointer: this slide's speech starts now
         self._cancel_anim()
         self._current_canvas_bbox = None
         self._target_canvas_bbox = None
@@ -280,7 +280,7 @@ class ViewerApp:
             self._anim_job = None
 
     def _clear_highlight(self) -> None:
-        self.policy.reset()
+        self._controller.reset()
         self._set_target_canvas_bbox(None)
         self._update_status()
 
