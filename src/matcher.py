@@ -590,9 +590,9 @@ class PolicyConfig:
     """Tunables for emit/hold decisions."""
 
     threshold: float = 0.65       # minimum cosine sim to consider any emission (bge-small: its cosines run ~0.05-0.10 higher than bge-large, so the bar is raised to keep filler-rejection equivalent)
-    gap: float = 0.035            # best must beat runner-up by at least this (on effective score; units compete, not card parts)
+    gap: float = 0.03             # best must beat runner-up by at least this (on effective score; units compete, not card parts)
     stickiness: int = 1           # consecutive frames needed before switching active element (raise to 2–3 for streaming partials)
-    clear_after_n_low: int = 16   # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps; a card stays lit while its parts are talked through)
+    clear_after_n_low: int = 8    # consecutive low-confidence frames before clearing (hold through brief mis-hear gaps; a card stays lit while its parts are talked through)
     # --- group-aware temporal bonuses (added to raw score to form the effective
     #     score the gap/ranking operate on; threshold still applies to RAW score
     #     so bonuses never promote a genuinely-irrelevant element) ---
@@ -623,7 +623,7 @@ class PolicyConfig:
     #     moved on), unless that update switches to something else. 0 disables.
     #     Off by default since pointable units: the released card was mostly
     #     re-lit moments later (~1 in 10 AI_Handout switches). ---
-    stale_release: int = 0
+    stale_release: int = 3
 
 
 def _floor(ref: ElementRef) -> str:
