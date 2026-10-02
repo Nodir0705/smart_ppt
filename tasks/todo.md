@@ -583,3 +583,11 @@ not tuned away. Candidate follow-up once real decks confirm it.
 expected none) and reports `filler_false`. Holdout baseline: old (cec1f1c) 20, multi-scale 36. Fix: per-element null
 floor (best cosine to fixed `NULL_SPEECH` generic talk) + `null_margin` 0.12 in `MatchPolicy`. Holdout 36→5, tune
 56→9; bench hits 512/741, 1+2w 131/255, 6+ 198/225, false 0, flicker 15; hand 38/40, false 1, flicker 1.
+
+**Pointer behaviour under natural speech (2026-10-02):** presenter_bench adjudicated scoring (5ccd53f); slide furniture
+unpointable (1eabcb3); revert-guard bounce no longer clears (02520e6); select_line punctuation (d7dd866). Real-STT:
+AI 43/48, adj false 10 ids / 19.4 s, 2.40 sw/step, late 2.60 s; Open-Q 91/117, adj 23 / 37.7 s; hand 38/40 f1 fl1;
+filler holdout 5; verbatim 483/741; pytest 265 passed. **Gate NOT met** (AI adj false s ≤ 10.2, sw/step ≤ 1.5):
+every switch-confirmation rule that reaches them breaks the hand fixture (31–37/40) and Open-Q recall (59–68/117).
+Best non-gate candidate (not shipped): confirm only short-override switches + release a hold after 3 unsupported
+updates — AI adj 12.7 s / 2.19 sw / late 2.80, Open-Q adj 27.0 s, hand 38/40, verbatim 471. Decision pending.

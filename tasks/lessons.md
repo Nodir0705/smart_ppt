@@ -63,3 +63,21 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
 - **Lesson:** a precision metric that only runs while the target is being named is blind to the most common real
   failure (talk that names nothing). Every recall lever needs a negative pass, and a held-out filler set, before it
   ships.
+
+## Pointer behaviour under natural speech (2026-10-02)
+
+- **Adjudicate before tuning.** presenter_bench now also scores false ids / false seconds with tolerated ids as
+  acceptable. Baseline adj: AI_Handout 13 ids / 20.4 s, Open-Q 24 / 37.5 s — strict (30 / 69 s) overstates the
+  problem ~3x.
+- **Lateness median rewards hops.** 6/40 AI and 12 Open-Q baseline "hits" lit *before* their sentence started
+  (accidental early lights credited by the ordered walk). Any filter that removes hops raises the deck median even
+  when every real switch is only one update (+0.30 s) later. Report the paired per-step delta next to the median.
+- **Switch-count and fast-succession recall are one tradeoff here.** Every confirmation rule tried (stickiness 2,
+  k-of-n, score-conditioned instant path, confirm-only-short-override, confirm-only-while-active-supported,
+  stable-last-word tail) either kept AI switches/step > 2.0 or broke the hand fixture (38 → 31–37) and Open-Q recall
+  (91 → 59–68). Hops and legit single-update wins have overlapping score/gap/support distributions — no feature
+  separated them. Don't re-run that sweep without a new signal.
+- **Furniture is a free win, decided from the deck itself:** running text on ≥ half the slides or own page number,
+  in the top/bottom 15% margin, titles exempt. Marked unpointable post-load (cache untouched).
+- **Harness hygiene:** replay scripts that `os.chdir` into the repo write their outputs there — always write to an
+  absolute scratch path.
