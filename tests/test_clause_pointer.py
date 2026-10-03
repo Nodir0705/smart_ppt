@@ -201,3 +201,16 @@ def test_controller_slide_speech_starts_at_reset():
     c.reset()                                            # slide shown again: old words don't count
     c.push(Partial("beta beta beta and alpha now", False, 2.0))
     assert c.feed().active_id == "s1_a"
+
+
+def test_the_pointer_scores_the_repaired_clause():
+    seen = []
+
+    class Rec(KeywordDecider):
+        def decide(self, clause, context, units):
+            seen.append(clause)
+            return super().decide(clause, context, units)
+    units = [{"uid": "k", "text": "Linux kernel", "summary": "", "talk": [], "terms": []},
+             {"uid": "a", "text": "alpha", "summary": "", "talk": [], "terms": []}]
+    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5))
+    assert cp.update("the colonel".split()).active == "k" and seen == ["the kernel"]

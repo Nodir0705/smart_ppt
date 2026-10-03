@@ -20,6 +20,8 @@ the previous clause as context) refers to:
   the title as the slide's first box);
 * after a commit in this clause, change only when another unit beats the
   committed one by ``switch`` (hysteresis);
+* before scoring, misheard slide words are put back by sound
+  (``asr_repair.SoundRepair``: "colonel" -> kernel, "h l" -> HAL);
 * a clause that commits to nothing HOLDS the box; boundaries keep the box.
   There is no clear: only a slide change resets.
 
@@ -38,6 +40,8 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+
+from .asr_repair import SoundRepair
 
 MIN_PAUSE_S = 0.25
 TITLE_ROLES = {"title", "section_label"}
@@ -129,6 +133,7 @@ class ClauseParams:
     jump_gap: float = 2.0     # winner over the runner-up when a new clause would move a lit box
     switch: float = 1.0       # rival over the unit already committed in this clause
     title_extra: float = 4.0  # extra over NONE for title / section-label units
+    repair: float = 0.25      # sound-based ASR repair to the slide's words: max phoneme distance (<= 0 = off)
 
 
 @dataclass
@@ -148,6 +153,7 @@ class ClausePointer:
         self.decider, self.units, self.p = decider, units, params
         self.low_prior = set(low_prior)
         self.normalizer = normalizer
+        self.repair = SoundRepair(units, params.repair) if params.repair > 0 else None
         self.start = start            # word index where the current clause begins
         self.prev = ""                # previous clause text (context)
         self.active: str | None = None
@@ -175,6 +181,8 @@ class ClausePointer:
         ctx = self.prev
         if self.normalizer is not None:
             clause, ctx = self.normalizer(clause), self.normalizer(ctx)
+        if self.repair is not None:
+            clause, ctx = self.repair(clause), self.repair(ctx)
         scores = self.decider.decide(clause, ctx, self.units)
         return self._commit(scores, clause)
 

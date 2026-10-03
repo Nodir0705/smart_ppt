@@ -21,6 +21,7 @@ import functools
 import re
 from dataclasses import dataclass
 
+from .asr_repair import cmudict
 from .clause_pointer import ClauseParams, ClausePointer, slide_units
 from .matcher import Matcher, MatchPolicy, PolicyConfig
 from .stt import Partial, RollingBuffer
@@ -139,11 +140,13 @@ class LiveController:
             raise ValueError(f"pointer must be 'clause' or 'tail', got {pointer!r}")
         self._mapped = {s["slide_number"]: s for s in raw_index.get("slides", [])
                         if pointer == "clause" and s.get("map")}
+        self._clause_params = clause_params or ClauseParams()
         if decider is None and self._mapped:   # load the model now, not mid-talk
             decider = _default_decider()
+        if self._mapped and self._clause_params.repair > 0:
+            cmudict()                          # and the pronunciations (~80 ms)
         self._decider = decider
         self._slide_size = raw_index.get("slide_size")
-        self._clause_params = clause_params or ClauseParams()
         self._clause: ClausePointer | None = None
         self._clause_slide: int | None = None
         self._clause_head: dict[str, str] = {}
