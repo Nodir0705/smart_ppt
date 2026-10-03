@@ -7,7 +7,8 @@ required key, roles/relation types as enums, unit members drawn from the slide's
 then the validator; one repair turn with the validator's errors; if still invalid, a
 minimal valid map (each pointable element its own unit) so the deck still builds.
 
-    python3 -m tools.local_slide_map gen --model qwen2.5vl:7b --name qwen25vl7b
+    python3 -m tools.local_slide_map gen --model qwen3.5:9b --name qwen35_9b --no-think --num-gpu 32
+    python3 -m tools.local_slide_map gen --backend llamacpp --model <Qwen2.5-VL gguf> --mmproj <mmproj gguf> --name qwen25vl_7b
     python3 -m tools.local_slide_map gen --model qwen2.5:7b --name qwen25_7b_text --no-image
     python3 -m tools.local_slide_map compare out/maps_local/qwen25vl7b/AI_Handout_Checker
     python3 -m tools.local_slide_map build qwen25vl7b      # index -> out/bench_local/<name>/<deck>
@@ -257,6 +258,8 @@ class VramPeak:
 
 
 def cmd_gen(a) -> int:
+    if a.num_gpu is not None:
+        OPTIONS["num_gpu"] = a.num_gpu
     packets = sorted(Path(a.packets).glob("slide_*.json"))
     out = Path(a.out_root) / a.name / DECK
     out.mkdir(parents=True, exist_ok=True)
@@ -360,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
         help="llama-cpp-python (CUDA) interpreter for --backend llamacpp")
     g.add_argument("--no-image", action="store_true", help="text-only: the packet, no slide image")
     g.add_argument("--no-think", action="store_true", help="send think=false (thinking models)")
+    g.add_argument("--num-gpu", type=int, default=None,
+                   help="pin Ollama's GPU layer count: a model that only partly fits (qwen3.5:9b: 32) "
+                        "otherwise gets a split chosen from free VRAM, and its output changes with it")
     g.add_argument("--only", type=lambda s: [int(x) for x in s.split(",")], default=None)
     c = sub.add_parser("compare")
     c.add_argument("local_dir", type=Path)
