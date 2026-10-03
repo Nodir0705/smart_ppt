@@ -132,12 +132,15 @@ class ClauseParams:
     decider; every setting in commit -8..-5.5 (as the decider's NONE bar),
     switch 0.5..1.5, title_extra 2..3 at min_words 5 passed the gate.
     jump_gap 2 / title_extra 4 (with the title word gate and position terms):
-    locked on original + jumpy of AI_Handout and Open-Q (tasks/lessons.md)."""
+    locked on original + jumpy of AI_Handout and Open-Q (tasks/lessons.md).
+    repair 0.25 / card 4 / commit 1 / jump_gap 3: locked together on the same
+    four runs; the repaired clauses score higher everywhere, which pays for the
+    stricter bar (tasks/lessons.md, 2026-10-03)."""
     min_words: int = 5        # clause words before its first decision (a boundary leaks 1-2 words of the last sentence; 6 is too late)
     max_words: int = 35       # fallback boundary when nobody pauses (oracle clauses: median 15, max 35)
-    commit: float = 0.0       # winner over NONE (the decider's own bar)
+    commit: float = 1.0       # winner over NONE (the decider's NONE bar + 1)
     gap: float = 1.0          # winner over the runner-up
-    jump_gap: float = 2.0     # winner over the runner-up when a new clause would move a lit box
+    jump_gap: float = 3.0     # winner over the runner-up when a new clause would move a lit box
     switch: float = 1.0       # rival over the unit already committed in this clause
     title_extra: float = 4.0  # extra over NONE for title / section-label units
     repair: float = 0.25      # sound-based ASR repair to the slide's words: max phoneme distance (<= 0 = off)

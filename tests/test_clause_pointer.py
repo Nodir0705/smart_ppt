@@ -173,7 +173,7 @@ def test_controller_uses_the_clause_pointer_on_mapped_slides_only():
     m = _NoScores()
     dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
     c = LiveController(m, _mapped_index(), normalizer=lambda t: t, decider=dec,
-                       clause_params=ClauseParams(min_words=2, gap=0.5))
+                       clause_params=ClauseParams(min_words=2, gap=0.5, commit=0.0))
     c.push(Partial("now the alpha", False, 1.0))
     ev = c.feed()
     assert ev.active_id == "s1_a" and ev.tail == "now the alpha" and not m.seen
@@ -196,7 +196,7 @@ def test_controller_tail_pointer_ignores_maps():
 def test_controller_slide_speech_starts_at_reset():
     dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
     c = LiveController(_NoScores(), _mapped_index(), normalizer=lambda t: t, decider=dec,
-                       clause_params=ClauseParams(min_words=2, gap=0.5))
+                       clause_params=ClauseParams(min_words=2, gap=0.5, commit=0.0))
     c.push(Partial("beta beta beta", False, 1.0))
     c.reset()                                            # slide shown again: old words don't count
     c.push(Partial("beta beta beta and alpha now", False, 2.0))
@@ -263,5 +263,5 @@ def test_the_pointer_scores_the_repaired_clause():
             return super().decide(clause, context, units)
     units = [{"uid": "k", "text": "Linux kernel", "summary": "", "talk": [], "terms": []},
              {"uid": "a", "text": "alpha", "summary": "", "talk": [], "terms": []}]
-    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5))
+    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5, commit=0.0))
     assert cp.update("the colonel".split()).active == "k" and seen == ["the kernel"]
