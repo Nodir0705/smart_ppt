@@ -203,6 +203,57 @@ def test_controller_slide_speech_starts_at_reset():
     assert c.feed().active_id == "s1_a"
 
 
+class Scripted:
+    """Scores from a queue, one dict per decider call; none = 0."""
+
+    def __init__(self, *calls):
+        self.calls = list(calls)
+
+    def decide(self, clause, context, units):
+        return {**self.calls.pop(0), "none": 0.0}
+
+
+CARD_UNITS = [{"uid": u, "text": "", "summary": "", "talk": [], "terms": [], "parents": p}
+              for u, p in (("c", []), ("a", ["c"]), ("b", []))]
+
+
+def _card_ptr(*calls, **kw):
+    p = ClauseParams(**{"min_words": 1, "commit": 0.0, "gap": 1.0, "jump_gap": 2.0, "switch": 1.0,
+                        "card": 1.0, "repair": 0.0, **kw})
+    return ClausePointer(Scripted(*calls), CARD_UNITS, p)
+
+
+def test_a_child_within_card_lights_its_card_and_holds_it():
+    cp = _card_ptr({"a": 3.0, "c": 2.5, "b": 0.0}, {"a": 3.0, "c": 2.4, "b": 0.0})
+    d = cp.update(["one"])
+    assert (d.active, cp.committed) == ("c", "c")         # child a wins by 0.5 <= card: the card lights
+    assert cp.update(["one", "two"]).active == "c"        # same evidence: no churn back to the child
+    off = _card_ptr({"a": 3.0, "c": 2.5, "b": 0.0}, card=-1.0)
+    assert off.update(["one"]).active is None             # off: a over c by 0.5 < gap, nothing lights
+
+
+def test_a_child_far_above_its_card_lights_itself():
+    cp = _card_ptr({"a": 5.0, "c": 2.5, "b": 0.0})
+    assert cp.update(["one"]).active == "a"
+
+
+def test_moving_between_a_card_and_its_child_is_no_topic_jump():
+    cp = _card_ptr({"c": 3.0, "a": 0.0, "b": 0.0}, {"a": 4.0, "b": 2.5, "c": 1.0}, card=0.5)
+    assert cp.update(["x"]).active == "c"
+    assert cp.update(["x", "y"], [1]).active == "a"       # 1.5 over b: gap 1 suffices (own card -> child)
+    cp = _card_ptr({"c": 3.0, "a": 0.0, "b": 0.0}, {"b": 4.0, "a": 2.5, "c": 1.0}, card=0.5)
+    cp.update(["x"])
+    assert cp.update(["x", "y"], [1]).active == "c"       # unrelated b needs jump_gap 2
+
+
+def test_slide_units_reads_card_relations():
+    idx = _mapped_index()
+    idx["slides"][0]["map"]["relations"] = [{"from": "a", "to": "b", "type": "part_of"},
+                                            {"from": "b", "to": "a", "type": "flow"}]
+    units, _, _ = slide_units(idx["slides"][0])
+    assert [u["parents"] for u in units] == [[], ["b"], []]
+
+
 def test_the_pointer_scores_the_repaired_clause():
     seen = []
 

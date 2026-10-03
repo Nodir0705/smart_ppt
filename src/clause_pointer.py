@@ -22,6 +22,10 @@ the previous clause as context) refers to:
   committed one by ``switch`` (hysteresis);
 * before scoring, misheard slide words are put back by sound
   (``asr_repair.SoundRepair``: "colonel" -> kernel, "h l" -> HAL);
+* right card, wrong box: when the winner is part_of / explains another
+  (non-title) unit whose score is within ``card`` of it, the card lights, and a
+  move between a unit and its own card is no topic jump (``gap``, not
+  ``jump_gap``);
 * a clause that commits to nothing HOLDS the box; boundaries keep the box.
   There is no clear: only a slide change resets.
 
@@ -45,6 +49,7 @@ from .asr_repair import SoundRepair
 
 MIN_PAUSE_S = 0.25
 TITLE_ROLES = {"title", "section_label"}
+CARD_RELATIONS = ("part_of", "explains")   # child -> the card / heading it belongs to
 
 
 class PauseDetector:
@@ -109,7 +114,9 @@ def slide_units(slide: dict, size: dict | None = None) -> tuple[list[dict], dict
         i = info.get(uid, {})
         units.append({"uid": uid, "text": " ".join(by_id[x].get("text") or "" for x in members).strip(),
                       "summary": i.get("summary", ""), "talk": list(i.get("talk", [])),
-                      "terms": list(i.get("terms", []))})
+                      "terms": list(i.get("terms", [])),
+                      "parents": [r["to"] for r in m.get("relations", [])
+                                  if r["from"] == uid and r["type"] in CARD_RELATIONS and r["to"] in m["units"]]})
         boxes = [by_id[x]["bbox"] for x in members if (by_id[x].get("bbox") or {}).get("w") is not None]
         if size and boxes and (side := _side(boxes, size)):
             units[-1]["terms"].append(side)
@@ -134,6 +141,7 @@ class ClauseParams:
     switch: float = 1.0       # rival over the unit already committed in this clause
     title_extra: float = 4.0  # extra over NONE for title / section-label units
     repair: float = 0.25      # sound-based ASR repair to the slide's words: max phoneme distance (<= 0 = off)
+    card: float = 4.0         # light the parent card when it is within this of a winning child (< 0 = off)
 
 
 @dataclass
@@ -164,6 +172,8 @@ class ClausePointer:
                   for u in units}
         self.title_words = {t: _words(u["text"]) - set().union(*(w for v, w in others.items() if v != t))
                             for u in units if (t := u["uid"]) in self.low_prior}
+        # child -> its cards (title / section labels excluded: they have their own gate)
+        self.parents = {u["uid"]: [q for q in u.get("parents", []) if q not in self.low_prior] for u in units}
 
     def update(self, words: list[str], boundaries: list[int] = ()) -> Decision:
         """Fold in boundaries (word indices, ascending) and decide on the current clause."""
@@ -194,12 +204,20 @@ class ClausePointer:
         ranked = sorted((u["uid"] for u in self.units), key=lambda u: -scores.get(u, float("-inf")))
         best = ranked[0]
         s = scores[best]
-        second = scores[ranked[1]] if len(ranked) > 1 else float("-inf")
         need = self.p.commit + (self.p.title_extra if best in self.low_prior else 0.0)
         clears = s - none >= need
+        family = {best}
+        if self.p.card >= 0 and (cards := [q for q in self.parents.get(best, []) if q in scores]):
+            card = max(cards, key=scores.get)
+            if s - scores[card] <= self.p.card:     # right card, wrong box: light the card
+                best, family = card, {best, card}
+        second = max((scores.get(u, float("-inf")) for u in ranked if u not in family), default=float("-inf"))
         why = "hold" if self.active else "noop"
         if self.committed is None:
-            gap = self.p.jump_gap if self.active is not None else self.p.gap
+            # child <-> its own card is no topic jump
+            related = self.p.card >= 0 and (self.active in self.parents.get(best, ())
+                                            or best in self.parents.get(self.active, ()))
+            gap = self.p.jump_gap if self.active is not None and not related else self.p.gap
             if clears and s - second >= gap:
                 self.committed = best
                 if best != self.active:
