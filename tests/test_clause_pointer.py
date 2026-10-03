@@ -263,5 +263,5 @@ def test_the_pointer_scores_the_repaired_clause():
             return super().decide(clause, context, units)
     units = [{"uid": "k", "text": "Linux kernel", "summary": "", "talk": [], "terms": []},
              {"uid": "a", "text": "alpha", "summary": "", "talk": [], "terms": []}]
-    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5, commit=0.0))
+    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5, commit=0.0, repair=0.25))
     assert cp.update("the colonel".split()).active == "k" and seen == ["the kernel"]
