@@ -272,5 +272,6 @@ Claude's (4b v4: 9 / 32.9 against 14 / 37.7).
   diverging at a near-tie: close the talk list, or add a phrase. Slide 5 reproduced 3/3. Runs that shared the GPU with
   another CUDA process, or with an aborted Ollama request still decoding, changed. Generate the maps once and keep them.
   Do not count on a regeneration matching.
-- **Noise floor:** wording drift alone (the unpinned v1 9b against the pinned rerun) moved jumpy slide 2 by 2 lit. A tune
-  difference of 3 or less between variants is not a result.
+- **Noise floor:** two 9b runs of the same prompt moved jumpy slide 2 by 2 lit, through wording drift alone. The v1 run
+  was unpinned, and the rerun shared the GPU with a scoring job, so the cause is not established. A tune difference of
+  3 or less between variants is not a result.
