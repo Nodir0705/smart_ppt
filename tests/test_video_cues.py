@@ -95,6 +95,8 @@ def test_stem_and_content_words():
     assert stem("pages") == stem("page")                  # plural of an -e word
     assert stem("grades") == stem("grade") == stem("grading") == stem("graded")
     assert content("The marks, and reading!") == {"mark", "read"}
+    assert stem("class") == stem("classes") == "class"   # -ss is not a plural
+    assert stem("process") == stem("processes") == "process"
 
 
 # ---------- validate ----------
@@ -112,6 +114,7 @@ def test_unknown_or_unpointable_target():
 def test_bad_line_index():
     assert has(errors_for(lambda c: c[2].update(line=2)), 2, "line")
     assert errors_for(lambda c: c[2].update(line=1)) == []
+    assert errors_for(lambda c: c[2].update(line=None)) == []   # null = default line, as in resolve
 
 
 def test_positions_out_of_range_and_until_order():
@@ -180,6 +183,19 @@ def test_why_rule():
     sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
                       {"effect": "glide", "target": "u3", "at": at(1, 3)}]}
     assert has(validate(sheet, SLIDE, SENTENCES), 1, "why")
+    # transition word, but u3 is a flow successor of u2, not of the current focus u1
+    sheet = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5)},
+                      {"effect": "glide", "target": "u3", "at": at(3, 0)}]}
+    assert has(validate(sheet, SLIDE, SENTENCES), 1, "why")
+
+
+def test_why_rule_transitions_that_are_also_stopwords():
+    # "then"/"now" are stopwords too: the transition check must not use content()
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
+                      {"effect": "glide", "target": "u3", "at": at(3, 0)}]}
+    for word in ("Then,", "Now,"):
+        said = SENTENCES[:3] + [[word, "everything", "has", "to", "squeeze", "into", "cheap", "hardware."]]
+        assert validate(sheet, SLIDE, said) == [], word
 
 
 def without(unit, field):
@@ -255,3 +271,12 @@ def test_marks_end_at_next_focus_not_glide_and_zoom_lasts_3s():
                       {"effect": "zoom", "target": "e3", "at": at(4, 2)}]}
     assert effective_until(sheet, TIMINGS) == [(10.0, 30.0), (22.0, 40.0), (30.0, 40.0),
                                                (40.0, math.inf), (42.0, 45.0)]
+
+
+def test_explicit_until_wins_when_earlier_for_foci_and_always_for_marks():
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0), "until": at(2, 0)},
+                      {"effect": "underline", "target": "e2", "at": at(2, 2), "until": at(4, 3)},
+                      {"effect": "focus", "target": "u3", "at": at(4, 0)}]}
+    assert effective_until(sheet, TIMINGS) == [(10.0, 20.0),       # focus: own until before the next focus
+                                               (22.0, 43.0),       # mark: until outlasts the next focus
+                                               (40.0, math.inf)]

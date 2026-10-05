@@ -16,8 +16,8 @@ Decisions where the plan left details open:
 - ``effective_until(sheet, timings)`` returns ``(start, end)`` seconds per cue,
   in sheet order. A focus/glide ends at the next focus or glide (sheet order
   breaks ties), even if its own ``until`` is later: a new focus replaces the
-  old one. Underline/ring end at the next *focus* that starts strictly later
-  (glides do not end them, per the plan), else at their ``until``. Zoom lasts
+  old one. Underline/ring: their ``until`` if given, else the next *focus*
+  that starts strictly later (glides do not end them). Zoom lasts
   3.0 s. Nothing later -> ``math.inf`` (hold to the end of the slide). The
   spotlight shares its focus cue's interval.
 - ``validate(sheet, slide, sentences, timings=None)``: ``at``/``until``
@@ -31,7 +31,7 @@ Decisions where the plan left details open:
   Errors are ``"cue <i>: <keyword> ..."`` in cue order.
 - Why rule: the sentence's content words are ``script.norm`` (numbers as
   words) + the plan's stemmer + stopwords. The stemmer strips ``ing``/``ed``/
-  ``s`` (len > 4), then one trailing ``e`` (if 3+ letters remain), so
+  ``s`` (len > 4; not after ``ss``: ``class``, ``process``), then one trailing ``e`` (if 3+ letters remain), so
   ``pages``/``page`` and ``grades``/``grading`` meet; the target's words are its text
   (or ``line_texts``) plus its unit's map ``talk`` and ``terms``. The flow
   exception needs a transition word anywhere in the anchor sentence (plan),
@@ -65,7 +65,7 @@ def stem(word: str) -> str:
     w = word.lower()
     if len(w) > 4:
         for suf in ("ing", "ed", "s"):
-            if w.endswith(suf):
+            if w.endswith(suf) and not (suf == "s" and w.endswith("ss")):
                 w = w[:-len(suf)]
                 break
     return w[:-1] if w.endswith("e") and len(w) > 3 else w
@@ -215,7 +215,7 @@ def _check(c, slide, sentences) -> str | None:
     if "until" in c and (c["until"]["s"], c["until"]["w"]) <= (c["at"]["s"], c["at"]["w"]):
         return "until must come after at"
     n = len(_lines(members))
-    if "line" in c and not (type(c["line"]) is int and 0 <= c["line"] < n):
+    if c.get("line") is not None and not (type(c["line"]) is int and 0 <= c["line"] < n):
         return f"line {c['line']!r} is out of range (target has {n} lines)"
     if eff == "underline" and n == 0:
         return f"underline target {c['target']!r} has no text lines"
