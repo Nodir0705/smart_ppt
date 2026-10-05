@@ -1,6 +1,7 @@
 import json
 
-from tools.local_slide_map import compare, fallback_map, fixup, generate, map_schema, spoken_terms
+from tools.local_slide_map import (compare, fallback_map, fixup, generate, map_schema, speak_terms, spoken,
+                                   spoken_terms)
 from tools.slide_map import validate
 
 PACKET = {"slide": 2, "slide_size": {"w": 13.33, "h": 7.5, "units": "inches"}, "png": "unused.png",
@@ -115,3 +116,12 @@ def test_fixup_slide_number_and_missing_items():
     m, fx = fixup(dict(GOOD, slide=0, items=items), PACKET)
     assert validate(m, PACKET) == [] and fx == {"slide_number": 1, "missing_item": 1}
     assert m["items"]["s2_e1"] == {"role": "decoration", "pointable": False}
+
+
+def test_spoken_forms_of_model_terms():
+    assert [spoken(t) for t in ["Nanonets-OCR2", "qwen3-4b-instruct", "8 GB", "15-33", "GPUs", "A/F",
+                                "python nano.py", "THE PROBLEM", "2.5x"]] == [
+        "nanonets o c r two", "qwen three four b instruct", "eight gigabytes", "fifteen to thirty three",
+        "g p u s", "a f", "python nano dot py", "the problem", "two point five times"]
+    m = speak_terms(dict(GOOD, units=[dict(GOOD["units"][0], terms=["OCR", "o c r", "", "~1 min"])]))
+    assert m["units"][0]["terms"] == ["o c r", "about one minute"]

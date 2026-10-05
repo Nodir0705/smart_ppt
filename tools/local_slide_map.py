@@ -6,7 +6,8 @@ Per slide: one greedy call constrained by a per-slide JSON schema (every element
 required key, roles/relation types as enums, unit members drawn from the slide's ids),
 then a deterministic fix-up of bookkeeping slips (`fixup`) and the validator; one repair
 turn with the validator's remaining errors; if still invalid, a minimal valid map (each
-pointable element its own unit) so the deck still builds. Raw replies go to _stats.json.
+pointable element its own unit) so the deck still builds. Terms are then put in spoken
+form (`speak_terms`: the model leaves digits and acronyms in). Raw replies go to _stats.json.
 
     python3 -m tools.local_slide_map gen --model qwen3.5:9b --name qwen35_9b --no-think --num-gpu 32
     python3 -m tools.local_slide_map gen --backend llamacpp --model <Qwen2.5-VL gguf> --mmproj <mmproj gguf> --name qwen25vl_7b
@@ -235,6 +236,39 @@ def spoken_terms(text: str) -> list[str]:
     return out
 
 
+_SAY = {"%": " percent ", "&": " and ", "+": " plus ", "~": " about ", "≈": " about ", "→": " to ",
+        "×": " times ", "#": " number ", "@": " at ", "✓": " check ", "✗": " cross "}
+_WORDS3 = {"THE", "AND", "FOR", "NOT", "ALL", "ONE", "TWO", "HOW", "WHY", "WHO", "YOU", "ARE", "OUT",
+           "NEW", "OUR", "CAN", "GET", "USE", "RUN", "SEE", "NOW", "AN", "AS", "AT", "BE", "BY", "DO", "GO",
+           "IF", "IN", "IS", "IT", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE"}
+
+
+def spoken(term: str) -> str:
+    """A written term as it is said: numbers in words (also when glued to a name:
+    qwen3 -> qwen three), 2-3 letter all-caps acronyms spelled (OCR -> o c r, GPUs ->
+    g p u s), file dots said (nano.py -> nano dot py), symbols as words or dropped."""
+    def name(tok: str) -> str:   # a token mixing letters and digits is a name: no ranges or units
+        if not (re.search(r"[A-Za-z]", tok) and re.search(r"\d", tok)) or _NUM.fullmatch(tok):
+            return tok
+        tok = re.sub(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])|-", " ", tok)
+        return re.sub(r"\d+(?:\.\d+)?", lambda x: f" {_words(x.group(0))} ", tok)
+    t = " ".join(map(name, term.split()))
+    t = _NUM.sub(lambda x: f" {' '.join(spoken_terms(x.group(0)))} ", t)
+    t = re.sub(r"\b([A-Z]{2,3})(s?)\b", lambda x: x.group(0) if x.group(1) in _WORDS3
+               else " ".join(x.group(1).lower()) + (" s" if x.group(2) else ""), t)
+    t = re.sub(r"(?<=\w)\.(?=[A-Za-z]{2,4}\b)", " dot ", t)
+    t = "".join(_SAY.get(c, c) for c in t)
+    return " ".join(re.sub(r"[^\w' ]+", " ", t.lower()).split())
+
+
+def speak_terms(m: dict) -> dict:
+    """The map with every unit's terms in spoken form (deduplicated, empties dropped)."""
+    m = json.loads(json.dumps(m))
+    for u in m["units"]:
+        u["terms"] = list(dict.fromkeys(x for x in map(spoken, u.get("terms") or []) if x))
+    return m
+
+
 NOT_POINTABLE_ROLES = {"footer", "decoration", "icon"}
 
 
@@ -336,7 +370,7 @@ def generate(packet: dict, chat, image: bool) -> tuple[dict, dict]:
         st["fixes"].append(fixes)
         if not errs:
             st["result"] = ("first" if not raw_errs else "fixed") if attempt == 0 else "repaired"
-            return m, st
+            return speak_terms(m), st
         messages = messages + [{"role": "assistant", "content": content},
                                {"role": "user", "content": "The map is invalid:\n" + "\n".join(
                                    f"- {e}" for e in errs) + "\nReturn the corrected complete JSON map."}]
