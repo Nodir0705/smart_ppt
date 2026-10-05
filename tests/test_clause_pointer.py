@@ -71,6 +71,15 @@ def test_a_new_clause_needs_jump_gap_to_move_a_lit_box():
     assert fresh.update("now beta".split()).active == "b"                     # first light: plain gap
 
 
+def test_min_content_waits_for_a_content_word_before_a_clause_first_decision():
+    cp, d = _ptr(min_content=1)
+    assert cp.update("and on the left is".split()).active is None   # filler + position words only
+    assert d.calls == []                                            # no decider call either
+    assert cp.update("and on the left is alpha".split()).active == "a"
+    cp.update("and on the left is alpha so then".split(), [6])      # new clause "so then": gated
+    assert d.calls[-1][0] == "and on the left is alpha"
+
+
 def test_titles_light_only_on_their_own_words():
     class Loud(KeywordDecider):                     # scores the title high whatever is said
         def decide(self, clause, context, units):

@@ -30,7 +30,8 @@ from tools.presenter_bench import out_dir_name, score_motion
 from tools.timeline_audit import score_slide
 
 SCRIPTS = {"original": "presenter_script.json", "jumpy": "presenter_script_jumpy.json",
-           "meaning": "presenter_script_meaning.json"}
+           "meaning": "presenter_script_meaning.json",
+           "casual": "presenter_script_casual.json"}   # sealed: scored only via --styles casual
 TUNE, HOLDOUT = ("original", "jumpy"), ("meaning",)
 CHUNK_S = 0.1
 
@@ -40,7 +41,8 @@ def record(deck_dir: Path, out: Path) -> None:
     from src.stt import load_default_stt_engine
     eng = load_default_stt_engine(16000, audio_clock=True)
     data = {}
-    for style, script in SCRIPTS.items():
+    for style in TUNE + HOLDOUT:
+        script = SCRIPTS[style]
         man = json.loads((deck_dir / out_dir_name(script) / "manifest.json").read_text())
         data[style] = {str(m["slide"]): {"wav": m["wav"], "partials": [
             {"t": round(p.timestamp, 2), "final": p.is_final, "text": p.text}
