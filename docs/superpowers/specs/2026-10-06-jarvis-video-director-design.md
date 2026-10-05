@@ -68,7 +68,7 @@ decks/<deck>.pptx
   and joined with a 350 ms pause, reusing `src/tts.synthesize_segments` and its
   sentence start times.
 - **Word times** come from Whistle (`~/models/whistle/whistle.cact`, run through
-  the existing `WhistleEngine` server) with word timestamps, run on each
+  the existing Whistle server, extended to return the engine's word timestamps) run on each
   sentence's clean audio.
   - Whistle's words are aligned to the known script words by sequence alignment
     (normalized: lowercase, punctuation stripped, digits as words).
@@ -94,7 +94,8 @@ decks/<deck>.pptx
   in that sentence's script words). The effect starts at that word's start time.
 - **`target`:** a map unit id (`u3`) or an element id (`s4_e11`) on this slide.
 - **`line`:** an index into the element's `line_bboxes`. Underline uses it;
-  without it the underline covers the element's last line.
+  without it the underline goes under the line whose `line_texts` share the
+  most content words with the anchor sentence (ties go to the first line).
 - **`region`:** zoom only. A sub-rectangle of the target as fractions
   (x, y, w, h) of its bbox. Without it the zoom shows the whole target.
 - **`until`:** optional. Without it, effects end by these defaults:
