@@ -4,8 +4,9 @@ of Claude agents. Same packet in, same map format out, same validator
 
 Per slide: one greedy call constrained by a per-slide JSON schema (every element id a
 required key, roles/relation types as enums, unit members drawn from the slide's ids),
-then the validator; one repair turn with the validator's errors; if still invalid, a
-minimal valid map (each pointable element its own unit) so the deck still builds.
+then a deterministic fix-up of bookkeeping slips (`fixup`) and the validator; one repair
+turn with the validator's remaining errors; if still invalid, a minimal valid map (each
+pointable element its own unit) so the deck still builds. Raw replies go to _stats.json.
 
     python3 -m tools.local_slide_map gen --model qwen3.5:9b --name qwen35_9b --no-think --num-gpu 32
     python3 -m tools.local_slide_map gen --backend llamacpp --model <Qwen2.5-VL gguf> --mmproj <mmproj gguf> --name qwen25vl_7b
@@ -20,6 +21,7 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -154,6 +156,14 @@ FALLBACK_ROLE = {"title": "title", "arrow": "decoration", "image": "photo", "bul
                  "stat": "stat", "diagram_label": "section_label", "caption": "caption"}
 
 
+def own_unit(e: dict, uid: str) -> dict:
+    """A one-element unit described by the element's own text."""
+    text = " ".join((e.get("text") or "").split())
+    words = text.lower().split() or [e["type"]]
+    return {"uid": uid, "members": [e["id"]], "summary": text or e["type"],
+            "talk": [" ".join(words[:12]), " ".join(words[:4]), " ".join(words[-4:])], "terms": []}
+
+
 def fallback_map(packet: dict) -> dict:
     """Minimal valid map: roles from element types, footers/page numbers/text-less shapes
     not pointable, every pointable element its own unit, talk from its own text."""
@@ -168,13 +178,121 @@ def fallback_map(packet: dict) -> dict:
             role = "decoration"
         items[e["id"]] = {"role": role, "pointable": pointable}
         if pointable:
-            words = text.lower().split() or [e["type"]]
-            units.append({"uid": f"u{len(units) + 1}", "members": [e["id"]], "summary": text or e["type"],
-                          "talk": [" ".join(words[:12]), " ".join(words[:4]), " ".join(words[-4:])],
-                          "terms": []})
+            units.append(own_unit(e, f"u{len(units) + 1}"))
     return {"slide": packet["slide"], "message": units[0]["summary"] if units else f"slide {packet['slide']}",
             "items": items, "units": units,
         "relations": [], "order": [u["uid"] for u in units]}
+
+
+# ---- deterministic fix-up of the model's bookkeeping (before validation) ----
+
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+         "fifteen sixteen seventeen eighteen nineteen").split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SYM = {"~": "about", "≈": "about", "<": "under", ">": "over", "≤": "at most", "≥": "at least"}
+_UNIT = {"%": "percent", "+": "plus", "x": "times", "×": "times", "k": "thousand", "fps": "frames per second"}
+_MEASURE = {"s": "second", "ms": "millisecond", "min": "minute", "h": "hour", "kb": "kilobyte",
+            "mb": "megabyte", "gb": "gigabyte", "tb": "terabyte"}   # plural unless exactly one
+_N = r"(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)"
+_NUM = re.compile(rf"([~≈<>≤≥]?)\s*(?<![A-Za-z\d.,]){_N}(?:\s*[–—-]\s*{_N})?\s*"
+                  r"(%|\+|×|(?:x|k|fps|s|ms|min|h|kb|mb|gb|tb)\b)?", re.I)
+
+
+def _words(num: str) -> str:
+    """'15' -> 'fifteen', '2.5' -> 'two point five' (digit by digit from a million up)."""
+    whole, _, frac = num.replace(",", "").partition(".")
+    n = int(whole)
+    if n < 20:
+        w = _ONES[n]
+    elif n < 100:
+        w = _TENS[n // 10] + (f" {_ONES[n % 10]}" if n % 10 else "")
+    elif n < 1000:
+        w = f"{_ONES[n // 100]} hundred" + (f" {_words(str(n % 100))}" if n % 100 else "")
+    elif n < 10 ** 6:
+        w = f"{_words(str(n // 1000))} thousand" + (f" {_words(str(n % 1000))}" if n % 1000 else "")
+    else:   # ponytail: ids/years read digit by digit; add a years rule if a deck needs it
+        w = " ".join(_ONES[int(d)] for d in whole)
+    return w + (" point " + " ".join(_ONES[int(d)] for d in frac) if frac else "")
+
+
+def spoken_terms(text: str) -> list[str]:
+    """Spoken forms of the numbers in `text`: '15–33' -> 'fifteen to thirty three',
+    '~1 min' -> 'about one minute', '8 GB' -> 'eight gigabytes'. Digits glued to letters
+    (model names, versions) are left alone."""
+    out = []
+    for sym, a, b, unit in _NUM.findall(text or ""):
+        u = unit.lower()
+        u = _UNIT.get(u) or (_MEASURE[u] + ("" if a == "1" and not b else "s") if u in _MEASURE else "")
+        w = " ".join(x for x in (_SYM.get(sym, ""), _words(a), f"to {_words(b)}" if b else "", u) if x)
+        if w not in out:
+            out.append(w)
+    return out
+
+
+NOT_POINTABLE_ROLES = {"footer", "decoration", "icon"}
+
+
+def fixup(m: dict, packet: dict) -> tuple[dict, dict]:
+    """(fixed copy of m, {fix: count}). Repairs bookkeeping only, never re-partitions:
+    unknown ids dropped; an id in several units kept in the first (units-list order);
+    a non-pointable member made pointable unless footer/decoration/icon (then removed);
+    blank talk phrases dropped; empty units removed; a pointable element in no unit
+    gets its own unit; relations with unknown uids dropped; order = the model's order
+    (unknown/repeated uids dropped) + missing uids appended. A no-op on a valid map."""
+    m = json.loads(json.dumps(m))
+    fx: dict[str, int] = {}
+
+    def hit(k: str, n: int = 1) -> None:
+        if n:
+            fx[k] = fx.get(k, 0) + n
+
+    els = {e["id"]: e for e in packet["elements"]}
+    items = m.get("items") or {}
+    for i in [i for i in items if i not in els]:
+        del items[i]
+        hit("unknown_id")
+    seen: set[str] = set()
+    for u in m.get("units") or []:
+        keep = []
+        for i in u.get("members") or []:
+            if i not in els:
+                hit("unknown_id")
+            elif i in seen:
+                hit("duplicate_member")
+            elif i in items and not items[i].get("pointable"):
+                if items[i].get("role") in NOT_POINTABLE_ROLES:
+                    hit("nonpointable_member_removed")
+                    continue
+                items[i]["pointable"] = True
+                hit("member_made_pointable")
+                keep.append(i)
+            else:
+                keep.append(i)
+            seen.add(i)
+        u["members"] = keep
+        talk = [t for t in u.get("talk") or [] if isinstance(t, str) and t.strip()]
+        hit("blank_talk", len(u.get("talk") or []) - len(talk))
+        u["talk"] = talk
+    units = [u for u in m.get("units") or [] if u["members"]]
+    hit("empty_unit", len(m.get("units") or []) - len(units))
+    used = {int(u["uid"][1:]) for u in units if str(u.get("uid", ""))[1:].isdecimal()}
+    k = max(used, default=0)
+    for i, it in items.items():
+        if it.get("pointable") and i not in seen:
+            k += 1
+            units.append(dict(own_unit(els[i], f"u{k}"), terms=spoken_terms(els[i].get("text"))))
+            hit("orphan_unit")
+    m["units"] = units
+    uids = [u["uid"] for u in units]
+    rels = [r for r in m.get("relations") or [] if r.get("from") in uids and r.get("to") in uids]
+    hit("bad_relation", len(m.get("relations") or []) - len(rels))
+    m["relations"] = rels
+    order = list(dict.fromkeys(x for x in m.get("order") or [] if x in uids))
+    order += [x for x in uids if x not in order]
+    if order != m.get("order"):
+        hit("order_rebuilt")
+    m["order"] = order
+    return m, fx
 
 
 def generate(packet: dict, chat, image: bool) -> tuple[dict, dict]:
@@ -184,20 +302,25 @@ def generate(packet: dict, chat, image: bool) -> tuple[dict, dict]:
     if image:
         msg["images"] = [slide_image(packet["png"])]
     messages = [msg]
-    st = {"slide": packet["slide"], "calls": [], "errors": []}
+    st = {"slide": packet["slide"], "calls": [], "errors": [], "fixes": [], "raw": []}
     for attempt in range(2):
         r = chat(messages, schema)
         st["calls"].append({k: r.get(k) for k in ("total_duration", "load_duration",
                                                    "prompt_eval_count", "eval_count")})
         content = r["message"]["content"]
+        st["raw"].append(content)
         try:   # some runtimes/models ignore `format` and fence the JSON in ```json
             m = json.loads(content[content.find("{"):content.rfind("}") + 1])
+            raw_errs = validate(m, packet)
+            m, fixes = fixup(m, packet)
             errs = validate(m, packet)
         except json.JSONDecodeError as ex:
-            m, errs = None, [f"not valid JSON: {ex}"]
-        st["errors"].append(errs)
+            m, raw_errs, fixes = None, [f"not valid JSON: {ex}"], {}
+            errs = raw_errs
+        st["errors"].append(raw_errs)   # the model's own errors, before fix-up
+        st["fixes"].append(fixes)
         if not errs:
-            st["result"] = "first" if attempt == 0 else "repaired"
+            st["result"] = ("first" if not raw_errs else "fixed") if attempt == 0 else "repaired"
             return m, st
         messages = messages + [{"role": "assistant", "content": content},
                                {"role": "user", "content": "The map is invalid:\n" + "\n".join(
@@ -257,6 +380,16 @@ class VramPeak:
         self._t.join()
 
 
+def rescued(stats: list[dict]) -> dict:
+    """{fix: slides it was applied to on a slide that fix-up made valid (result "fixed")}."""
+    out: dict[str, int] = {}
+    for s in stats:
+        if s["result"] == "fixed":
+            for k in s["fixes"][0]:
+                out[k] = out.get(k, 0) + 1
+    return out
+
+
 def cmd_gen(a) -> int:
     if a.num_gpu is not None:
         OPTIONS["num_gpu"] = a.num_gpu
@@ -284,7 +417,8 @@ def cmd_gen(a) -> int:
             (out / p.name).write_text(json.dumps(m, indent=1, ensure_ascii=False))
             stats.append(st)
             print(f"slide {pk['slide']:3d} {st['result']:9s} {st['wall_s']:6.1f}s "
-                  f"prompt {st['calls'][0]['prompt_eval_count']} out {st['calls'][-1]['eval_count']}", flush=True)
+                  f"prompt {st['calls'][0]['prompt_eval_count']} out {st['calls'][-1]['eval_count']} "
+                  f"fixes {st['fixes']}", flush=True)
         if a.backend == "llamacpp":
             ps = {"models": [{"name": a.model, "mmproj": a.mmproj, "runtime": chat.info}]}
             chat.close()
@@ -293,8 +427,10 @@ def cmd_gen(a) -> int:
             unload(a.model)
     n = len(stats)
     summary = {"model": a.model, "name": a.name, "image": not a.no_image, "slides": n,
-               "valid_first": sum(s["result"] == "first" for s in stats),
-               "valid_after_repair": sum(s["result"] != "fallback" for s in stats),
+               **{k: sum(s["result"] == r for s in stats)
+                  for k, r in (("valid_first", "first"), ("fixed", "fixed"), ("repaired", "repaired"),
+                               ("fallback", "fallback"))},
+               "rescued_by": rescued(stats),
                "s_per_slide": round(sum(s["wall_s"] for s in stats) / max(n, 1), 1),
                "vram_base_mib": vram.base, "vram_peak_mib": vram.peak,
                "backend": a.backend,

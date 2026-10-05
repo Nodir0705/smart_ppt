@@ -1,6 +1,6 @@
 import json
 
-from tools.local_slide_map import compare, fallback_map, generate, map_schema
+from tools.local_slide_map import compare, fallback_map, fixup, generate, map_schema, spoken_terms
 from tools.slide_map import validate
 
 PACKET = {"slide": 2, "slide_size": {"w": 13.33, "h": 7.5, "units": "inches"}, "png": "unused.png",
@@ -45,11 +45,11 @@ def _client(replies):
 
 
 def test_repair_then_fallback():
-    bad = dict(GOOD, order=["u1"])
+    bad = dict(GOOD, message="")   # not bookkeeping: fix-up leaves it to the repair turn
     chat, calls = _client([json.dumps(bad), "```json\n" + json.dumps(GOOD) + "\n```"])
     m, st = generate(PACKET, chat, image=False)
     assert st["result"] == "repaired" and m == GOOD
-    assert "order must list every uid" in calls[1][-1]["content"]   # errors fed back
+    assert "message missing" in calls[1][-1]["content"]   # errors fed back
     chat, _ = _client([json.dumps(bad), "not json"])
     m, st = generate(PACKET, chat, image=False)
     assert st["result"] == "fallback" and validate(m, PACKET) == []
@@ -59,3 +59,52 @@ def test_compare_pairs_and_agreement():
     c = compare(fallback_map(PACKET), GOOD)
     assert (c["tp"], c["fp"], c["fn"]) == (0, 0, 1)   # missed the s2_e2+s2_e3 card
     assert c["point_eq"] == 5 and c["role_eq"] == 4     # only s2_e2 differs (bullet vs card_heading)
+
+
+def test_fixup_is_a_noop_on_a_valid_map():
+    assert fixup(GOOD, PACKET) == (GOOD, {})
+
+
+def test_fixup_repairs_bookkeeping_without_regrouping():
+    items = {**GOOD["items"], "s2_e3": {"role": "body", "pointable": False},      # member, not pointable
+             "s2_e1": {"role": "decoration", "pointable": False}}
+    bad = dict(GOOD, items=items, units=[
+        dict(GOOD["units"][0], members=["s2_e0", "s2_e9"]),                       # unknown id
+        dict(GOOD["units"][1], members=["s2_e0", "s2_e2", "s2_e3", "s2_e1"],      # dup + decoration
+             talk=["a", " ", "b", "c"]),
+        {"uid": "u7", "members": ["s2_e1"], "summary": "x", "talk": ["a", "b", "c"], "terms": []}],
+        relations=[{"from": "u1", "to": "u2", "type": "flow"}, {"from": "u2", "to": "u7", "type": "flow"}],
+        order=["u2", "u2", "u9"])
+    m, fx = fixup(bad, PACKET)
+    assert validate(m, PACKET) == []
+    assert [u["members"] for u in m["units"]] == [["s2_e0"], ["s2_e2", "s2_e3"]]
+    assert m["items"]["s2_e3"]["pointable"] and m["units"][1]["talk"] == ["a", "b", "c"]
+    assert m["relations"] == [{"from": "u1", "to": "u2", "type": "flow"}] and m["order"] == ["u2", "u1"]
+    assert fx == {"unknown_id": 1, "duplicate_member": 1, "nonpointable_member_removed": 2,
+                  "member_made_pointable": 1, "blank_talk": 1, "empty_unit": 1, "bad_relation": 1,
+                  "order_rebuilt": 1}
+    assert bad["units"][0]["members"] == ["s2_e0", "s2_e9"]                     # input untouched
+
+
+def test_fixup_gives_an_orphan_its_own_unit_with_spoken_terms():
+    pk = dict(PACKET, elements=PACKET["elements"] + [
+        {"id": "s2_e5", "type": "body", "text": "~1 min", "bbox": {"x": 8, "y": 5, "w": 1, "h": .3}}])
+    bad = dict(GOOD, items={**GOOD["items"], "s2_e5": {"role": "stat", "pointable": True}})
+    m, fx = fixup(bad, pk)
+    assert validate(m, pk) == [] and fx == {"orphan_unit": 1, "order_rebuilt": 1}
+    assert m["units"][-1]["uid"] == "u3" and m["units"][-1]["members"] == ["s2_e5"]
+    assert m["units"][-1]["terms"] == ["about one minute"] and m["order"] == ["u1", "u2", "u3"]
+
+
+def test_spoken_terms():
+    assert spoken_terms("15–33 items, 30+ times, 8 GB, 2.5x, 95%") == [
+        "fifteen to thirty three", "thirty plus", "eight gigabytes", "two point five times", "ninety five percent"]
+    assert spoken_terms("Qwen3 and OCR2 v2") == []
+
+
+def test_fixup_rescues_before_repair():
+    bad = dict(GOOD, order=["u1"], items={**GOOD["items"], "s2_e3": {"role": "body", "pointable": False}})
+    chat, calls = _client([json.dumps(bad)])
+    m, st = generate(PACKET, chat, image=False)
+    assert st["result"] == "fixed" and len(calls) == 1 and validate(m, PACKET) == []
+    assert st["fixes"] == [{"member_made_pointable": 1, "order_rebuilt": 1}]
