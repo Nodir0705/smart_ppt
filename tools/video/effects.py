@@ -76,7 +76,7 @@ def state_at(t: float, plan) -> tuple:
             box = _scale(box, SNAP_FROM - (SNAP_FROM - 1.0) * p)
         elif p < 1.0 and e.kind == "glide":
             box = lerp_bbox(tuple(ex["from"]), box, ease_in_out_cubic(p))
-        lens = tuple(ex["lens"]) if "lens" in ex else None
+        lens = tuple(round(v) for v in ex["lens"]) if "lens" in ex else None
         out.append(Active(e.kind, box, p, bool(ex.get("spotlight")), lens))
     return tuple(out)
 
