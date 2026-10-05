@@ -242,3 +242,35 @@ Three levers built in order on the clause pointer (commits 7e1c571, 8c9392d, 52f
 Sound-based ASR repair (repair 0.25) + card preference (card 4) + a stricter bar (commit 1, jump_gap 3) were locked together on the 4 tune runs (Open-Q lit +13, false ids ±0 — fitted after ~75 settings) and FAILED the held-out meaning talks: Open-Q false ids 18→23, sw/step 1.01→1.16, flicker up on 3 runs. Independent verification also found the repair's "0 correct words changed" claim false: spelled 4-letter acronyms are cut by the 3-token span cap ("r p m h" → "rpm h") and "l p d d r" fuzzes to "led" (~5% wrong rewrites, 0.3% on clean text).
 - Defaults restored to repair 0 / card −1 / commit 0 / jump_gap 2 (bit-exact with the pre-round rows); the code stays for re-tuning.
 - **Lesson:** three coupled levers tuned jointly on 4 runs over ~75 settings is a fitting exercise — the holdout caught it. Ship one lever at a time, each holdout-checked alone. Repair needs ≥4-token spans and an exact-letter-sequence guard before it is reconsidered; on its own at the old bar it bought lit at a high false cost (+13 lit, +10 false ids, +30 false s).
+
+## 2026-10-05 — Offline slide maps from a local model: fix-up, prompts v2-v4, spoken terms (AI_Handout only)
+Local maps from qwen3.5 via Ollama, scored with `clause_replay` (tune = original + jumpy, meaning held out). Best local
+total 148 lit (both v4 finalists) against the 155 target and Claude's 162. False ids and false seconds stayed within
+Claude's (4b v4: 9 / 32.9 against 14 / 37.7).
+- **Fix-up beats repair for bookkeeping.** The deterministic fix-up rescued 3/12 slides for 9b and 6/12 for 4b (v1
+  prompt). No slide falls back now; 4b used to lose 2. It never costs a model call, and the repair turn mostly echoed its
+  input. The gain is reliability, not lit. On every fixed 9b slide the per-slide lit was identical. On 4b, jumpy slide 1
+  went from 3/5 to 1/5, because there the fallback's all-singleton map beat the model's merged one.
+- **Ollama's `format` grammar does not hold integer enums, required keys or minItems/maxItems.** A key skeleton with
+  `"slide": 0` sent all 12 v2 slides to repair (177 s/slide). Items for arrows went missing, and talk came out with 3-4
+  phrases against a schema minimum of 5. Fix-up therefore sets the slide number and fills in missing items. Put counts in
+  the prose, and never write a value into a skeleton that the model could copy.
+- **The partition was not the bottleneck; summary wording was.** v2 lifted pair-F1 against Claude from 0.76 to 0.91, yet
+  tune lit went from 95 to 94. On slide 4 the partition matched Claude's and still lost 2 lit. The TinyBERT decider puts
+  the summary first in its unit text. A meta summary ("This panel shows...", "A feature card highlighting...") scored
+  -7..-10 on the clause that names the unit, while a content summary scored +3. The 9b kept writing meta summaries after
+  three different wordings.
+- **Prompt wording is fragile. Screen before a full run.** Asking for 6-8 talk phrases made the 9b pad with repeats (one
+  phrase 4x). Asking for "key terms" made it copy slide text into terms. A `"<key words>: ..."` summary shape collapsed
+  summaries into the slide text. A cheap screen: the decider margin (target logit minus best other) on the tune scripts'
+  written sentences, over 4 hard slides (~6 min of GPU). Use it to rank prompts. It is not a replacement for lit.
+- **Richer talk buys lit with false ids.** 9b v4 (560 talk phrases, close to Claude's 608) had tune lit 96 against 94-95,
+  but false ids 7 against 3-5 and false s 23 against 7-19. This is the same over-trigger seen with maps_v2.
+- **Spoken terms belong in code, not in the prompt.** Both models ignored "no digits" (11-25% of terms kept them).
+  `speak_terms` brings that to 0%, and tune lit and false ids did not change.
+- **Byte-determinism holds only on an idle GPU.** Isolated runs of 4b reproduced 4/4. The 9b reproduced 2/3 on slide 2,
+  diverging at a near-tie: close the talk list, or add a phrase. Slide 5 reproduced 3/3. Runs that shared the GPU with
+  another CUDA process, or with an aborted Ollama request still decoding, changed. Generate the maps once and keep them.
+  Do not count on a regeneration matching.
+- **Noise floor:** wording drift alone (the unpinned v1 9b against the pinned rerun) moved jumpy slide 2 by 2 lit. A tune
+  difference of 3 or less between variants is not a result.
