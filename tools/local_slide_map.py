@@ -60,18 +60,18 @@ at as one point:
   command, a number, a caption, a note, body text) into the title unit; give it its own unit.
 - every pointable element is in exactly one unit; a unit contains only pointable elements.
 For each unit write:
-- summary: one sentence restating what the unit actually says or shows, in plain words. Never
-  describe the element itself (its kind, its role or where it sits on the slide).
-- talk: 6 to 8 short phrases (three to eight words each), lowercase, that a presenter would SAY out
-  loud when turning to this unit: different paraphrases of its content in everyday words and
-  synonyms, what it means, the question it answers. Every phrase carries this unit's own idea, so it
-  fits this unit better than any other unit on the slide. Never copy a run of words from the slide
-  text; no filler that would fit any slide.
-- terms: 1 to 4 key terms of the unit written the way a person pronounces them: its key name or
-  phrase, and every number, range, measurement, symbol, acronym and product or code name in it.
-  Numbers in words, a range as two numbers in words joined by "to", an approximate value with
-  "about", units as full words, an acronym that is spelled out as its single letters separated by
-  spaces, symbols as the words for them. No digits and no symbols in terms.
+- summary: one sentence that tells the audience what this unit says, the way the presenter would
+  explain it: name its key thing with the slide's own key words, then say what it does or means.
+  Never name the element's kind (title, label, card, caption, bullet, text, box) or its position.
+- talk: 5 to 8 different short phrases, lowercase, that a presenter would actually SAY out loud when
+  turning to this unit, in their own spoken words: everyday words and synonyms for its idea, what it
+  means, the question it answers. Paraphrase; never copy a run of words from the slide text. No
+  generic phrases that would fit any slide, and never the same phrase twice.
+- terms: the spoken form of every number, range, measurement, symbol, acronym, product name and
+  code-like name in the unit, written the way a person pronounces it: numbers in words, a range as
+  two numbers in words joined by "to", an approximate value with "about", units as full words, an
+  acronym that is spelled out as its single letters separated by spaces, symbols as the words for
+  them. No digits and no symbols in terms. An empty list if the unit has none.
 Also give:
 - message: one sentence, the slide's main point.
 - relations between units: flow (a then b), part_of, explains, contrasts, same_row, same_col.
