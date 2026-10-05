@@ -225,11 +225,11 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
     P = paths(deck, root)
     slides, slide_size = _index(P)
     scripted, sheets = _pick(numbered(P.script, "md"), only), dict(_pick(numbered(P.cues, "json"), only))
-    if not scripted:
-        print(f"no scripts in {P.script}" + (f" for slide {only}" if only is not None else ""))
-        return 1
     if not sheets:
         print(no_sheets(P, only))
+        return 1
+    if not scripted:
+        print(f"no scripts in {P.script}" + (f" for slide {only}" if only is not None else ""))
         return 1
     P.out.mkdir(parents=True, exist_ok=True)
     parts, keys, refused = [], [], 0
