@@ -26,13 +26,17 @@ Decisions where the plan left details open:
   (0.4 s per word, 0.35 s between sentences), which only matters for the 3 s
   zoom default. Each structurally broken cue reports its first problem only;
   timeline checks (glide source, why, concurrency) then run on the rest.
+  Concurrency is counted in start order against the cues already accepted,
+  so only the extra mark/zoom is flagged (it is the one that gets dropped).
   Errors are ``"cue <i>: <keyword> ..."`` in cue order.
 - Why rule: the sentence's content words are ``script.norm`` (numbers as
-  words) + the plan's stemmer + stopwords; the target's words are its text
+  words) + the plan's stemmer + stopwords. The stemmer strips ``ing``/``ed``/
+  ``s`` (len > 4), then one trailing ``e`` (if 3+ letters remain), so
+  ``pages``/``page`` and ``grades``/``grading`` meet; the target's words are its text
   (or ``line_texts``) plus its unit's map ``talk`` and ``terms``. The flow
   exception needs a transition word anywhere in the anchor sentence (plan),
   not exactly at the anchor word (spec).
-- ``region`` must be four fractions inside the target: ``x, y >= 0``,
+- ``region`` (zoom only) must be four fractions inside the target: ``x, y >= 0``,
   ``w, h > 0``, ``x + w <= 1``, ``y + h <= 1``.
 """
 from __future__ import annotations
@@ -40,6 +44,7 @@ from __future__ import annotations
 import math
 
 from src.stt import _GENERIC_STOPWORDS
+from tools.video.geometry import union
 from tools.video.script import norm
 
 EFFECTS = ("focus", "underline", "ring", "glide", "zoom")
@@ -59,10 +64,11 @@ STOPWORDS = _GENERIC_STOPWORDS | {"s", "t", "d", "m", "ll", "re", "ve", "here", 
 def stem(word: str) -> str:
     w = word.lower()
     if len(w) > 4:
-        for suf in ("ing", "es", "ed", "s"):
+        for suf in ("ing", "ed", "s"):
             if w.endswith(suf):
-                return w[:-len(suf)]
-    return w
+                w = w[:-len(suf)]
+                break
+    return w[:-1] if w.endswith("e") and len(w) > 3 else w
 
 
 def content(text: str) -> set[str]:
@@ -74,12 +80,6 @@ def content(text: str) -> set[str]:
 
 def _box(b) -> tuple:
     return (b["x"], b["y"], b["w"], b["h"])
-
-
-def _union(boxes) -> tuple:
-    x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
-    x1, y1 = max(b[0] + b[2] for b in boxes), max(b[1] + b[3] for b in boxes)
-    return (x0, y0, x1 - x0, y1 - y0)
 
 
 def _units(slide) -> dict:
@@ -120,7 +120,7 @@ def _flow(slide, a, b) -> bool:
 
 # ---------- resolve ----------
 
-def resolve(cue: dict, slide: dict, sentences=()) -> dict:
+def resolve(cue: dict, slide: dict, sentences) -> dict:
     """Target ids, union bbox (inches) and, for underline, the line to mark."""
     members = _members(cue["target"], slide)
     if not members:
@@ -132,7 +132,7 @@ def resolve(cue: dict, slide: dict, sentences=()) -> dict:
         shared = [len(content(text) & said) for text, _ in lines]
         line = shared.index(max(shared))        # ties -> first line
     return {"ids": [e["id"] for e in members],
-            "bbox": _union([_box(e["bbox"]) for e in members]),
+            "bbox": union([_box(e["bbox"]) for e in members]),
             "line": line,
             "line_bbox": _box(lines[line][1]) if line is not None else None}
 
@@ -219,6 +219,8 @@ def _check(c, slide, sentences) -> str | None:
         return f"line {c['line']!r} is out of range (target has {n} lines)"
     if eff == "underline" and n == 0:
         return f"underline target {c['target']!r} has no text lines"
+    if "region" in c and eff != "zoom":
+        return "region only applies to a zoom"
     if "region" in c and not _region_ok(c["region"]):
         return f"region {c['region']!r} must be [x, y, w, h] fractions inside the target"
     return None
@@ -243,11 +245,14 @@ def validate(sheet, slide: dict, sentences, timings=None) -> list[str]:
     good = [cues[i] for i in ok]
     iv = _intervals(good, timings or _nominal(sentences))
     focus = None   # (target, end) of the latest focus/glide
+    marks, zooms = [], []   # accepted (start, end) intervals
     for k in sorted(range(len(good)), key=lambda k: (iv[k][0], k)):
         c, i, (t0, t1) = good[k], ok[k], iv[k]
         current = focus[0] if focus and focus[1] >= t0 else None
         if c["effect"] == "glide" and current is None:
             errors.append((i, "glide needs a current focus to move from"))
+        elif c["effect"] == "glide" and current == c["target"]:
+            errors.append((i, f"glide target {current!r} already has the focus"))
         sent = sentences[c["at"]["s"]]
         if not content(" ".join(sent)) & _target_words(c["target"], slide):
             flow = current is not None and _flow(slide, _unit_of(current, slide), _unit_of(c["target"], slide))
@@ -255,12 +260,16 @@ def validate(sheet, slide: dict, sentences, timings=None) -> list[str]:
                 errors.append((i, f"why: sentence {c['at']['s']} shares no content word with {c['target']!r}"
                                   f" and is not a transition to a flow successor of the focus"))
         if c["effect"] in MARKS:
-            live = sum(1 for m, d in enumerate(good) if d["effect"] in MARKS and iv[m][0] <= t0 < iv[m][1])
+            live = 1 + sum(a <= t0 < b for a, b in marks)
             if live > MAX_MARKS:
                 errors.append((i, f"concurrency: {live} marks (underline/ring) active at once, max {MAX_MARKS}"))
+            else:
+                marks.append((t0, t1))
         if c["effect"] == "zoom":
-            if any(d["effect"] == "zoom" and m != k and iv[m][0] <= t0 < iv[m][1] for m, d in enumerate(good)):
+            if any(a <= t0 < b for a, b in zooms):
                 errors.append((i, "zoom overlaps another zoom"))
+            else:
+                zooms.append((t0, t1))
         if c["effect"] in FOCI:
             focus = (c["target"], t1)
     return [f"cue {i}: {msg}" for i, msg in sorted(errors, key=lambda e: e[0])]

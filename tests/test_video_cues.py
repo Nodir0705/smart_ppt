@@ -38,7 +38,8 @@ SLIDE = {
             "u2": {"summary": "Stage A reads.", "talk": ["first it reads the page"], "terms": ["stage a", "ocr"]},
             "u3": {"summary": "Memory.", "talk": ["it runs on a modest gpu"], "terms": ["eight gigabytes"]},
         },
-        "relations": [{"from": "u2", "to": "u3", "type": "flow"}],
+        "relations": [{"from": "u2", "to": "u3", "type": "flow"},
+                      {"from": "u2", "to": "u1", "type": "explains"}],
         "order": ["u1", "u2", "u3"],
     },
 }
@@ -91,6 +92,8 @@ def test_stem_and_content_words():
     assert stem("reads") == stem("reading") == "read"
     assert stem("marked") == "mark" and stem("boxes") == "box"
     assert stem("pass") == "pass"                         # len <= 4: untouched
+    assert stem("pages") == stem("page")                  # plural of an -e word
+    assert stem("grades") == stem("grade") == stem("grading") == stem("graded")
     assert content("The marks, and reading!") == {"mark", "read"}
 
 
@@ -119,14 +122,29 @@ def test_positions_out_of_range_and_until_order():
 
 
 def test_second_focus_replaces_the_first():
-    # cue 0 says until (4,0) but cue 1 is a new focus -> allowed, not a conflict
-    assert validate(VALID, SLIDE, SENTENCES, TIMINGS) == []
+    # the first focus says until (4,0), but the second focus replaces it: no conflict
+    sheet = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5), "until": at(4, 0)},
+                      {"effect": "focus", "target": "u2", "at": at(1, 0)}]}
+    assert validate(sheet, SLIDE, SENTENCES, TIMINGS) == []
+    assert effective_until(sheet, TIMINGS)[0] == (5.0, 10.0)
 
 
 def test_third_mark_at_once_is_an_error():
     # glides do not end marks: ring e1 + underline e2 + ring e3 all live at (4,2)
     errs = errors_for(lambda c: c.append({"effect": "ring", "target": "e1", "at": at(1, 1)}))
     assert has(errs, 5, "concurrency")
+
+
+def test_same_word_flags_only_the_extra_cue():
+    marks = {"cues": [{"effect": "underline", "target": "e2", "at": at(2, 2)},
+                      {"effect": "ring", "target": "e2", "at": at(2, 2)},
+                      {"effect": "ring", "target": "e2", "at": at(2, 2)}]}
+    errs = validate(marks, SLIDE, SENTENCES)
+    assert len(errs) == 1 and has(errs, 2, "concurrency")
+    zooms = {"cues": [{"effect": "zoom", "target": "e2", "at": at(2, 4)},
+                      {"effect": "zoom", "target": "e2", "at": at(2, 4)}]}
+    errs = validate(zooms, SLIDE, SENTENCES)
+    assert len(errs) == 1 and has(errs, 1, "zoom")
 
 
 def test_overlapping_zoom_is_an_error():
@@ -140,20 +158,48 @@ def test_spotlight_only_on_focus():
     assert has(errors_for(lambda c: c[2].update(spotlight=True)), 2, "spotlight")
 
 
+def test_region_only_on_zoom_and_inside_the_target():
+    assert has(errors_for(lambda c: c[3].update(region=[0.5, 0.5, 0.6, 0.2])), 3, "region")   # x + w > 1
+    assert has(errors_for(lambda c: c[3].update(region=[0, 0, 1])), 3, "region")
+    assert has(errors_for(lambda c: c[5].update(region=[0, 0, 1, 1])), 5, "region")          # ring
+
+
 def test_glide_needs_a_current_focus():
     sheet = {"cues": [{"effect": "glide", "target": "u3", "at": at(4, 0)}]}
     assert has(validate(sheet, SLIDE, SENTENCES), 0, "glide")
+    # gliding to the target that already has the focus goes nowhere
+    assert has(errors_for(lambda c: c[4].update(target="u2", at=at(1, 3))), 4, "glide")
 
 
 def test_why_rule():
     # sentence 0 does not talk about the memory stat
     assert has(errors_for(lambda c: c[5].update(at=at(0, 1))), 5, "why")
-    # "Next" + no shared word, but u1 is not a flow successor of u2
+    # "Next" + no shared word, and u1 follows u2 only by "explains", not "flow"
     assert has(errors_for(lambda c: c[4].update(target="u1")), 4, "why")
     # flow successor of the focus, but no transition word in the sentence
     sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
                       {"effect": "glide", "target": "u3", "at": at(1, 3)}]}
     assert has(validate(sheet, SLIDE, SENTENCES), 1, "why")
+
+
+def without(unit, field):
+    slide = copy.deepcopy(SLIDE)
+    slide["map"]["info"][unit][field] = []
+    return slide
+
+
+def test_why_rule_uses_talk_terms_and_numbers():
+    talk = {"cues": [{"effect": "ring", "target": "e3", "at": at(0, 1)}]}
+    said = [["A", "modest", "card."]]                     # "modest" is only in u3's talk
+    assert validate(talk, SLIDE, said) == []
+    assert has(validate(talk, without("u3", "talk"), said), 0, "why")
+    terms = {"cues": [{"effect": "focus", "target": "u2", "at": at(0, 1)}]}
+    said = [["The", "OCR", "step."]]                      # "ocr" is only in u2's terms
+    assert validate(terms, SLIDE, said) == []
+    assert has(validate(terms, without("u2", "terms"), said), 0, "why")
+    # spoken "eight" matches the slide's "8" (terms removed so only the digit can match)
+    said = [["Just", "eight", "gigs."]]
+    assert validate(talk, without("u3", "terms"), said) == []
 
 
 def test_malformed_cues_are_errors_not_crashes():
