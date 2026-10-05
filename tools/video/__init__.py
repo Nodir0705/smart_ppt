@@ -14,7 +14,7 @@ def paths(deck: str, root: Path = ROOT) -> SimpleNamespace:
     bench, out = root / "out" / "bench" / deck, root / "out" / "video" / deck
     return SimpleNamespace(script=root / "script" / deck, index=bench / "map" / "index.scoped.json",
                            slides=bench / "default" / "slides", out=out, voice=out / "voice",
-                           timings=out / "timings", cues=out / "cues")
+                           timings=out / "timings", cues=out / "cues", packets=out / "packets")
 
 
 def numbered(d: Path, ext: str) -> list[tuple[int, Path]]:

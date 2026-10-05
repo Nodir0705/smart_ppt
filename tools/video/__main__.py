@@ -1,14 +1,20 @@
-"""CLI: ``python3 -m tools.video {voice,validate,render,all} <deck> [--only N] [--size WxH]``.
+"""CLI: ``python3 -m tools.video {packets-draft,voice,packets-direct,validate,render,all} <deck>
+[--only N] [--size WxH]``.
 
-``all`` = voice + render (render validates each sheet first); the draft and
-direct steps are Claude Code workflows that run between them. ffmpeg comes from
-PATH, with ``~/.venvs/ffmpeg-static/shim`` prepended when it exists.
+``packets-draft`` / ``packets-direct`` write the agent packets and end with a
+``todo:`` line (see ``packets``); the draft and direct steps themselves are the
+Claude Code workflows ``.claude/workflows/video-draft.js`` / ``video-direct.js``,
+which the CLI cannot run, so ``all`` = voice + render (render validates each
+sheet first). ffmpeg comes from PATH, with ``~/.venvs/ffmpeg-static/shim``
+prepended when it exists. ``--root`` (hidden, default the repo) lets tests run
+every step on a temporary tree.
 """
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
-from tools.video import render, voice
+from tools.video import ROOT, packets, render, voice
 
 
 def _size(s: str) -> tuple[int, int]:
@@ -18,18 +24,23 @@ def _size(s: str) -> tuple[int, int]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m tools.video")
-    ap.add_argument("step", choices=["voice", "validate", "render", "all"])
+    ap.add_argument("step", choices=["packets-draft", "voice", "packets-direct", "validate", "render", "all"])
     ap.add_argument("deck")
     ap.add_argument("--only", type=int, help="this slide number only")
     ap.add_argument("--size", type=_size, default=(1920, 1080), help="WxH, default 1920x1080")
+    ap.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     render.use_static_ffmpeg()
+    if a.step == "packets-draft":
+        packets.draft(a.deck, a.only, a.root)
+    if a.step == "packets-direct":
+        packets.direct(a.deck, a.only, a.root)
     if a.step in ("voice", "all"):
-        voice.voice(a.deck, a.only)
+        voice.voice(a.deck, a.only, a.root)
     if a.step == "validate":
-        return render.check(a.deck, a.only)
+        return render.check(a.deck, a.only, a.root)
     if a.step in ("render", "all"):
-        return render.render(a.deck, a.only, a.size)
+        return render.render(a.deck, a.only, a.size, a.root)
     return 0
 
 
