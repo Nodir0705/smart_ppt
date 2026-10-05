@@ -40,41 +40,47 @@ OPTIONS = {"temperature": 0, "top_k": 1, "seed": 0, "repeat_penalty": 1.0,
 IMAGE_W = 1280   # 2000 px slide PNG -> ~1/2 the vision tokens
 UID = "^u[0-9]+$"
 
-TASK = """You are preparing a slide for a live presenter tool. While the presenter talks, the tool
+TASK = """You are preparing one slide for a live presenter tool. While the presenter talks, the tool
 highlights the thing on the slide they are talking about. Write the slide's "understanding map".
 
-For every element decide:
+ITEMS. For every element give:
 - role, one of: title, section_label, card_heading, body, bullet, stat, caption, diagram_node,
   connector, table_cell, chart_bar, photo, icon, decoration, footer, code.
 - pointable: true if a presenter could talk about it and expect it highlighted (titles, section
-  labels, headings, text, numbers, photos, diagram boxes). false for decoration, arrows/lines
-  without text, footers, page numbers, logos repeated on every slide.
+  labels, headings, text, numbers, commands, photos, diagram boxes). false only for decoration,
+  arrows or lines without text, footers, page numbers and logos repeated on every slide.
 
-Then group the pointable elements into units: one unit = one thing the presenter talks about as a
-whole (a card = its heading + its body text; a photo + its caption; the title + its section label).
-Every pointable element belongs to exactly one unit; non-pointable elements belong to none. Keep
-separate points separate (each bullet of a list is usually its own unit unless they are one idea).
+UNITS. Group the pointable elements into units. A unit is the SMALLEST thing a presenter would point
+at as one point:
+- a heading and the text directly under it are one unit; a number and the caption that explains it
+  are one unit; a photo and its caption are one unit.
+- separate stats, separate cards, separate tiles, separate rows and separate list points are
+  separate units. Never make one unit out of a whole panel, column or list.
+- the title unit holds only the title and its small section label. Never put anything else (a
+  command, a number, a caption, a note, body text) into the title unit; give it its own unit.
+- every pointable element is in exactly one unit; a unit contains only pointable elements.
 For each unit write:
-- summary: one sentence on what the unit says.
-- talk: 5-10 natural, plain lowercase phrases a presenter would SAY when talking about this unit
-  without reading it out ("the before picture", "that number on the right", "the second stage").
-- terms: how numbers, acronyms and identifiers in it are spoken ("ninety five percent", "o c r").
+- summary: one plain sentence on what the unit tells the audience.
+- talk: 5 to 10 short lowercase phrases a presenter would actually SAY out loud when turning to this
+  unit, in their own spoken words: what it means, why it matters, the question it answers, a casual
+  way to refer to it. Paraphrase; never copy a run of words from the slide text. No generic phrases
+  that would fit any slide (naming only the kind of element or where it sits). Each phrase should
+  fit this unit better than any other unit on the slide.
+- terms: the spoken form of every number, range, measurement, symbol, acronym, product name and
+  code-like name in the unit, written the way a person pronounces it: numbers in words, a range as
+  two numbers in words joined by "to", an approximate value with "about", units as full words, an
+  acronym that is spelled out as its single letters separated by spaces, symbols as the words for
+  them. No digits and no symbols in terms. An empty list if the unit has none.
 Also give:
 - message: one sentence, the slide's main point.
 - relations between units: flow (a then b), part_of, explains, contrasts, same_row, same_col.
 - order: every uid exactly once, in the order a presenter would naturally cover them.
 Unit ids are u1, u2, u3, ...
 
-Format example (a different slide):
-{"slide": 4, "message": "one sentence: the slide's main point",
- "items": {"s4_e2": {"role": "card_heading", "pointable": true}, "s4_e3": {"role": "body", "pointable": true},
-           "s4_e9": {"role": "footer", "pointable": false}},
- "units": [{"uid": "u1", "members": ["s4_e2", "s4_e3"],
-            "summary": "Stage A reads the page with a vision-language model",
-            "talk": ["the reading stage", "how we turn pixels into text", "the first step", "where the scan gets read", "stage a"],
-            "terms": ["stage a", "o c r"]}],
- "relations": [{"from": "u1", "to": "u2", "type": "flow"}],
- "order": ["u1", "u2"]}
+JSON keys (values left empty here; write your own):
+{"slide": 0, "message": "", "items": {"<element id>": {"role": "", "pointable": true}},
+ "units": [{"uid": "u1", "members": [], "summary": "", "talk": [], "terms": []}],
+ "relations": [{"from": "u1", "to": "u2", "type": ""}], "order": []}
 """
 
 
@@ -314,8 +320,8 @@ def generate(packet: dict, chat, image: bool) -> tuple[dict, dict]:
             raw_errs = validate(m, packet)
             m, fixes = fixup(m, packet)
             errs = validate(m, packet)
-        except json.JSONDecodeError as ex:
-            m, raw_errs, fixes = None, [f"not valid JSON: {ex}"], {}
+        except (ValueError, TypeError, AttributeError, KeyError) as ex:   # bad JSON or wrong shape
+            m, raw_errs, fixes = None, [f"not a valid JSON map: {ex}"], {}
             errs = raw_errs
         st["errors"].append(raw_errs)   # the model's own errors, before fix-up
         st["fixes"].append(fixes)
@@ -380,12 +386,12 @@ class VramPeak:
         self._t.join()
 
 
-def rescued(stats: list[dict]) -> dict:
-    """{fix: slides it was applied to on a slide that fix-up made valid (result "fixed")}."""
+def rescued(stats: list[dict], result: str = "fixed") -> dict:
+    """{fix: slides it was applied to} over the last attempt of slides with this result."""
     out: dict[str, int] = {}
     for s in stats:
-        if s["result"] == "fixed":
-            for k in s["fixes"][0]:
+        if s["result"] == result:
+            for k in s["fixes"][-1]:
                 out[k] = out.get(k, 0) + 1
     return out
 
@@ -430,7 +436,7 @@ def cmd_gen(a) -> int:
                **{k: sum(s["result"] == r for s in stats)
                   for k, r in (("valid_first", "first"), ("fixed", "fixed"), ("repaired", "repaired"),
                                ("fallback", "fallback"))},
-               "rescued_by": rescued(stats),
+               "rescued_by": rescued(stats), "fixes_after_repair": rescued(stats, "repaired"),
                "s_per_slide": round(sum(s["wall_s"] for s in stats) / max(n, 1), 1),
                "vram_base_mib": vram.base, "vram_peak_mib": vram.peak,
                "backend": a.backend,
@@ -460,6 +466,43 @@ def compare(local: dict, ref: dict) -> dict:
             "role_eq": sum(li[i]["role"] == ri[i]["role"] for i in ids),
             "units_l": len(local["units"]), "units_r": len(ref["units"]),
             "confusions": [(ri[i]["role"], li[i]["role"]) for i in ids if li[i]["role"] != ri[i]["role"]]}
+
+
+def _norm(t: str) -> str:
+    return " " + " ".join(re.sub(r"[^0-9a-z]+", " ", (t or "").lower()).split()) + " "
+
+
+def quality(map_dir: Path, packets: Path) -> dict:
+    """Talk/terms shape of a map set. A talk phrase is verbatim when it occurs (lowercased,
+    punctuation dropped, whole words) inside one element's text; slides that fell back
+    (per _stats.json) are left out of `talk_verbatim_model`."""
+    st = map_dir / "_stats.json"
+    fell = {s["slide"] for s in json.loads(st.read_text())["per_slide"]
+            if s["result"] == "fallback"} if st.exists() else set()
+    q = {"units": 0, "talk": 0, "verbatim": 0, "talk_m": 0, "verbatim_m": 0, "no_letters": 0,
+         "terms": 0, "terms_digits": 0}
+    per_unit: dict[int, int] = {}
+    for p in sorted(map_dir.glob("slide_*.json")):
+        m = json.loads(p.read_text())
+        texts = [_norm(e.get("text")) for e in json.loads((packets / p.name).read_text())["elements"]]
+        for u in m["units"]:
+            q["units"] += 1
+            per_unit[len(u["talk"])] = per_unit.get(len(u["talk"]), 0) + 1
+            for t in u["talk"]:
+                v = _norm(t).strip() != "" and any(_norm(t) in x for x in texts)
+                q["talk"] += 1
+                q["verbatim"] += v
+                q["no_letters"] += not re.search("[a-z]", t.lower())
+                if m["slide"] not in fell:
+                    q["talk_m"] += 1
+                    q["verbatim_m"] += v
+            q["terms"] += len(u["terms"])
+            q["terms_digits"] += sum(any(c.isdigit() for c in t) for t in u["terms"])
+    return {"units": q["units"], "talk": q["talk"], "talk_per_unit": dict(sorted(per_unit.items())),
+            "talk_verbatim": round(q["verbatim"] / max(q["talk"], 1), 3),
+            "talk_verbatim_model": round(q["verbatim_m"] / max(q["talk_m"], 1), 3),
+            "talk_no_letters": q["no_letters"], "terms": q["terms"],
+            "terms_digits": round(q["terms_digits"] / max(q["terms"], 1), 3), "fell_back": sorted(fell)}
 
 
 def compare_dirs(local_dir: Path, ref_dir: Path) -> dict:
@@ -513,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "gen":
         return cmd_gen(a)
     if a.cmd == "compare":
-        print(json.dumps(compare_dirs(a.local_dir, a.ref)))
+        print(json.dumps({**compare_dirs(a.local_dir, a.ref),
+                          "quality": quality(a.local_dir, a.ref / "packets")}))
         return 0
     from src.build_index import build_index
     build_index(f"decks/{DECK}.pptx", f"out/bench_local/{a.name}/{DECK}",
