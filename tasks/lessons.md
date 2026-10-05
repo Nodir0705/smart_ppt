@@ -306,3 +306,29 @@ from the same input (the wav + 1 s of zero PCM) and replayed with Claude maps (`
   0.69 s). It averaged 1.0 core (sherpa 0.1) across 12 server threads that burst over every core.
 - **Next:** Whistle's lateness headroom could pay for a stricter first decision (min_words / jump_gap). The AI
   meaning holdout has now been seen for Whistle, so that test needs a fresh holdout.
+
+## 2026-10-05 — Local maps: the summary was not the bottleneck, talk is (AI_Handout only)
+Derived map sets from the qwen35_4b_v4_sp maps (`local_slide_map derive`, no regeneration), scored with `clause_replay`
+on tune (original + jumpy). Baseline 96 lit / 4 false ids / 17.6 false s. None of the variants beat it, and none
+reached the 155 / 3-talk target.
+- **Blanking every summary changed nothing** (96 / 4 / 17.6). A patched decider that drops the summary from the doc,
+  so the validator never sees it, gave 95 / 5 / 18.6. Summary := the member texts gave 93 / 5 / 19.5. The model
+  rewrite gave 95 / 5 / 20.8: one content sentence per unit, 69/74 accepted, 0 meta summaries left. The brief's
+  diagnosis ("the summary is read first, so meta summaries sink the clause") did not hold up when measured.
+- **The swap test locates it.** On the slide 4 command unit, for "it's just one command, pointed at the scanned
+  handout": Claude summary + local talk scored −6.9, local summary + Claude talk scored +6.5. The talk carries the
+  score. Claude's talk says what you DO with the unit ("you point it at the pdf", "you just run one script"). The local
+  talk names its kind ("the command", "the code", "the syntax").
+- **A context-free talk rewrite makes things worse.** The 4b got only the unit's text and invented meaning for short
+  units ("8 GB / GPU" → "your machine will feel like a true gaming beast", "14/15 tense-chart page" → "this diagram
+  helps us see how things change"). Tune went to 92 / 7 / 29.8. A talk pass needs slide context or the image, and the
+  4b may simply be too small for it.
+- **The gap to Claude (tune 105 against 96) is mostly partition.** Slide 1 −4 (e2+e3 merged), slide 7 −2 (e4+e5
+  merged), slide 4 −3 (same partition as Claude, so the loss is talk), slide 3 −1, slide 8 +1.
+- **Talk cleanup is neutral and safe.** Digits spoken, in-unit duplicates dropped, phrases on 3 or more slides dropped
+  (3 of them: "how it works", "the first step", "the main topic"), refilled up to 3 twice. All 3 talks scored
+  identically (148 / 9 / 32.6 against 32.9), and digits in talk went from 22 to 0.
+- **Under `think=false`, qwen3.5:4b ignored a small `format` schema** and answered in plain text. Every summary was
+  rejected until the parser accepted plain text. Use plain one-per-line output for short answers.
+- A meta-word check needs an own-text exemption. "a consumer card", "instantly shows" and "phone photos" are content.
+- Both rewrite passes reproduced byte-identically (2/2) on an idle GPU: summary 3.8 s/slide, talk 8.5 s/slide.
