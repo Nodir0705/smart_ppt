@@ -1,6 +1,7 @@
 import json
 
-from tools.local_slide_map import (compare, fallback_map, fixup, generate, map_schema, speak_terms, spoken,
+from tools.local_slide_map import (clean_talk, compare, deck_repeats, fallback_map, fixup, generate, map_schema,
+                                   meta_words, rewrite_summary, speak_terms, spoken,
                                    spoken_terms)
 from tools.slide_map import validate
 
@@ -125,3 +126,32 @@ def test_spoken_forms_of_model_terms():
         "g p u s", "a f", "python nano dot py", "the problem", "two point five times"]
     m = speak_terms(dict(GOOD, units=[dict(GOOD["units"][0], terms=["OCR", "o c r", "", "~1 min"])]))
     assert m["units"][0]["terms"] == ["o c r", "about one minute"]
+
+
+def test_meta_words_spare_the_units_own_words():
+    assert meta_words("The command to run it is shown at the top of the slide.", "python nano.py") == [
+        "shown", "at the top", "slide"]
+    assert meta_words("It runs on a consumer card with 8 GB.", "8 GB / GPU — a consumer card") == []
+    assert meta_words("It's just one command.", "python nano.py") == []
+
+
+def test_rewrite_summary_falls_back_to_the_text():
+    chat, calls = _client([json.dumps({"summary": "It is one command  on the scan."}),
+                           json.dumps({"summary": "This panel shows the command."}), "not json", '{"x": 1}'])
+    assert rewrite_summary("python nano.py handout.pdf", "old", chat)[0] == "It is one command on the scan."
+    s, st = rewrite_summary("python nano.py\nhandout.pdf", "old", chat)
+    assert s == "python nano.py handout.pdf" and st["meta"] == ["panel", "shows"]
+    assert rewrite_summary("x", "old", chat)[0] == "not json" and len(calls) == 3   # plain-text answer
+    assert rewrite_summary("x", "old", chat)[0] == "x"   # JSON without a summary
+    assert rewrite_summary("", "old", chat) == ("old", {"result": "no_text"}) and len(calls) == 4
+
+
+def test_clean_talk_speaks_digits_and_drops_deck_repeats():
+    maps = [{"slide": n, "units": [{"talk": ["How it works", "x" + str(n)]}]} for n in (1, 2, 3)]
+    assert deck_repeats(maps) == {" how it works "}
+    rep = {" how it works ", " the main topic "}
+    assert clean_talk(["15 to 33 items", "how it works", "a", "a", "b"], rep) == (
+        ["fifteen to thirty three items", "a", "b"], 0)
+    assert clean_talk(["how it works", "the main topic", "a"], rep) == (
+        ["how it works", "the main topic", "a"], 2)   # refilled to the validator's floor of 3
+    assert clean_talk(["one class", "one class", "one class"], set()) == (["one class"] * 3, 2)

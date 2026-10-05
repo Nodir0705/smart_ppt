@@ -137,9 +137,10 @@ def slide_image(png: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def ollama_chat(model: str, messages: list[dict], schema: dict, think: bool | None) -> dict:
+def ollama_chat(model: str, messages: list[dict], schema: dict, think: bool | None,
+                options: dict | None = None) -> dict:
     body = {"model": model, "messages": messages, "format": schema, "stream": False,
-            "options": OPTIONS, "keep_alive": "10m"}
+            "options": options or OPTIONS, "keep_alive": "10m"}
     if think is not None:
         body["think"] = think
     req = urllib.request.Request(OLLAMA + "/api/chat", json.dumps(body).encode(),
@@ -267,6 +268,130 @@ def speak_terms(m: dict) -> dict:
     for u in m["units"]:
         u["terms"] = list(dict.fromkeys(x for x in map(spoken, u.get("terms") or []) if x))
     return m
+
+
+# ---- derived map sets: new summaries / cleaned talk on an existing map set, no regeneration ----
+
+# words that describe the slide or the element instead of what it says
+META = re.compile(r"\b(slides?|panels?|cards?|box(?:es)?|sections?|titled?|headings?|bullets?|captions?|labels?|"
+                  r"legend|images?|photos?|shows?|shown|showing|displays?|displayed|highlights?|highlighting|"
+                  r"located|introduces?|explains?|describes?|presents?|illustrates?|outlines?|depicts?|"
+                  r"indicates?|states?|at the (?:top|bottom)|on the (?:left|right))\b", re.I)
+
+
+def meta_words(summary: str, text: str) -> list[str]:
+    """Meta words in `summary` that the unit's own `text` does not use ("a consumer card" is content)."""
+    own = _norm(text)
+    return [w for w in (x.group(0).lower() for x in META.finditer(summary or "")) if _norm(w) not in own]
+
+
+def unit_text(u: dict, els: dict, sep: str = " ") -> str:
+    """The unit's member texts, whitespace collapsed, joined by `sep`."""
+    return sep.join(t for i in u["members"] if (t := " ".join((els[i].get("text") or "").split())))
+
+
+SUMMARY_PROMPT = """Here is the text of one point on a presentation slide:
+
+{text}
+
+Write ONE sentence that says what this point tells the audience: the claim or fact itself, the way the
+presenter would say it out loud, in plain words, keeping its key words. State the point directly.
+Never talk about the slide or the text itself: do not use the words slide, panel, card, box, section,
+title, heading, bullet, caption, label, legend, image, photo, shows, displays, highlights, explains,
+describes, introduces, located, top, bottom, left or right."""
+SUMMARY_SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}},
+                  "required": ["summary"], "additionalProperties": False}
+
+
+def rewrite_summary(text: str, old: str, chat) -> tuple[str, dict]:
+    """(summary, stats): one model sentence on what `text` says; a sentence with meta words
+    (or none) falls back to the text itself, a unit without text keeps `old`."""
+    if not text:
+        return old, {"result": "no_text"}
+    r = chat([{"role": "user", "content": SUMMARY_PROMPT.format(text=text)}], SUMMARY_SCHEMA)
+    raw = r["message"]["content"]
+    try:   # with think=false Ollama may drop `format` and answer in plain text
+        s = json.loads(raw)["summary"]
+    except (ValueError, KeyError, TypeError):
+        s = raw if "{" not in raw else ""
+    s = " ".join(str(s).split())
+    bad = meta_words(s, text) if s else ["<empty>"]
+    st = {"result": "rejected" if bad else "model", "raw": raw, "meta": bad, "eval_count": r.get("eval_count")}
+    return (" ".join(text.split()) if bad else s), st
+
+
+def deck_repeats(maps: list[dict], n: int = 3) -> set[str]:
+    """Talk phrases (normalized) used on `n` or more slides of the deck."""
+    slides: dict[str, set[int]] = {}
+    for m in maps:
+        for u in m["units"]:
+            for t in u["talk"]:
+                slides.setdefault(_norm(t), set()).add(m["slide"])
+    return {t for t, s in slides.items() if len(s) >= n}
+
+
+def clean_talk(talk: list[str], repeats: set[str]) -> tuple[list[str], int]:
+    """(talk, refilled): digits in spoken form, in-unit duplicates and deck-repeated phrases
+    dropped; dropped repeats come back in order while fewer than 3 remain (validator floor)."""
+    said = [spoken(t) if re.search(r"\d", t) else t for t in talk]
+    keep = [k for k, t in enumerate(said) if t not in said[:k] and _norm(t) not in repeats]
+    refill = [k for k in range(len(said)) if k not in keep][:max(0, 3 - len(keep))]
+    return [said[k] for k in sorted(keep + refill)], len(refill)
+
+
+def cmd_derive(a) -> int:
+    src = Path(a.src)
+    out = Path(a.out_root) / a.name / DECK
+    out.mkdir(parents=True, exist_ok=True)
+    maps = [json.loads(p.read_text()) for p in sorted(src.glob("slide_*.json"))]
+    repeats = deck_repeats(maps) if a.talk_clean else set()
+    if a.summary == "model":
+        if a.num_gpu is not None:
+            OPTIONS["num_gpu"] = a.num_gpu
+        opts = dict(OPTIONS, num_predict=160)
+        think = False if a.no_think else None
+
+        def chat(messages, schema):
+            return ollama_chat(a.model, messages, schema, think, opts)
+        unload(a.model)
+    per_slide, refilled = [], 0
+    for m in maps:
+        pk = json.loads((Path(a.packets) / f"slide_{m['slide']:03d}.json").read_text())
+        els = {e["id"]: e for e in pk["elements"]}
+        t0, units = time.perf_counter(), []
+        for u in m["units"]:
+            text, st = unit_text(u, els), {"uid": u["uid"]}
+            if a.summary == "blank":
+                u["summary"] = " "   # the validator needs a summary; " " never reaches map_phrases
+            elif a.summary == "text":
+                u["summary"] = text or u["summary"]
+            elif a.summary == "model":
+                u["summary"], s = rewrite_summary(unit_text(u, els, "\n"), u["summary"], chat)
+                st.update(s)
+            if a.talk_clean:
+                u["talk"], k = clean_talk(u["talk"], repeats)
+                refilled += k
+            units.append(st)
+        errs = validate(m, pk)
+        if errs:
+            raise SystemExit(f"slide {m['slide']}: derived map invalid: {errs}")
+        (out / f"slide_{m['slide']:03d}.json").write_text(json.dumps(m, indent=1, ensure_ascii=False))
+        per_slide.append({"slide": m["slide"], "result": "derived", "units": units,
+                          "wall_s": round(time.perf_counter() - t0, 2)})
+        print(f"slide {m['slide']:3d} {per_slide[-1]['wall_s']:6.1f}s", flush=True)
+    if a.summary == "model":
+        unload(a.model)
+    n = len(per_slide)
+    us = [x for s in per_slide for x in s["units"]]
+    summary = {"source": str(src), "name": a.name, "summary": a.summary, "talk_clean": a.talk_clean,
+               "model": a.model if a.summary == "model" else None, "slides": n,
+               "summaries": {r: sum(x.get("result") == r for x in us) for r in ("model", "rejected", "no_text")},
+               "deck_repeats": sorted(repeats), "talk_refilled": refilled,
+               "s_per_slide": round(sum(s["wall_s"] for s in per_slide) / max(n, 1), 1),
+               "options": opts if a.summary == "model" else None, "per_slide": per_slide}
+    (out / "_stats.json").write_text(json.dumps(summary, indent=1))
+    print(json.dumps({k: v for k, v in summary.items() if k not in ("per_slide", "options")}))
+    return 0
 
 
 NOT_POINTABLE_ROLES = {"footer", "decoration", "icon"}
@@ -523,13 +648,17 @@ def quality(map_dir: Path, packets: Path) -> dict:
     fell = {s["slide"] for s in json.loads(st.read_text())["per_slide"]
             if s["result"] == "fallback"} if st.exists() else set()
     q = {"units": 0, "talk": 0, "verbatim": 0, "talk_m": 0, "verbatim_m": 0, "no_letters": 0,
-         "terms": 0, "terms_digits": 0}
+         "terms": 0, "terms_digits": 0, "summary_meta": 0, "talk_digits": 0}
     per_unit: dict[int, int] = {}
-    for p in sorted(map_dir.glob("slide_*.json")):
-        m = json.loads(p.read_text())
-        texts = [_norm(e.get("text")) for e in json.loads((packets / p.name).read_text())["elements"]]
+    maps = [json.loads(p.read_text()) for p in sorted(map_dir.glob("slide_*.json"))]
+    for m in maps:
+        els = json.loads((packets / f"slide_{m['slide']:03d}.json").read_text())["elements"]
+        texts = [_norm(e.get("text")) for e in els]
+        by_id = {e["id"]: e for e in els}
         for u in m["units"]:
             q["units"] += 1
+            q["summary_meta"] += bool(meta_words(u["summary"], unit_text(u, by_id)))
+            q["talk_digits"] += sum(bool(re.search(r"\d", t)) for t in u["talk"])
             per_unit[len(u["talk"])] = per_unit.get(len(u["talk"]), 0) + 1
             for t in u["talk"]:
                 v = _norm(t).strip() != "" and any(_norm(t) in x for x in texts)
@@ -544,7 +673,8 @@ def quality(map_dir: Path, packets: Path) -> dict:
     return {"units": q["units"], "talk": q["talk"], "talk_per_unit": dict(sorted(per_unit.items())),
             "talk_verbatim": round(q["verbatim"] / max(q["talk"], 1), 3),
             "talk_verbatim_model": round(q["verbatim_m"] / max(q["talk_m"], 1), 3),
-            "talk_no_letters": q["no_letters"], "terms": q["terms"],
+            "talk_no_letters": q["no_letters"], "talk_digits": q["talk_digits"],
+            "talk_deck_repeats": len(deck_repeats(maps)), "summary_meta": q["summary_meta"], "terms": q["terms"],
             "terms_digits": round(q["terms_digits"] / max(q["terms"], 1), 3), "fell_back": sorted(fell)}
 
 
@@ -592,12 +722,26 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("compare")
     c.add_argument("local_dir", type=Path)
     c.add_argument("--ref", type=Path, default=Path(f"out/maps/{DECK}"))
+    d = sub.add_parser("derive", help="a new map set from an existing one: new summaries and/or cleaned talk")
+    d.add_argument("src", help="source map dir, e.g. out/maps_local/qwen35_4b_v4_sp/AI_Handout_Checker")
+    d.add_argument("name", help="output folder name")
+    d.add_argument("--summary", default="keep", choices=("keep", "blank", "text", "model"),
+                   help="blank: ' '; text: the unit's member texts; model: one content sentence per unit")
+    d.add_argument("--talk-clean", action="store_true",
+                   help="digits in talk spoken, phrases on 3+ slides dropped")
+    d.add_argument("--model", default="qwen3.5:4b")
+    d.add_argument("--no-think", action="store_true")
+    d.add_argument("--num-gpu", type=int, default=None)
+    d.add_argument("--packets", default=f"out/maps/{DECK}/packets")
+    d.add_argument("--out-root", default="out/maps_local")
     b = sub.add_parser("build")
     b.add_argument("name")
     b.add_argument("--maps", type=Path, default=None, help="default out/maps_local/<name>/<deck>")
     a = ap.parse_args(argv)
     if a.cmd == "gen":
         return cmd_gen(a)
+    if a.cmd == "derive":
+        return cmd_derive(a)
     if a.cmd == "compare":
         print(json.dumps({**compare_dirs(a.local_dir, a.ref),
                           "quality": quality(a.local_dir, a.ref / "packets")}))
