@@ -332,3 +332,30 @@ reached the 155 / 3-talk target.
   rejected until the parser accepted plain text. Use plain one-per-line output for short answers.
 - A meta-word check needs an own-text exemption. "a consumer card", "instantly shows" and "phone photos" are content.
 - Both rewrite passes reproduced byte-identically (2/2) on an idle GPU: summary 3.8 s/slide, talk 8.5 s/slide.
+
+## 2026-10-05 — First-decision timing per STT engine: Whistle's head start does not buy precision (AI_Handout only)
+Swept min_words / min_content (new, default 0 = off) / gap / jump_gap / commit with cached-decider replay on tune =
+original + jumpy + meaning (Claude maps), rule pre-registered before any sweep row: max lit s.t. false ids <= 14 and
+false s <= 37.7 (sherpa-default sums), sw/step <= sherpa + 0.05 per talk, all +-1-step neighbours passing, fallback =
+defaults. Then the sealed `casual` talk once. Nothing adopted; no default changed.
+- **One lever at a time, Whistle (162 lit / 21 false ids / 57.4 false s / mean late 2.16 s):** min_words 6-7 → 19
+  false ids, 8 → 17 (161 lit, late 2.93); commit 1.5-2 → 18-17 (161 lit); min_content 2 → 18, 3 → 17 (160 lit,
+  late 2.52). gap and jump_gap hardly move false ids (jump_gap 3.5: false s −1.9). Lit barely moves on any lever.
+- **Combined, inside the grid (576 configs): 0 pass C1 or C2.** Frontier 161 / 16 / 42.4 at late 2.27 s
+  (min_content 2, jump_gap 3.5, commit 1). The gates remove about 5 of Whistle's 7 extra false ids, not all.
+- **Past the grid (exploration, not lockable): matching sherpa's false bar costs the head start.** min_words 8-9,
+  commit 1.5-2, min_content 2-3 reach 9-13 false ids / 29-37.5 false s, but at 154-157 lit and mean late 2.96-3.08 s,
+  later than sherpa-default (2.62). Whistle's 0.3-0.6 s lead is worth less than its extra early fragments cost.
+- **min_content works as intended on fragments** ("on the left is a" now holds) and is plateau-safe for sherpa (mc 2
+  at min_words 6: 12 false ids / 33.1 s, lit 162), but it is not needed for any locked row; it ships OFF.
+- **Plateau artifact on sherpa:** the rule picked min_words 6 only because the defaults' min_words-4 neighbour fails
+  (17 false ids). On tune it ties on lit, −1.4 false s, +0.25 s late. Casual: 52 / 5 / 13.2 against 52 / 6 / 13.8,
+  late 2.56 against 2.26. Not a gain worth +0.3 s.
+- **Casual (sealed, scored once): Whistle-as-is 55/56 · 5 · 18.2 s · sw 1.20 · late 1.95 against sherpa 52/56 · 6 ·
+  13.8 s · 1.06 · 2.26.** It fails on false s, so not adopted. +3 lit is at the noise floor; the extra false time
+  and sw/step are the same pattern as on tune. The casual verdict tested Whistle with defaults (no eligible config),
+  not the stricter first decision.
+- **Method:** a dict cache on `decide` keyed by (clause, context, unit uid+text+summary), warmed once at the lowest
+  min_words, makes every config ~4 s for 3 talks (0 misses afterwards); the cached default row matched
+  `clause_replay` exactly. `clause_replay --styles casual` now works (SCRIPTS has it; `--record` and the defaults
+  still cover only original / jumpy / meaning).

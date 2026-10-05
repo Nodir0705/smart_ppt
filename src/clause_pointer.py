@@ -26,6 +26,10 @@ the previous clause as context) refers to:
   (non-title) unit whose score is within ``card`` of it, the card lights, and a
   move between a unit and its own card is no topic jump (``gap``, not
   ``jump_gap``);
+* ``min_content`` (default off): a clause's first decision also waits until it
+  says that many content words (``_words`` stems minus ``FILLER``: function,
+  discourse and position words), so "on the left is a" no longer lights the
+  card whose position term it matches;
 * a clause that commits to nothing HOLDS the box; boundaries keep the box.
   There is no clear: only a slide change resets.
 
@@ -50,6 +54,14 @@ from .asr_repair import SoundRepair
 MIN_PAUSE_S = 0.25
 TITLE_ROLES = {"title", "section_label"}
 CARD_RELATIONS = ("part_of", "explains")   # child -> the card / heading it belongs to
+# words (>= 4 letters) that say nothing about a unit; position words included, since the
+# position terms ("on the left") are what a 5-word fragment matches
+FILLER_WORDS = """this that these those there here then than they them their theirs what which when
+where while with have from into about just like also some very really actually okay well going gonna
+wanna want will would could should does doing done being been were your yours it's that's here's
+there's let's we're you're they're look next first other each every thing things kind sort much more
+most only even still back over same take make made basically right left bottom middle center centre
+side corner above below upper lower""".split()
 
 
 class PauseDetector:
@@ -146,6 +158,7 @@ class ClauseParams:
     title_extra: float = 4.0  # extra over NONE for title / section-label units
     repair: float = 0.0       # sound-based ASR repair to the slide's words: max phoneme distance (<= 0 = off)
     card: float = -1.0        # light the parent card when it is within this of a winning child (< 0 = off)
+    min_content: int = 0      # content words a clause needs before its first decision (0 = off)
 
 
 @dataclass
@@ -197,6 +210,8 @@ class ClausePointer:
             clause, ctx = self.normalizer(clause), self.normalizer(ctx)
         if self.repair is not None:
             clause, ctx = self.repair(clause), self.repair(ctx)
+        if self.committed is None and len(_words(clause) - FILLER) < self.p.min_content:
+            return Decision(self.active, "hold" if self.active else "noop", clause=clause)
         scores = self.decider.decide(clause, ctx, self.units)
         return self._commit(scores, clause)
 
@@ -236,3 +251,6 @@ class ClausePointer:
 def _words(text: str) -> set[str]:
     """Content-word stems (first 5 letters of words >= 4 long) for the title gate."""
     return {w[:5] for w in re.findall(r"[a-z0-9][a-z0-9']+", text.lower()) if len(w) >= 4}
+
+
+FILLER = _words(" ".join(FILLER_WORDS))
