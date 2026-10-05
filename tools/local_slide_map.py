@@ -14,6 +14,7 @@ form (`speak_terms`: the model leaves digits and acronyms in). Raw replies go to
     python3 -m tools.local_slide_map gen --model qwen2.5:7b --name qwen25_7b_text --no-image
     python3 -m tools.local_slide_map compare out/maps_local/qwen25vl7b/AI_Handout_Checker
     python3 -m tools.local_slide_map build qwen25vl7b      # index -> out/bench_local/<name>/<deck>
+    python3 -m tools.local_slide_map derive out/maps_local/qwen35_4b_v4_sp/AI_Handout_Checker v4sp_talk --talk-clean
 """
 from __future__ import annotations
 
@@ -139,8 +140,10 @@ def slide_image(png: str) -> str:
 
 def ollama_chat(model: str, messages: list[dict], schema: dict, think: bool | None,
                 options: dict | None = None) -> dict:
-    body = {"model": model, "messages": messages, "format": schema, "stream": False,
+    body = {"model": model, "messages": messages, "stream": False,
             "options": options or OPTIONS, "keep_alive": "10m"}
+    if schema is not None:
+        body["format"] = schema
     if think is not None:
         body["think"] = think
     req = urllib.request.Request(OLLAMA + "/api/chat", json.dumps(body).encode(),
@@ -320,6 +323,42 @@ def rewrite_summary(text: str, old: str, chat) -> tuple[str, dict]:
     return (" ".join(text.split()) if bad else s), st
 
 
+TALK_PROMPT = """Here is the text of one point on a presentation slide:
+
+{text}
+
+A presenter is about to talk about this point. Write 5 to 7 different short phrases (3 to 8 words each)
+they might SAY out loud while talking about it: what you do with it, what it means or why it matters,
+in everyday spoken words and synonyms, not words copied from the text. Never just name what kind of
+thing it is (not "the command", "the result", "the main idea") and never talk about the slide.
+Numbers in words. One phrase per line, nothing else."""
+
+
+def rewrite_talk(text: str, old: list[str], chat) -> tuple[list[str], dict]:
+    """(talk, stats): the model's spoken phrases for `text`, one per line, lowercased; phrases
+    with meta words and in-unit repeats dropped, capped at the old count (max 7) so the
+    decider doc does not grow, refilled from `old` below 3. No text: `old` unchanged."""
+    if not text:
+        return old, {"result": "no_text"}
+    r = chat([{"role": "user", "content": TALK_PROMPT.format(text=text)}], None)
+    raw = r["message"]["content"]
+    lines = [" ".join(re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", x).strip(' "\'').lower().split())
+             for x in raw.splitlines()]
+    talk, meta = [], 0
+    for t in lines:
+        if not t or t in talk:
+            continue
+        if meta_words(t, text):
+            meta += 1
+            continue
+        talk.append(t)
+    got = len(talk)
+    talk = talk[:min(7, len(old))]
+    talk += [t for t in old if t not in talk][:max(0, 3 - len(talk))]
+    return talk, {"result": "model", "raw": raw, "phrases": got, "meta": meta,
+                  "refilled": max(0, 3 - min(got, 7, len(old))), "eval_count": r.get("eval_count")}
+
+
 def deck_repeats(maps: list[dict], n: int = 3) -> set[str]:
     """Talk phrases (normalized) used on `n` or more slides of the deck."""
     slides: dict[str, set[int]] = {}
@@ -345,7 +384,8 @@ def cmd_derive(a) -> int:
     out.mkdir(parents=True, exist_ok=True)
     maps = [json.loads(p.read_text()) for p in sorted(src.glob("slide_*.json"))]
     repeats = deck_repeats(maps) if a.talk_clean else set()
-    if a.summary == "model":
+    model = a.summary == "model" or a.talk == "model"
+    if model:
         if a.num_gpu is not None:
             OPTIONS["num_gpu"] = a.num_gpu
         opts = dict(OPTIONS, num_predict=160)
@@ -368,6 +408,9 @@ def cmd_derive(a) -> int:
             elif a.summary == "model":
                 u["summary"], s = rewrite_summary(unit_text(u, els, "\n"), u["summary"], chat)
                 st.update(s)
+            if a.talk == "model":
+                u["talk"], s = rewrite_talk(unit_text(u, els, "\n"), u["talk"], chat)
+                st["talk"] = s
             if a.talk_clean:
                 u["talk"], k = clean_talk(u["talk"], repeats)
                 refilled += k
@@ -379,16 +422,18 @@ def cmd_derive(a) -> int:
         per_slide.append({"slide": m["slide"], "result": "derived", "units": units,
                           "wall_s": round(time.perf_counter() - t0, 2)})
         print(f"slide {m['slide']:3d} {per_slide[-1]['wall_s']:6.1f}s", flush=True)
-    if a.summary == "model":
+    if model:
         unload(a.model)
     n = len(per_slide)
     us = [x for s in per_slide for x in s["units"]]
-    summary = {"source": str(src), "name": a.name, "summary": a.summary, "talk_clean": a.talk_clean,
-               "model": a.model if a.summary == "model" else None, "slides": n,
+    tk = [x["talk"] for x in us if "talk" in x]
+    summary = {"source": str(src), "name": a.name, "summary": a.summary, "talk": a.talk, "talk_clean": a.talk_clean,
+               "model": a.model if model else None, "slides": n,
                "summaries": {r: sum(x.get("result") == r for x in us) for r in ("model", "rejected", "no_text")},
+               "talk_model": {k: sum(x.get(k, 0) for x in tk) for k in ("phrases", "meta", "refilled")},
                "deck_repeats": sorted(repeats), "talk_refilled": refilled,
                "s_per_slide": round(sum(s["wall_s"] for s in per_slide) / max(n, 1), 1),
-               "options": opts if a.summary == "model" else None, "per_slide": per_slide}
+               "options": opts if model else None, "per_slide": per_slide}
     (out / "_stats.json").write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k not in ("per_slide", "options")}))
     return 0
@@ -727,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("name", help="output folder name")
     d.add_argument("--summary", default="keep", choices=("keep", "blank", "text", "model"),
                    help="blank: ' '; text: the unit's member texts; model: one content sentence per unit")
+    d.add_argument("--talk", default="keep", choices=("keep", "model"),
+                   help="model: 5-7 spoken phrases per unit from the member texts, capped at the old count")
     d.add_argument("--talk-clean", action="store_true",
                    help="digits in talk spoken, phrases on 3+ slides dropped")
     d.add_argument("--model", default="qwen3.5:4b")

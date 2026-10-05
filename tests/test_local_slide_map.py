@@ -1,7 +1,7 @@
 import json
 
 from tools.local_slide_map import (clean_talk, compare, deck_repeats, fallback_map, fixup, generate, map_schema,
-                                   meta_words, rewrite_summary, speak_terms, spoken,
+                                   meta_words, rewrite_summary, rewrite_talk, speak_terms, spoken,
                                    spoken_terms)
 from tools.slide_map import validate
 
@@ -155,3 +155,13 @@ def test_clean_talk_speaks_digits_and_drops_deck_repeats():
     assert clean_talk(["how it works", "the main topic", "a"], rep) == (
         ["how it works", "the main topic", "a"], 2)   # refilled to the validator's floor of 3
     assert clean_talk(["one class", "one class", "one class"], set()) == (["one class"] * 3, 2)
+
+
+def test_rewrite_talk_parses_lines_gates_and_caps():
+    reply = '1. "You point it at the PDF"\n- this panel lists it\n\nyou point it at the pdf\nrun one script\na\nb\nc\nd\ne'
+    chat, _ = _client([reply, "only one"])
+    talk, st = rewrite_talk("python nano.py handout.pdf", ["o1", "o2", "o3", "o4"], chat)
+    assert talk == ["you point it at the pdf", "run one script", "a", "b"]   # capped at the old count
+    assert (st["phrases"], st["meta"], st["refilled"]) == (7, 1, 0)
+    talk, st = rewrite_talk("x", ["o1", "o2", "o3"], chat)
+    assert talk == ["only one", "o1", "o2"] and st["refilled"] == 2
