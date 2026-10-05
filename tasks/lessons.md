@@ -275,3 +275,34 @@ Claude's (4b v4: 9 / 32.9 against 14 / 37.7).
 - **Noise floor:** two 9b runs of the same prompt moved jumpy slide 2 by 2 lit, through wording drift alone. The v1 run
   was unpinned, and the rerun shared the GPU with a scoring job, so the cause is not established. A tune difference of
   3 or less between variants is not a result.
+
+## 2026-10-05 — Whistle STT and sherpa hotwords: better transcripts, no pointer gain (AI_Handout only)
+Built `WhistleEngine` (Cactus Whistle in a subprocess; VAD segments end at 150 ms of silence, cut at <= 5.12 s,
+re-decoded every 0.5 s of audio) and `SherpaEngine(hotwords_score)` (commit 0741ee2). All streams were recorded
+from the same input (the wav + 1 s of zero PCM) and replayed with Claude maps (`map`). Tune = original + jumpy.
+| engine | WER / slide terms | tune lit | false ids | false s | sw/step | late med | holdout meaning lit · false · false s |
+|---|---|---|---|---|---|---|---|
+| sherpa greedy (default) | 7.99 / 84.9% | 105/109 | 6 | 15.0 | 1.12, 1.09 | 2.35, 3.06 | 57/59 · 8 · 22.7 |
+| sherpa hw 1.5, per-slide terms | 7.68 / 88.4% | 106 | 6 | 15.0 | 1.15, 1.11 | 2.35, 2.95 | 57 · 9 · 25.6 |
+| sherpa hw 3.0, per-slide terms | 7.80 / 89.7% | 105 | 6 | 15.0 | 1.15, 1.09 | 2.32, 2.98 | 57 · 9 · 25.6 |
+| sherpa hw 1.5, deck-wide terms | 7.59 / 87.9% | 106 | 7 | 18.2 | 1.17, 1.11 | 2.35, 2.95 | 57 · 9 · 26.6 |
+| whistle | 5.02 / 92.7% | 105 | 9 | 28.3 | 1.19, 1.12 | 2.02, 2.47 | 57 · 12 · 29.2 |
+- **WER is not this pointer's bottleneck.** Whistle cut WER by 37% and term misses by half. Lit did not move on any
+  talk. Whistle's words arrive earlier, so lateness improved 0.33/0.59/0.45 s, but the first 5-word decision now
+  lands on a fragment: "on the left is a" lights the ✓ card through its position term, and "now scale it up to"
+  lights the title. Or it lands on an intro sentence that names a unit, which the strict ruler counts as false.
+  False ids went +3 on tune and +4 on holdout.
+- **Hotwords lift term accuracy but not the pointer.** The +1 tune lit at 1.5 is inside the noise floor, and the
+  holdout gained 1 false id and 2.9 false s. Per-slide terms are the best case. Live passes one deck-wide list
+  (per-slide terms would need a stream restart at each slide change), and that list was worse on tune: +1 false id
+  and +3.2 false s. The WER rows match the offline bench exactly, so the option is the bench config.
+- **Replay drops partials stamped after the wav ends**, so trailing padding changes WER only. Re-recording greedy
+  sherpa with the pad gave the old streams' partials on all 36 slides. That check proves the default path did not
+  change. It also explains why the old file's WER is 8.41: it lost the tail words.
+- **Audio-clock stamps hide decode time.** Whistle's paced live lag is p90 71 ms. Shifting its stamps by +0.1 s
+  raised lateness by 0.1 s, cut false ids by 1, and left lit unchanged. It is still 0.2-0.5 s earlier than sherpa.
+- **Live cost (paced, with the cross decider, Ollama idle):** Whistle keeps up with real time. Emit lag was p50 38,
+  p90 71, max 110 ms (sherpa 16/17/22) and did not drift. The first partial came 0.49 s after speech onset (sherpa
+  0.69 s). It averaged 1.0 core (sherpa 0.1) across 12 server threads that burst over every core.
+- **Next:** Whistle's lateness headroom could pay for a stricter first decision (min_words / jump_gap). The AI
+  meaning holdout has now been seen for Whistle, so that test needs a fresh holdout.
