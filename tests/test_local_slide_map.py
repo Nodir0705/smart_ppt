@@ -108,3 +108,10 @@ def test_fixup_rescues_before_repair():
     m, st = generate(PACKET, chat, image=False)
     assert st["result"] == "fixed" and len(calls) == 1 and validate(m, PACKET) == []
     assert st["fixes"] == [{"member_made_pointable": 1, "order_rebuilt": 1}]
+
+
+def test_fixup_slide_number_and_missing_items():
+    items = {k: v for k, v in GOOD["items"].items() if k != "s2_e1"}   # an arrow left out
+    m, fx = fixup(dict(GOOD, slide=0, items=items), PACKET)
+    assert validate(m, PACKET) == [] and fx == {"slide_number": 1, "missing_item": 1}
+    assert m["items"]["s2_e1"] == {"role": "decoration", "pointable": False}
