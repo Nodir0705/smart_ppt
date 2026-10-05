@@ -6,18 +6,27 @@ then ``deck.mp4``. Deterministic: every frame is ``draw(base, state_at(i / fps))
   frame's bytes. They are piped as raw rgb24 into ffmpeg as in
   ``src.simulate_to_video._render_and_encode`` (``-threads 1`` x264, but
   ``-crf 20``), with the slide wav as aac 128k, ``-shortest``.
+- Slides = the scripted ones (``script/<deck>/slide_NNN.md``). One without a
+  cue sheet, timings, voice wav or index entry is refused with the reason; an
+  empty script is skipped (voice skips it too) with a printed line. The wav is
+  always ``voice/slide_NNN.wav`` (the timings json's ``wav`` is informational).
 - ``deck.mp4``: one ffmpeg concat-filter pass over the slide MP4s; every slide
   but the last gets ``tpad`` (last frame held) + ``apad`` (silence) of 0.6 s.
-  Skipped under ``--only``.
+  Built only when no slide was refused, so it is never missing a slide (the
+  old deck is left alone); skipped under ``--only``.
 - Hash cache: ``slide_NNN.hash`` = sha1(cue sheet, script words, timings json,
   index slide, VERSION, size, fps, PNG bytes); ``deck.hash`` = sha1(slide hashes, gap).
 
 Decisions where the plan left details open:
 - Invalid cues (spec §4): failing cues are dropped and the rest re-validated
-  until clean (dropping a focus can orphan a later glide); the drops are
-  printed with their original cue index. A sheet-level error (no cue index)
-  refuses the slide. Timings whose words differ from the script words are
-  stale and refuse the slide ("rerun voice").
+  until clean (dropping a focus can orphan a later glide). Each round drops the
+  cues with a cue-local error first; overlap errors (``concurrency``, ``zoom
+  overlaps``) are dropped only when nothing else fails, since a cue dropped for
+  another reason may be what pushed them over the limit. The drops are printed
+  with their original cue index and saved to ``slide_NNN.dropped.txt``, which a
+  cached rerun prints again. A sheet-level error (no cue index) refuses the
+  slide. Timings whose words differ from the script words are stale and
+  refuse the slide ("rerun voice").
 - Effect boxes: a target's (unit union or element) bbox padded 6 px; underline
   uses the unpadded line box; a glide starts from the box of the focus/glide
   before it and keeps that focus's spotlight. Zoom: the target box (or its
@@ -25,7 +34,8 @@ Decisions where the plan left details open:
   (non-pointable ones are decoration, footers, backgrounds).
 - ``validate`` (CLI) prints ``slide N: VALID`` or ``slide N: K errors`` plus the
   errors (never the word INVALID, so a grep for VALID stays honest); it uses
-  the timings only when they match the script.
+  the timings only when they match the script, and otherwise adds a
+  ``note: timings missing/stale`` line (render would refuse the slide).
 """
 from __future__ import annotations
 
@@ -40,7 +50,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.simulate_to_video import _wav_duration_s
-from tools.video import ROOT, VERSION, paths
+from tools.video import ROOT, VERSION, numbered, paths
 from tools.video.cues import effective_until, resolve, validate
 from tools.video.effects import Effect, draw, lens_box, state_at
 from tools.video.geometry import Letterbox
@@ -48,6 +58,7 @@ from tools.video.script import sentences, words
 
 FPS = 30
 GAP_S = 0.6
+OVERLAP = ("concurrency:", "zoom overlaps")
 SHIM = Path.home() / ".venvs" / "ffmpeg-static" / "shim"
 ENCODE = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20",
           "-threads", "1",                    # multi-threaded x264 is not byte-deterministic
@@ -76,14 +87,15 @@ def playable(sheet, slide, sents, rows) -> tuple[list, list[str]]:
         errs = validate({"cues": [cues[i] for i in keep] if cues is not None else None}, slide, sents, rows)
         if not errs:
             return [cues[i] for i in keep], log
-        bad = set()
+        bad: dict[int, list[str]] = {}
         for e in errs:
             m = re.match(r"cue (\d+): (.*)", e)
             if not m:
                 raise ValueError(e)
-            bad.add(keep[int(m[1])])
-            log.append(f"cue {keep[int(m[1])]}: {m[2]}")
-        keep = [i for i in keep if i not in bad]
+            bad.setdefault(keep[int(m[1])], []).append(m[2])
+        drop = {i for i, ms in bad.items() if not all(m.startswith(OVERLAP) for m in ms)} or set(bad)
+        log += [f"cue {i}: {m}" for i in sorted(drop) for m in bad[i]]
+        keep = [i for i in keep if i not in drop]
 
 
 def build_plan(cues, slide, sents, rows, lb: Letterbox) -> list[Effect]:
@@ -169,70 +181,96 @@ def _index(P):
     return {s["slide_number"]: s for s in index["slides"]}, index["slide_size"]
 
 
-def _cue_files(P, only):
-    files = sorted((int(f.stem[6:]), f) for f in P.cues.glob("slide_*.json"))
+def _pick(files, only):
     return [(n, f) for n, f in files if only is None or n == only]
 
 
-def _load(P, n, f):
-    sheet = json.loads(f.read_text())
+def no_sheets(P, only) -> str:
+    return f"no cue sheets in {P.cues}" + (f" for slide {only}" if only is not None else "")
+
+
+def _load(P, n):
     sents = [words(s) for s in sentences(P.script / f"slide_{n:03d}.md")]
     tf = P.timings / f"slide_{n:03d}.json"
-    return sheet, sents, json.loads(tf.read_text()) if tf.exists() else None
+    return sents, json.loads(tf.read_text()) if tf.exists() else None
 
 
 def check(deck: str, only: int | None = None, root: Path = ROOT) -> int:
     """The ``validate`` step: 0 if every cue sheet is valid, else 1."""
     P = paths(deck, root)
     slides, _ = _index(P)
-    files, bad = _cue_files(P, only), 0
+    files, bad = _pick(numbered(P.cues, "json"), only), 0
     if not files:
-        print(f"no cue sheets in {P.cues}" + (f" for slide {only}" if only is not None else ""))
+        print(no_sheets(P, only))
         return 1
     for n, f in files:
-        sheet, sents, tim = _load(P, n, f)
+        if n not in slides or not (P.script / f"slide_{n:03d}.md").exists():
+            print(f"slide {n}: 1 errors\n  sheet: slide {n} has no " + ("index entry" if n not in slides else "script"))
+            bad += 1
+            continue
+        sents, tim = _load(P, n)
         rows = tim["sentences"] if tim and [[w["word"] for w in r] for r in tim["sentences"]] == sents else None
-        errs = validate(sheet, slides[n], sents, rows)
+        errs = validate(json.loads(f.read_text()), slides[n], sents, rows)
         print(f"slide {n}: " + (f"{len(errs)} errors" if errs else "VALID"))
         for e in errs:
             print(f"  {e}")
+        if rows is None:
+            print(f"  note: timings {'missing' if tim is None else 'stale'}, run voice before render")
         bad += bool(errs)
     return 1 if bad else 0
 
 
 def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = ROOT) -> int:
-    """The ``render`` step: every slide with a cue sheet + timings, then deck.mp4. 1 if any refused."""
+    """The ``render`` step: every scripted slide, then deck.mp4 if none was refused. 1 if any refused."""
     P = paths(deck, root)
     slides, slide_size = _index(P)
+    scripted, sheets = _pick(numbered(P.script, "md"), only), dict(_pick(numbered(P.cues, "json"), only))
+    if not scripted:
+        print(f"no scripts in {P.script}" + (f" for slide {only}" if only is not None else ""))
+        return 1
+    if not sheets:
+        print(no_sheets(P, only))
+        return 1
     P.out.mkdir(parents=True, exist_ok=True)
     parts, keys, refused = [], [], 0
-    for n, f in _cue_files(P, only):
-        sheet, sents, tim = _load(P, n, f)
-        if tim is None:
-            print(f"slide {n}: no timings, run voice first")
+    for n, _ in scripted:
+        sents, tim = _load(P, n)
+        if not sents:
+            print(f"slide {n}: empty script, not in the video")
+            continue
+        name = f"slide_{n:03d}"
+        wav = P.voice / f"{name}.wav"
+        why = ("no cue sheet, run direct" if n not in sheets else "not in the index" if n not in slides
+               else "no timings, run voice first" if tim is None or not wav.exists() else None)
+        if why:
+            print(f"slide {n}: {why}")
             refused += 1
             continue
-        png = P.slides / f"slide_{n:03d}.png"
-        mp4, hf = P.out / f"slide_{n:03d}.mp4", P.out / f"slide_{n:03d}.hash"
+        sheet = json.loads(sheets[n].read_text())
+        png = P.slides / f"{name}.png"
+        mp4, hf, lf = P.out / f"{name}.mp4", P.out / f"{name}.hash", P.out / f"{name}.dropped.txt"
         key = _sha(json.dumps([sheet, sents, tim, slides[n], VERSION, list(size), FPS], sort_keys=True).encode()
                    + png.read_bytes())
         if mp4.exists() and hf.exists() and hf.read_text() == key:
             print(f"slide {n}: cached {mp4}")
+            dropped = lf.read_text().splitlines() if lf.exists() else []
         else:
             print(f"slide {n}: rendering")
             try:
-                dropped = render_slide(png, slides[n], slide_size, sheet, sents, tim["sentences"],
-                                       tim["wav"], mp4, size)
+                dropped = render_slide(png, slides[n], slide_size, sheet, sents, tim["sentences"], wav, mp4, size)
             except ValueError as e:
                 print(f"  refused: {e}")
                 refused += 1
                 continue
-            for e in dropped:
-                print(f"  dropped {e}")
-            hf.write_text(key)
+            lf.write_text("".join(f"{e}\n" for e in dropped))
+            hf.write_text(key)                # last: a hash only ever sits next to a finished mp4 + log
+        for e in dropped:
+            print(f"  dropped {e}")
         parts.append(mp4)
         keys.append(key)
-    if only is None and parts:
+    if only is None and refused:
+        print(f"deck: skipped ({refused} slides refused)")
+    elif only is None and parts:
         deck_mp4, dh = P.out / "deck.mp4", P.out / "deck.hash"
         key = _sha(json.dumps([keys, GAP_S]).encode())
         if deck_mp4.exists() and dh.exists() and dh.read_text() == key:

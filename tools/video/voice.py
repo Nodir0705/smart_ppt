@@ -11,7 +11,9 @@ Decisions where the plan left details open:
 - Whistle is started by constructing ``src.stt.WhistleEngine`` (its venv/weights
   checks and subprocess launch); the word request is written to ``engine.proc``
   and read back with ``engine._read`` here, so ``src/stt.py`` stays unchanged.
-- Offsets use the cut's exact sample position, not the 4-decimal rounded start.
+- Offsets use the cut's sample position (where the audio Whistle heard starts),
+  not the 4-decimal rounded start; the cut itself comes from that start, so it
+  can sit 1 sample (62.5 us) off the true sentence start.
 - ``coverage`` (stored per sentence) = script words ``timings.match`` matched /
   non-punctuation words; sentences under 85 % are printed with ``FLAG``.
 - Cache key = sha1(sentences, voice model path relative to the repo, VERSION),
@@ -28,7 +30,7 @@ from pathlib import Path
 
 from src.stt import WhistleEngine
 from src.tts import TARGET_RATE, PiperTTS
-from tools.video import ROOT, VERSION, paths
+from tools.video import ROOT, VERSION, numbered, paths
 from tools.video.script import norm, sentences, words
 from tools.video.timings import align, match
 
@@ -84,8 +86,7 @@ def voice(deck: str, only: int | None = None, root: Path = ROOT, tts=None, asr=N
         return whistle_words(engine, pcm)
 
     try:
-        for md in sorted(P.script.glob("slide_*.md")):
-            n = int(md.stem[6:])
+        for n, md in numbered(P.script, "md"):
             sents = sentences(md)
             if (only is not None and n != only) or not sents:
                 continue

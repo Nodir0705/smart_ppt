@@ -1,5 +1,6 @@
 """Jarvis video director: script -> voice + word timings -> cue sheet -> HUD render.
 See docs/superpowers/specs/2026-10-06-jarvis-video-director-design.md."""
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,3 +15,10 @@ def paths(deck: str, root: Path = ROOT) -> SimpleNamespace:
     return SimpleNamespace(script=root / "script" / deck, index=bench / "map" / "index.scoped.json",
                            slides=bench / "default" / "slides", out=out, voice=out / "voice",
                            timings=out / "timings", cues=out / "cues")
+
+
+def numbered(d: Path, ext: str) -> list[tuple[int, Path]]:
+    """``slide_NNN.<ext>`` files in ``d`` as sorted ``(N, path)``; other names
+    (a leftover ``slide_004_old.md``) are ignored."""
+    return sorted((int(m[1]), f) for f in Path(d).glob(f"slide_*.{ext}")
+                  if (m := re.fullmatch(rf"slide_(\d+)\.{ext}", f.name)))

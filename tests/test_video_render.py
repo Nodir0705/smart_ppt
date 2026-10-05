@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import wave
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image, ImageDraw
 
 from src.tts import TARGET_RATE, PiperTTS
-from tools.video.render import SHIM, concat, render_slide
+from tools.video import paths
+from tools.video.render import SHIM, check, concat, no_sheets, playable, render, render_slide
 from tools.video.script import words
-from tools.video.voice import voice
+from tools.video.voice import voice, whistle_words
 
 FPS = 30
 
@@ -64,6 +67,17 @@ def test_voice_offsets_flags_and_caches(tmp_path, capsys):
     md.write_text("First it reads the page.\n")
     heard = iter([["first", "it", "reads", "the", "page"]])
     assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=asr) == [2]   # edited -> redone
+
+
+def test_whistle_words_asks_for_word_timestamps():
+    said = [{"word": "hi", "start": 0.0, "end": 0.2}]
+    eng = SimpleNamespace(proc=SimpleNamespace(stdin=io.BytesIO()), _read=lambda: {"ok": True, "words": said})
+    assert whistle_words(eng, b"\x01\x00" * 4) == said
+    head, pcm = eng.proc.stdin.getvalue().split(b"\n", 1)
+    assert json.loads(head) == {"n": 8, "words": True} and pcm == b"\x01\x00" * 4
+    eng = SimpleNamespace(proc=SimpleNamespace(stdin=io.BytesIO()), _read=lambda: {"ok": False, "error": "x"})
+    with pytest.raises(RuntimeError, match="whistle server error"):
+        whistle_words(eng, b"\x00\x00")
 
 
 # ---- render -----------------------------------------------------------------
@@ -177,3 +191,66 @@ def test_concat_adds_gap_between_slides(ffmpeg, inputs, tmp_path):
     concat([mp4, mp4], deck)
     assert len(_video(deck)) / FPS == pytest.approx(4.6, abs=0.15)   # 2 s + 0.6 s gap + 2 s
     assert _audio_s(deck) == pytest.approx(4.6, abs=0.15)
+
+
+def test_playable_drops_only_the_cue_at_fault():
+    """A mark failing the why rule must not push a later valid mark over the limit."""
+    sheet = {"cues": [{"effect": "underline", "target": "e2", "at": {"s": 1, "w": 2}},
+                      {"effect": "ring", "target": "e3", "at": {"s": 1, "w": 4}},
+                      {"effect": "ring", "target": "e1", "at": {"s": 1, "w": 0}}]}   # why fails, starts first
+    cues, log = playable(sheet, SLIDE, SENTS, ROWS)
+    assert [e.split(":")[0] for e in log] == ["cue 2"] and "why" in log[0]
+    assert cues == sheet["cues"][:2]
+
+
+def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys):
+    P = paths("D", tmp_path)
+    for d in (P.script, P.index.parent, P.slides, P.cues, P.timings, P.voice):
+        d.mkdir(parents=True)
+    P.index.write_text(json.dumps({"slide_size": SIZE_IN, "slides": [SLIDE, dict(SLIDE, slide_number=2)]}))
+    script = "We start by reading pages.\nThen grading answers needs eight GB memory.\n"
+    bad_cue = {"effect": "ring", "target": "nope", "at": {"s": 0, "w": 1}}
+    for n, sheet in ((1, dict(SHEET, cues=SHEET["cues"] + [bad_cue])), (2, {"slide": 2, "version": 1, "cues": []})):
+        Image.new("RGB", (320, 180), (200, 200, 200)).save(P.slides / f"slide_{n:03d}.png")
+        with wave.open(str(P.voice / f"slide_{n:03d}.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(TARGET_RATE)
+            w.writeframes(b"\x00\x00" * 2 * TARGET_RATE)
+        (P.script / f"slide_{n:03d}.md").write_text(script)
+        (P.cues / f"slide_{n:03d}.json").write_text(json.dumps(sheet))
+        (P.timings / f"slide_{n:03d}.json").write_text(json.dumps(   # wav moved: render uses P.voice
+            {"sentences": ROWS, "wav": "/gone/slide.wav", "duration": 2.0, "coverage": [1.0, 1.0]}))
+    (P.script / "slide_002_old.md").write_text("leftover, not a slide\n")
+    deck, dh = P.out / "deck.mp4", P.out / "deck.hash"
+
+    def run(**kw):
+        rc = render("D", size=(320, 180), root=tmp_path, **kw)
+        return rc, capsys.readouterr().out
+
+    rc, out = run()
+    assert rc == 0 and "dropped cue 5" in out and deck.exists()
+    assert len(set(_video(P.out / "slide_002.mp4"))) == 1               # "cues": [] -> a plain slide
+    good = (deck.read_bytes(), dh.read_text())
+
+    rc, out = run()
+    assert rc == 0 and out.count("cached") == 3 and "dropped cue 5" in out   # the drop log survives the cache
+
+    (P.script / "slide_002.md").write_text(script.replace("GB memory", "GB of memory"))
+    rc, out = run()
+    assert rc == 1 and "rerun voice" in out and "deck: skipped (1 slides refused)" in out
+    assert (deck.read_bytes(), dh.read_text()) == good                   # the old deck is left alone
+    assert check("D", only=2, root=tmp_path) == 0                       # valid cues, stale timings: a note
+    assert capsys.readouterr().out.startswith("slide 2: VALID\n  note: timings stale")
+
+    (P.script / "slide_002.md").write_text(script)
+    (P.script / "slide_003.md").write_text(script)
+    rc, out = run()
+    assert rc == 1 and "slide 3: no cue sheet, run direct" in out and "deck: skipped" in out
+    rc, out = run(only=3)
+    assert rc == 1 and out == no_sheets(P, 3) + "\n"
+    for f in P.cues.iterdir():
+        f.unlink()
+    rc, out = run()
+    assert rc == 1 and out == no_sheets(P, None) + "\n"
+    assert (deck.read_bytes(), dh.read_text()) == good
