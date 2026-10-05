@@ -19,6 +19,7 @@ def paths(deck: str, root: Path = ROOT) -> SimpleNamespace:
 
 def numbered(d: Path, ext: str) -> list[tuple[int, Path]]:
     """``slide_NNN.<ext>`` files in ``d`` as sorted ``(N, path)``; other names
-    (a leftover ``slide_004_old.md``) are ignored."""
+    (a leftover ``slide_004_old.md``, an unpadded ``slide_4.md``) are ignored,
+    since every step rebuilds the name as ``slide_{n:03d}``."""
     return sorted((int(m[1]), f) for f in Path(d).glob(f"slide_*.{ext}")
-                  if (m := re.fullmatch(rf"slide_(\d+)\.{ext}", f.name)))
+                  if (m := re.fullmatch(rf"slide_(\d{{3}})\.{ext}", f.name)))

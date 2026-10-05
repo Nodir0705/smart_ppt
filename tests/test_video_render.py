@@ -14,6 +14,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from src.tts import TARGET_RATE, PiperTTS
+import tools.video.render as R
 from tools.video import paths
 from tools.video.render import SHIM, check, concat, no_sheets, playable, render, render_slide
 from tools.video.script import words
@@ -67,6 +68,30 @@ def test_voice_offsets_flags_and_caches(tmp_path, capsys):
     md.write_text("First it reads the page.\n")
     heard = iter([["first", "it", "reads", "the", "page"]])
     assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=asr) == [2]   # edited -> redone
+
+
+def test_voice_failure_leaves_no_stale_cache(tmp_path):
+    """A failed re-voice has already overwritten the wav: no hash or timings may survive it."""
+    md = tmp_path / "script/D/slide_002.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("First it reads the page.\n")
+    ok = lambda pcm: [{"word": "first", "start": 0.0, "end": 0.1}]
+    assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=ok) == [2]
+    md.write_text("First it reads the page.\nThen it grades.\n")
+    calls = []
+
+    def flaky(pcm):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("whistle died")
+        return ok(pcm)
+
+    with pytest.raises(RuntimeError, match="whistle died"):
+        voice("D", root=tmp_path, tts=_FakeTTS(), asr=flaky)
+    T = tmp_path / "out/video/D/timings"
+    assert not (T / "slide_002.hash").exists() and not (T / "slide_002.json").exists()  # render refuses
+    md.write_text("First it reads the page.\n")                        # revert
+    assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=ok) == [2]     # re-voiced, not "cached"
 
 
 def test_whistle_words_asks_for_word_timestamps():
@@ -203,7 +228,16 @@ def test_playable_drops_only_the_cue_at_fault():
     assert cues == sheet["cues"][:2]
 
 
-def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys):
+def test_playable_drops_overlap_only_when_nothing_else_fails():
+    """Three marks, each valid alone: only the one over the limit goes."""
+    sheet = {"cues": [{"effect": "underline", "target": "e2", "at": {"s": 1, "w": 2}},
+                      {"effect": "ring", "target": "e3", "at": {"s": 1, "w": 4}},
+                      {"effect": "ring", "target": "e2", "at": {"s": 1, "w": 1}}]}
+    cues, log = playable(sheet, SLIDE, SENTS, ROWS)
+    assert len(cues) == 2 and len(log) == 1 and log[0].split(": ", 1)[1].startswith("concurrency:")
+
+
+def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys, monkeypatch):
     P = paths("D", tmp_path)
     for d in (P.script, P.index.parent, P.slides, P.cues, P.timings, P.voice):
         d.mkdir(parents=True)
@@ -222,6 +256,7 @@ def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys):
         (P.timings / f"slide_{n:03d}.json").write_text(json.dumps(   # wav moved: render uses P.voice
             {"sentences": ROWS, "wav": "/gone/slide.wav", "duration": 2.0, "coverage": [1.0, 1.0]}))
     (P.script / "slide_002_old.md").write_text("leftover, not a slide\n")
+    (P.script / "slide_4.md").write_text(script)                         # not canonical: ignored
     deck, dh = P.out / "deck.mp4", P.out / "deck.hash"
 
     def run(**kw):
@@ -235,6 +270,32 @@ def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys):
 
     rc, out = run()
     assert rc == 0 and out.count("cached") == 3 and "dropped cue 5" in out   # the drop log survives the cache
+
+    def boom(*a, **kw):
+        raise RuntimeError("ffmpeg died")
+
+    s2 = P.cues / "slide_002.json"
+    for site, gone in (("render_slide", "slide 2: cached"), ("concat", "deck: cached")):
+        sheet2 = s2.read_text()                # a failed rebuild must not leave its old hash behind
+        s2.write_text(json.dumps({"slide": 2, "version": 1, "cues": [], "edited": True}))
+        with monkeypatch.context() as m:
+            m.setattr(R, site, boom)
+            with pytest.raises(RuntimeError, match="ffmpeg died"):
+                run()
+        capsys.readouterr()
+        s2.write_text(sheet2)                                            # revert
+        rc, out = run()
+        assert rc == 0 and gone not in out
+    good = (deck.read_bytes(), dh.read_text())
+
+    tf = P.timings / "slide_001.json"
+    tim1 = tf.read_text()
+    tf.unlink()
+    P.index.write_text(json.dumps({"slide_size": SIZE_IN, "slides": [SLIDE]}))
+    rc, out = run()
+    assert rc == 1 and "slide 1: no timings, run voice first" in out and "slide 2: not in the index" in out
+    tf.write_text(tim1)
+    P.index.write_text(json.dumps({"slide_size": SIZE_IN, "slides": [SLIDE, dict(SLIDE, slide_number=2)]}))
 
     (P.script / "slide_002.md").write_text(script.replace("GB memory", "GB of memory"))
     rc, out = run()

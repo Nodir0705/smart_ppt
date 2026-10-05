@@ -16,6 +16,7 @@ then ``deck.mp4``. Deterministic: every frame is ``draw(base, state_at(i / fps))
   old deck is left alone); skipped under ``--only``.
 - Hash cache: ``slide_NNN.hash`` = sha1(cue sheet, script words, timings json,
   index slide, VERSION, size, fps, PNG bytes); ``deck.hash`` = sha1(slide hashes, gap).
+  A hash is deleted before its output is rebuilt and written after it is done.
 
 Decisions where the plan left details open:
 - Invalid cues (spec §4): failing cues are dropped and the rest re-validated
@@ -149,6 +150,10 @@ def render_slide(png, slide, slide_size, sheet, sents, rows, wav, out_mp4,
             proc.stdin.close()
         except BrokenPipeError:
             pass                              # surfaced by the return code below
+        except BaseException:                 # draw failed or ^C: don't leave ffmpeg waiting on stdin
+            proc.kill()
+            proc.wait()
+            raise
         if proc.wait():
             errf.seek(0)
             raise RuntimeError(f"ffmpeg failed:\n{errf.read().decode(errors='replace')[-2000:]}")
@@ -256,6 +261,7 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
             dropped = lf.read_text().splitlines() if lf.exists() else []
         else:
             print(f"slide {n}: rendering")
+            hf.unlink(missing_ok=True)        # ffmpeg truncates the mp4: no hash may outlive a failed run
             try:
                 dropped = render_slide(png, slides[n], slide_size, sheet, sents, tim["sentences"], wav, mp4, size)
             except ValueError as e:
@@ -263,7 +269,7 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
                 refused += 1
                 continue
             lf.write_text("".join(f"{e}\n" for e in dropped))
-            hf.write_text(key)                # last: a hash only ever sits next to a finished mp4 + log
+            hf.write_text(key)                # last: so a hash only ever sits next to a finished mp4 + log
         for e in dropped:
             print(f"  dropped {e}")
         parts.append(mp4)
@@ -276,6 +282,7 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
         if deck_mp4.exists() and dh.exists() and dh.read_text() == key:
             print(f"deck: cached {deck_mp4}")
         else:
+            dh.unlink(missing_ok=True)
             concat(parts, deck_mp4)
             dh.write_text(key)
             print(f"deck: {len(parts)} slides -> {deck_mp4}")

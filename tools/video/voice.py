@@ -18,8 +18,10 @@ Decisions where the plan left details open:
   non-punctuation words; sentences under 85 % are printed with ``FLAG``.
 - Cache key = sha1(sentences, voice model path relative to the repo, VERSION),
   stored in ``timings/slide_NNN.hash``; the slide is skipped when the key, the
-  json and the wav all exist. Piper and Whistle start lazily, so a fully cached
-  run loads neither. A script with no sentences is skipped.
+  json and the wav all exist. Both hash and json are deleted before re-voicing,
+  so a failed run never leaves them describing a different wav. Piper and
+  Whistle start lazily, so a fully cached run loads neither. A script with no
+  sentences is skipped.
 """
 from __future__ import annotations
 
@@ -98,6 +100,8 @@ def voice(deck: str, only: int | None = None, root: Path = ROOT, tts=None, asr=N
                 data = json.loads(tj.read_text())
             else:
                 tts = tts or PiperTTS(ROOT / VOICE_REL)
+                for f in (hf, tj):             # the wav is overwritten first: if voicing fails, render
+                    f.unlink(missing_ok=True)  # refuses (no timings) and the next run re-voices
                 data = voice_slide(sents, wav, tts, asr or whistle)
                 tj.write_text(json.dumps(data, indent=1))
                 hf.write_text(key)
