@@ -180,3 +180,155 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   `map_phrases` (scope had added a trigger phrase afterwards). Patch in only the new key and diff the result.
 - **Holdout kept honest.** I locked params on original + jumpy, committed them, and only then ran meaning:
   57/59 (=), false 11 (19), 1.28 sw/step, dwell 5.4 s, lateness 2.47 s (2.68). All gates passed.
+
+## Wrong topic jumps: jump gap, title word gate, position terms (2026-10-03)
+
+- **Replay the pointer on recorded inputs, not on audio.** Record what `ClausePointer.update` sees on every feed
+  (t, words, boundaries) once (13 s for both decks) and cache decider scores by (slide, unit descriptions, clause).
+  After that a policy variant costs about 2 s for all 4 tune runs instead of minutes, and the baseline matched
+  `clause_replay` and the bench row for row. Check that match before ranking anything.
+- **Damping buys precision with recall, and lit is gated per run.** In-clause EMA (alpha 0.3-0.6), a raised global
+  gap, a higher NONE bar, lexical-evidence switching and titles-never all cut wrong moves 20-45%, but each one lost
+  6-20 lit. In this data a lost hit is usually a short correct stop that damping smooths away.
+- **Gate only the move that causes the jump.** Most wrong moves were new-clause commits away from a box that was
+  already lit. A separate `jump_gap` (2) for that case only, with first lights left at gap 1, kept every run's lit
+  and lateness within 0.08 s of the old values. The global gap 2 had cost OQ +0.19 s lateness.
+- **Titles: gate on the title's own words.** A title unit is a candidate only when the clause contains a word of
+  4 or more letters that no other unit on the slide has. With 3-letter words allowed, "so **how** does it actually"
+  lit "How does it work?". Titles-never cost 5 lit; the word gate costs 0 and cut title false seconds 105 -> 50.
+- **Position terms ("on the right") add recall:** +3 to +6 lit for about +7 false s; they cover the lit the gates cost.
+- **A bigger teacher would not fix what is left.** bge-reranker-base at matched lit scored the same OQ false seconds
+  (318 vs 309), so I did not try distillation. The remaining OQ false seconds are mostly "other" (158 s: a sibling
+  entity named in the same sentence, e.g. "reads the key over I2C" -> I2C controller), units linked by part_of /
+  explains to the referenced one (49 s), and sentences with no `refers_to` (49 s, several plainly name a unit:
+  "Battery life and performance are the usual tradeoff" next to Battery Life / Performance cards). Those need
+  human adjudication (see `candidate_adjudication.json` in the diagnosis scratch), not tuning.
+- **ASR aliases from map terms: no.** None of the garbles ("esa memu", "codak", "linox") appear in any map's terms.
+- Result, 4 tune runs summed (before -> after): lit 291 -> 291 (each run equal), false ids 82 -> 63 (-23%),
+  sentence-level wrong moves 117 -> 95 (-19%), false s 364.6 -> 304.1 (-17%; AI 36.1 -> 15.0, OQ 328.5 -> 289.1),
+  sw/step lower on every run. **The 25% gate missed on both counts, because Open-Q's floor sits above it.**
+  Holdout (meaning x2): lit 173 -> 173, false ids 34 -> 26, false s 116.0 -> 83.5, lateness 2.49 -> 2.45.
+- **Check the adjudicated columns too.** Open-Q original has a human adjudication. On it, false adj went 14 -> 16 and
+  false s adj 48.9 -> 56.8 (AI unchanged at 1 / 0.3). The adjudicator had tolerated intro title lights. The title
+  gate removes those, so it gains nothing on the adjudicated measure, and the unit that lights in the title's place
+  is sometimes an error. Position terms add two of those errors: "on the right are the four ..." lights the
+  right-hand card. Without position terms it is 16 / 51.5 and costs 3 lit. The raw false-seconds win is partly
+  tolerated title time.
+
+## 2026-10-03 — blind whole-map refinement REGRESSED (maps_v2 not adopted)
+A per-slide "review and refine" pass (43 agents, blind to scripts: merge duplicates, presenter-angle rewrites, exclusive terms first, drop generic phrases) made both decks WORSE on the clause pointer: AI tune false s 15.0→29.5, jumpy lit 59→56; Open-Q original lit 94→89, meaning false s 60.9→93.7, flicker 2→12. The refined maps carried ≈2–3× more `terms`/`talk` per slide and changed unit partitions on 3 AI + 5 OQ slides; losses concentrate on the re-partitioned slides, and false time moved between slides rather than disappearing.
+- **Lesson:** "more and richer descriptions" over-trigger a cross-encoder that scores short noisy clauses; a map rewrite must be MINIMAL and targeted (one failure class at a time, ablated), not a wholesale re-authoring. Keep v1 maps as the baseline; test candidate edits as hybrids (partition-only, exclusive-terms-only, summary-only) before adopting anything.
+- Adjudication of 27 "non-pointing" sentences that plainly name a unit: 21 tolerated → Open-Q original adjudicated false s 56.8→39.9 (measurement only; strict ruler unchanged).
+
+## 2026-10-03 — maps_v2 ablated by component: nothing adoptable (out/maps unchanged)
+Hybrids of v1 + v2 (H1 partition-only, H2 exclusive-terms-only: ≤3 v2 terms that no other unit on the slide uses, prepended; H3 summary-only; H4 v2 trimmed to terms[:3]/talk[:5]), 4 tune runs each, same win rule (false ids AND false s lower per deck, lit within 1 per run, lateness within 0.15 s). None won on either deck; H5 (per-slide partition pick) was skipped because H1 beat v1 on no re-partitioned slide on both tune scripts (AI 5/7 and OQ 6 got worse, OQ 5 was mixed: −1.3 s original / +1.8 s jumpy, AI 1 and OQ 18/21/23 did not change).
+- **The closest was H2** (AI identical to v1 on lit/false/false s, sw/step +0.03; OQ false ids 57→55 but false s 289.1→295.5: slide 20 +9 s, slide 12 −5 s). It is not the minimal edit it was meant to be: exclusivity against the other v1 units' text/talk/terms let nearly every v2 term through (3 added on almost every unit; AI 230→409 terms, OQ 826→1404). A stricter filter (summaries too, or v2's own siblings) was not tested. **Partition merges cost false s wherever they changed anything** (AI 7 +3.8 s, OQ 6 +15.4 s). **v2 summaries alone (H3) lose lit** (AI 46/59→44/58, OQ jumpy 92→88) and move false time between slides (OQ 3/6/10 −6..−10 s; 11/20/28 +9..+13 s).
+- **Truncation is not the mechanism.** The cross decider cuts the unit doc at 256 tokens (clause + summary | text | talk | terms, terms last), but only 13/287 v2 Open-Q units and 0/84 AI units exceed ~230 tokens, and H4 (trimmed back to v1's size) is the worst hybrid on lit (OQ 88/117, 83/124). The richer wording itself re-ranks units; "exclusive terms first" reached the model and still did not help.
+- **A per-slide pick of v2 summaries would show about −41 false s on tune** (H3 on OQ 3/6/8/10/12/13/14/15, lit +1 on 8/10/13), but that is 8 free choices fitted on the tune set; it is only worth testing against the meaning holdout, and was not built.
+- **Bench on CPU reproduces the cuda rows exactly** (all 4 v1 tune runs row-for-row), so `--device cpu` is the fallback when another job holds the GPU (cuda OOM'd with the VLM worker resident).
+- **Per-slide false seconds come out of `trace_<variant>.json` + the manifest wav lengths** with the `false_seconds` rule; the reconstruction matched every report total before it was used for deltas. `report_presenter_<variant>_<script>.md` holds one deck per `--only` run, so copy it after each run. Hybrid indexes built with the deck path relative to the repo (`decks/<deck>.pptx`) are byte-identical to `map/` on index.json / index.refined.json; an absolute path changes only the `deck` string.
+
+## 2026-10-03 — Sound repair + card lever + stricter bar: tune gate nearly met, holdout failed on false ids
+Three levers built in order on the clause pointer (commits 7e1c571, 8c9392d, 52f27ac), each measured with the cached-decider `clause_replay` on the 4 tune runs, then the meaning holdout scored once after locking.
+- **Repair by sound, not by spelling.** Per slide, map words get CMU phonemes (`data/cmudict.txt.gz`), letter names for acronyms (plural LEDs = letters + Z) and a rule fallback. Homophone spans of dictionary words need exact phonemes (colonel -> kernel, knowed -> node); spans with an unknown word or a spelled letter may be 0.25 off; spelled letters only match acronyms ("u sees" -> uses was the main false repair before that rule). Script-checked precision 332/345 (0.96), recall 308/864 misheard slide words, 0 correct words lost; p90 0.04 ms per update. The rest is "g u" for GPU and deletions, which no sound match can fix.
+- **A correct repair still costs false ids on the strict ruler.** At the old bar it bought Open-Q tune lit +13 for false ids +10, false s +30, sw/step +0.16: the decider now lights units on sentences that name them but carry no `refers_to` (slide openers: "and finally the display node", "next the kernel which is the heart"). Repair pays for a stricter bar (commit 0 -> 1, jump_gap 2 -> 3); without repair that bar loses 5-11 lit and 0.25 s lateness.
+- **Card lever: the gain is all `explains`.** Lighting the part_of / explains target when it is within 4 of the winning child cut Open-Q false s 319 -> 286 and lifted lit 199 -> 204 (tune, on top of the repair); part_of alone did nothing. `explains` points both ways in these maps (node -> card on s17, bullet -> node elsewhere), so "parent = larger box" is not a safe reading. Titles must be excluded as cards (many part_of/explains point at them).
+- **Rejected with numbers:** opener titles (ungated title on a slide's first light) added false ids on both decks and no lit; min_words 4 gave +4 lit for +3 false ids and +0.13 sw/step.
+- Tune result (orig + jumpy): Open-Q lit 186 -> 199 (+13, gate asked +15), false ids 57 -> 57, false s 289.1 -> 275.7; AI lit 105 -> 106, false ids 6 -> 5, false s 15.0 -> 14.0; sw/step <= +0.05, lateness <= +0.06 s. Bench on CPU = replay row for row.
+- **Holdout (meaning) failed:** Open-Q lit 116 -> 123 but false ids 18 -> 23, false s 60.9 -> 64.3 (adjudicated 14 -> 19 / 48.8 -> 51.5); AI 57/8 unchanged, false s 22.7 -> 23.1. About 75 configs were swept on 4 runs and the fid count of 57 was fitted: card delta 3/4/5 gave +1/0/+2 false ids, a knife edge. **Lesson: when a lever trades lit for false ids, a retuned bar that zeroes the false-id delta on tune is fitting noise; expect the holdout to show the trade.** The new false ids are mostly openers naming an intro/overview unit on an unlabeled sentence, plus a few real wrong units (s11 "rpmh" -> Connectivity). Way back: revert the three commits, or `ClauseParams(repair=0, card=-1, commit=0, jump_gap=2)`.
+- Gap to the ceiling after (Open-Q, all styles, 489 oracle clauses): misses 148 -> 119. ASR garble misses 29/94 s -> 11/24 s, garbled-and-clean-fails 17/52 s -> 9/24 s, child/parent 20/89 s -> 15/61 s; title gate 17/60 s and paraphrase under NONE 20/55 s -> 25/67 s remain (the stricter bar added 5 there). Wrong switches the oracle didn't make 118 -> 130 (intro 14 -> 20).
+
+## 2026-10-03 — gap-closing levers failed the holdout → shipped OFF (defaults restored)
+Sound-based ASR repair (repair 0.25) + card preference (card 4) + a stricter bar (commit 1, jump_gap 3) were locked together on the 4 tune runs (Open-Q lit +13, false ids ±0 — fitted after ~75 settings) and FAILED the held-out meaning talks: Open-Q false ids 18→23, sw/step 1.01→1.16, flicker up on 3 runs. Independent verification also found the repair's "0 correct words changed" claim false: spelled 4-letter acronyms are cut by the 3-token span cap ("r p m h" → "rpm h") and "l p d d r" fuzzes to "led" (~5% wrong rewrites, 0.3% on clean text).
+- Defaults restored to repair 0 / card −1 / commit 0 / jump_gap 2 (bit-exact with the pre-round rows); the code stays for re-tuning.
+- **Lesson:** three coupled levers tuned jointly on 4 runs over ~75 settings is a fitting exercise — the holdout caught it. Ship one lever at a time, each holdout-checked alone. Repair needs ≥4-token spans and an exact-letter-sequence guard before it is reconsidered; on its own at the old bar it bought lit at a high false cost (+13 lit, +10 false ids, +30 false s).
+
+## 2026-10-05 — Offline slide maps from a local model: fix-up, prompts v2-v4, spoken terms (AI_Handout only)
+Local maps from qwen3.5 via Ollama, scored with `clause_replay` (tune = original + jumpy, meaning held out). Best local
+total 148 lit (both v4 finalists) against the 155 target and Claude's 162. False ids and false seconds stayed within
+Claude's (4b v4: 9 / 32.9 against 14 / 37.7).
+- **Fix-up beats repair for bookkeeping.** The deterministic fix-up rescued 3/12 slides for 9b and 6/12 for 4b (v1
+  prompt). No slide falls back now; 4b used to lose 2. It never costs a model call, and the repair turn mostly echoed its
+  input. The gain is reliability, not lit. On every fixed 9b slide the per-slide lit was identical. On 4b, jumpy slide 1
+  went from 3/5 to 1/5, because there the fallback's all-singleton map beat the model's merged one.
+- **Ollama's `format` grammar does not hold integer enums, required keys or minItems/maxItems.** A key skeleton with
+  `"slide": 0` sent all 12 v2 slides to repair (177 s/slide). Items for arrows went missing, and talk came out with 3-4
+  phrases against a schema minimum of 5. Fix-up therefore sets the slide number and fills in missing items. Put counts in
+  the prose, and never write a value into a skeleton that the model could copy.
+- **The partition was not the bottleneck; summary wording was.** v2 lifted pair-F1 against Claude from 0.76 to 0.91, yet
+  tune lit went from 95 to 94. On slide 4 the partition matched Claude's and still lost 2 lit. The TinyBERT decider puts
+  the summary first in its unit text. A meta summary ("This panel shows...", "A feature card highlighting...") scored
+  -7..-10 on the clause that names the unit, while a content summary scored +3. The 9b kept writing meta summaries after
+  three different wordings.
+- **Prompt wording is fragile. Screen before a full run.** Asking for 6-8 talk phrases made the 9b pad with repeats (one
+  phrase 4x). Asking for "key terms" made it copy slide text into terms. A `"<key words>: ..."` summary shape collapsed
+  summaries into the slide text. A cheap screen: the decider margin (target logit minus best other) on the tune scripts'
+  written sentences, over 4 hard slides (~6 min of GPU). Use it to rank prompts. It is not a replacement for lit.
+- **Richer talk buys lit with false ids.** 9b v4 (560 talk phrases, close to Claude's 608) had tune lit 96 against 94-95,
+  but false ids 7 against 3-5 and false s 23 against 7-19. This is the same over-trigger seen with maps_v2.
+- **Spoken terms belong in code, not in the prompt.** Both models ignored "no digits" (11-25% of terms kept them).
+  `speak_terms` brings that to 0%, and tune lit and false ids did not change.
+- **Byte-determinism holds only on an idle GPU.** Isolated runs of 4b reproduced 4/4. The 9b reproduced 2/3 on slide 2,
+  diverging at a near-tie: close the talk list, or add a phrase. Slide 5 reproduced 3/3. Runs that shared the GPU with
+  another CUDA process, or with an aborted Ollama request still decoding, changed. Generate the maps once and keep them.
+  Do not count on a regeneration matching.
+- **Noise floor:** two 9b runs of the same prompt moved jumpy slide 2 by 2 lit, through wording drift alone. The v1 run
+  was unpinned, and the rerun shared the GPU with a scoring job, so the cause is not established. A tune difference of
+  3 or less between variants is not a result.
+
+## 2026-10-05 — Whistle STT and sherpa hotwords: better transcripts, no pointer gain (AI_Handout only)
+Built `WhistleEngine` (Cactus Whistle in a subprocess; VAD segments end at 150 ms of silence, cut at <= 5.12 s,
+re-decoded every 0.5 s of audio) and `SherpaEngine(hotwords_score)` (commit 0741ee2). All streams were recorded
+from the same input (the wav + 1 s of zero PCM) and replayed with Claude maps (`map`). Tune = original + jumpy.
+| engine | WER / slide terms | tune lit | false ids | false s | sw/step | late med | holdout meaning lit · false · false s |
+|---|---|---|---|---|---|---|---|
+| sherpa greedy (default) | 7.99 / 84.9% | 105/109 | 6 | 15.0 | 1.12, 1.09 | 2.35, 3.06 | 57/59 · 8 · 22.7 |
+| sherpa hw 1.5, per-slide terms | 7.68 / 88.4% | 106 | 6 | 15.0 | 1.15, 1.11 | 2.35, 2.95 | 57 · 9 · 25.6 |
+| sherpa hw 3.0, per-slide terms | 7.80 / 89.7% | 105 | 6 | 15.0 | 1.15, 1.09 | 2.32, 2.98 | 57 · 9 · 25.6 |
+| sherpa hw 1.5, deck-wide terms | 7.59 / 87.9% | 106 | 7 | 18.2 | 1.17, 1.11 | 2.35, 2.95 | 57 · 9 · 26.6 |
+| whistle | 5.02 / 92.7% | 105 | 9 | 28.3 | 1.19, 1.12 | 2.02, 2.47 | 57 · 12 · 29.2 |
+- **WER is not this pointer's bottleneck.** Whistle cut WER by 37% and term misses by half. Lit did not move on any
+  talk. Whistle's words arrive earlier, so lateness improved 0.33/0.59/0.45 s, but the first 5-word decision now
+  lands on a fragment: "on the left is a" lights the ✓ card through its position term, and "now scale it up to"
+  lights the title. Or it lands on an intro sentence that names a unit, which the strict ruler counts as false.
+  False ids went +3 on tune and +4 on holdout.
+- **Hotwords lift term accuracy but not the pointer.** The +1 tune lit at 1.5 is inside the noise floor, and the
+  holdout gained 1 false id and 2.9 false s. Per-slide terms are the best case. Live passes one deck-wide list
+  (per-slide terms would need a stream restart at each slide change), and that list was worse on tune: +1 false id
+  and +3.2 false s. The WER rows match the offline bench exactly, so the option is the bench config.
+- **Replay drops partials stamped after the wav ends**, so trailing padding changes WER only. Re-recording greedy
+  sherpa with the pad gave the old streams' partials on all 36 slides. That check proves the default path did not
+  change. It also explains why the old file's WER is 8.41: it lost the tail words.
+- **Audio-clock stamps hide decode time.** Whistle's paced live lag is p90 71 ms. Shifting its stamps by +0.1 s
+  raised lateness by 0.1 s, cut false ids by 1, and left lit unchanged. It is still 0.2-0.5 s earlier than sherpa.
+- **Live cost (paced, with the cross decider, Ollama idle):** Whistle keeps up with real time. Emit lag was p50 38,
+  p90 71, max 110 ms (sherpa 16/17/22) and did not drift. The first partial came 0.49 s after speech onset (sherpa
+  0.69 s). It averaged 1.0 core (sherpa 0.1) across 12 server threads that burst over every core.
+- **Next:** Whistle's lateness headroom could pay for a stricter first decision (min_words / jump_gap). The AI
+  meaning holdout has now been seen for Whistle, so that test needs a fresh holdout.
+
+## 2026-10-05 — Local maps: the summary was not the bottleneck, talk is (AI_Handout only)
+Derived map sets from the qwen35_4b_v4_sp maps (`local_slide_map derive`, no regeneration), scored with `clause_replay`
+on tune (original + jumpy). Baseline 96 lit / 4 false ids / 17.6 false s. None of the variants beat it, and none
+reached the 155 / 3-talk target.
+- **Blanking every summary changed nothing** (96 / 4 / 17.6). A patched decider that drops the summary from the doc,
+  so the validator never sees it, gave 95 / 5 / 18.6. Summary := the member texts gave 93 / 5 / 19.5. The model
+  rewrite gave 95 / 5 / 20.8: one content sentence per unit, 69/74 accepted, 0 meta summaries left. The brief's
+  diagnosis ("the summary is read first, so meta summaries sink the clause") did not hold up when measured.
+- **The swap test locates it.** On the slide 4 command unit, for "it's just one command, pointed at the scanned
+  handout": Claude summary + local talk scored −6.9, local summary + Claude talk scored +6.5. The talk carries the
+  score. Claude's talk says what you DO with the unit ("you point it at the pdf", "you just run one script"). The local
+  talk names its kind ("the command", "the code", "the syntax").
+- **A context-free talk rewrite makes things worse.** The 4b got only the unit's text and invented meaning for short
+  units ("8 GB / GPU" → "your machine will feel like a true gaming beast", "14/15 tense-chart page" → "this diagram
+  helps us see how things change"). Tune went to 92 / 7 / 29.8. A talk pass needs slide context or the image, and the
+  4b may simply be too small for it.
+- **The gap to Claude (tune 105 against 96) is mostly partition.** Slide 1 −4 (e2+e3 merged), slide 7 −2 (e4+e5
+  merged), slide 4 −3 (same partition as Claude, so the loss is talk), slide 3 −1, slide 8 +1.
+- **Talk cleanup is neutral and safe.** Digits spoken, in-unit duplicates dropped, phrases on 3 or more slides dropped
+  (3 of them: "how it works", "the first step", "the main topic"), refilled up to 3 twice. All 3 talks scored
+  identically (148 / 9 / 32.6 against 32.9), and digits in talk went from 22 to 0.
+- **Under `think=false`, qwen3.5:4b ignored a small `format` schema** and answered in plain text. Every summary was
+  rejected until the parser accepted plain text. Use plain one-per-line output for short answers.
+- A meta-word check needs an own-text exemption. "a consumer card", "instantly shows" and "phone photos" are content.
+- Both rewrite passes reproduced byte-identically (2/2) on an idle GPU: summary 3.8 s/slide, talk 8.5 s/slide.

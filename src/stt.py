@@ -312,7 +312,7 @@ class SherpaEngine:
     """
 
     def __init__(self, sample_rate: int = 16000, model_dir: Path | None = None,
-                 audio_clock: bool = False) -> None:
+                 audio_clock: bool = False, hotwords_score: float = 0.0) -> None:
         import sherpa_onnx  # local import — heavy, optional dependency
 
         self.sample_rate = sample_rate
@@ -322,6 +322,17 @@ class SherpaEngine:
         self.audio_clock = audio_clock
         md = Path(model_dir) if model_dir else SHERPA_MODEL_DIR
         s = _SHERPA_SUFFIX
+        # hotwords_score > 0: bias toward the hotwords passed to transcribe_stream
+        # (slide map terms). Needs beam search + bpe.vocab (text export of bpe.model).
+        # Off by default; greedy decoding is unchanged then. Measured on the clause
+        # pointer it did not pay (tasks/lessons.md 2026-10-05); live callers pass
+        # hotwords_from_index (trigger words, deck-wide), not per-slide map terms.
+        self.hotwords_score = hotwords_score
+        decoding = {"decoding_method": "greedy_search"}    # no sampling -> reproducible
+        if hotwords_score > 0:
+            decoding = {"decoding_method": "modified_beam_search", "max_active_paths": 4,
+                        "hotwords_score": hotwords_score, "modeling_unit": "bpe",
+                        "bpe_vocab": str(md / "bpe.vocab")}
         self._rec = sherpa_onnx.OnlineRecognizer.from_transducer(
             tokens=str(md / "tokens.txt"),
             encoder=str(md / f"encoder{s}"),
@@ -330,12 +341,12 @@ class SherpaEngine:
             num_threads=1,                      # deterministic CPU decode
             sample_rate=sample_rate,
             feature_dim=80,
-            decoding_method="greedy_search",    # no sampling -> reproducible
             provider="cpu",
             enable_endpoint_detection=True,
             rule1_min_trailing_silence=2.4,
             rule2_min_trailing_silence=1.2,
             rule3_min_utterance_length=300,
+            **decoding,
         )
 
     def transcribe_stream(
@@ -345,9 +356,10 @@ class SherpaEngine:
     ) -> Iterator[Partial]:
         import numpy as np
 
-        del hotwords  # the matcher's embedding handles deck-term robustness
         rec = self._rec
-        stream = rec.create_stream()
+        # the model's tokens are upper case; sherpa splits hotwords on "/"
+        hw = "/".join(t.upper() for t in hotwords or ()) if self.hotwords_score > 0 else ""
+        stream = rec.create_stream(hw) if hw else rec.create_stream()
         last = ""
         audio_t = 0.0
         for chunk in audio_chunks:
@@ -370,18 +382,217 @@ class SherpaEngine:
                 last = text
 
 
+# ---------- Cactus Whistle engine (offline, batch model re-decoded on VAD segments) ----------
+
+WHISTLE_PYTHON = Path(os.environ.get("SMARTPPT_WHISTLE_PYTHON")
+                      or Path.home() / ".venvs" / "smartppt-whistle" / "bin" / "python")
+WHISTLE_WEIGHTS = Path(os.environ.get("SMARTPPT_WHISTLE_WEIGHTS")
+                       or Path.home() / "models" / "whistle" / "whistle.cact")
+WHISTLE_SERVER = Path(__file__).resolve().parents[1] / "tools" / "whistle_server.py"
+
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+         "fifteen sixteen seventeen eighteen nineteen").split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+
+
+def _say_int(n: int) -> str:
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        return _TENS[n // 10] + (f" {_ONES[n % 10]}" if n % 10 else "")
+    for div, name in ((10 ** 6, "million"), (1000, "thousand"), (100, "hundred")):
+        if div <= n < div * 1000:
+            return f"{_say_int(n // div)} {name}" + (f" {_say_int(n % div)}" if n % div else "")
+    return " ".join(_ONES[int(d)] for d in str(n))   # ponytail: ids read digit by digit
+
+
+def spoken_text(text: str) -> str:
+    """Written ASR output ("Hi, it's 100% offline; 0.3 s.") -> sherpa's contract:
+    lower case, numbers in words, no punctuation ("hi it's one hundred percent ...")."""
+    t = text.lower().replace("%", " percent ").replace("&", " and ")
+    t = re.sub(r"(?<=\d),(?=\d{3})", "", t)
+    t = re.sub(r"(\d+)\.(\d+)", lambda m: f" {_say_int(int(m[1]))} point "
+               + " ".join(_ONES[int(d)] for d in m[2]) + " ", t)
+    t = re.sub(r"\d+", lambda m: f" {_say_int(int(m[0]))} ", t)
+    return " ".join(w.strip("'") for w in re.sub(r"[^a-z' ]+", " ", t).split() if w.strip("'"))
+
+
+class WhistleEngine:
+    """Offline STT via Cactus Whistle (55M encoder-decoder, Apache-2.0): about half
+    sherpa's WER on the presenter audio, but batch-only. Made streaming here:
+
+    * energy VAD (``clause_pointer.PauseDetector``'s 20 ms frames and threshold):
+      a segment opens on speech (with ``PREROLL_S`` before it) and ends after
+      ``END_PAUSE_S`` of silence -> one final with the segment's text;
+    * a segment is cut at ``MAX_SEG_S`` (64 encoder frames; one call costs ~4x more
+      above that) at its last silent frame within ``CUT_BACK_S``, else hard; the
+      rest carries over into the next segment;
+    * the open segment is re-decoded every ``PARTIAL_EVERY_S`` of AUDIO time
+      (deterministic, not wall time) -> partials.
+
+    Partials/finals follow SherpaEngine's semantics: a partial is the open
+    segment's text, a final commits it; ``RollingBuffer.words()`` is the whole
+    transcript. Text is put in sherpa's form (``spoken_text``). Keyword biasing
+    is off: it measured net-negative.
+
+    The model runs in a persistent subprocess (``tools/whistle_server.py``) under
+    ~/.venvs/smartppt-whistle (pip: cactus-needle); this process never imports
+    needle. The closed engine starts ~16 threads pinned to every core, so it
+    does not respect taskset/cgroup CPU limits. ``decode`` (pcm16 bytes -> text)
+    replaces the subprocess, for tests.
+    """
+
+    MAX_SEG_S = 5.12
+    END_PAUSE_S = 0.15
+    PARTIAL_EVERY_S = 0.5
+    PREROLL_S = 0.1
+    CUT_BACK_S = 1.5
+
+    def __init__(self, sample_rate: int = 16000, audio_clock: bool = False, decode=None,
+                 python: str | Path | None = None, weights: str | Path | None = None) -> None:
+        self.sample_rate = sample_rate
+        self.audio_clock = audio_clock   # as SherpaEngine: stamp with audio seconds (bench)
+        self.proc = None
+        self.last_ms = 0.0               # server-side wall time of the last decode
+        if decode is None:
+            python, weights = Path(python or WHISTLE_PYTHON), Path(weights or WHISTLE_WEIGHTS)
+            for what, path in (("venv python", python), ("weights", weights), ("server", WHISTLE_SERVER)):
+                if not path.exists():
+                    raise RuntimeError(f"Whistle: {what} not found at {path} (see WhistleEngine docstring)")
+            env = {**os.environ, "NEEDLE_TELEMETRY": "0", "DO_NOT_TRACK": "1", "HF_HUB_OFFLINE": "1"}
+            import subprocess
+            self.proc = subprocess.Popen([str(python), str(WHISTLE_SERVER), "--weights", str(weights)],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+            ready = self._read()
+            if not ready.get("ok"):
+                self.close()
+                raise RuntimeError(f"whistle server failed to start: {ready.get('error')}")
+            decode = self._decode_remote
+        self._decode = decode
+
+    def _read(self) -> dict:
+        line = self.proc.stdout.readline()
+        if not line:
+            raise RuntimeError(f"whistle server exited (code {self.proc.poll()}); see its stderr")
+        return json.loads(line)
+
+    def _decode_remote(self, pcm: bytes) -> str:
+        self.proc.stdin.write(json.dumps({"n": len(pcm)}).encode() + b"\n" + pcm)
+        self.proc.stdin.flush()
+        reply = self._read()
+        if not reply.get("ok"):
+            raise RuntimeError(f"whistle server error: {reply.get('error')}")
+        self.last_ms = float(reply.get("ms", 0.0))
+        return reply["text"]
+
+    def close(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.stdin.close()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+
+    def transcribe_stream(
+        self,
+        audio_chunks: Iterator[bytes],
+        hotwords: list[str] | None = None,
+    ) -> Iterator[Partial]:
+        from .clause_pointer import PauseDetector
+
+        del hotwords  # Whistle keyword biasing measured net-negative
+        sr = self.sample_rate
+        det = PauseDetector(sr, min_pause=self.END_PAUSE_S)
+        fb = det.hop * 2                                   # bytes per 20 ms frame
+        end_frames = round(self.END_PAUSE_S / det.frame_s)
+        max_b, back_b = int(self.MAX_SEG_S * sr) * 2, int(self.CUT_BACK_S * sr) * 2
+        every_b = int(self.PARTIAL_EVERY_S * sr) * 2
+        pre: deque[bytes] = deque(maxlen=max(1, round(self.PREROLL_S / det.frame_s)))
+        seg = bytearray()       # the open segment's PCM; empty = no segment open
+        dip = 0                 # bytes into seg after its last silent frame
+        decoded = 0             # len(seg) at the last partial decode
+        shown = False           # a partial of this segment is on screen
+        last = ""
+        rest = b""
+        audio_t = 0.0
+        out: list[tuple[str, bool]] = []
+
+        def final(n: int) -> None:
+            nonlocal shown, last
+            text = spoken_text(self._decode(bytes(seg[:n])))
+            if text or shown:                    # an empty final clears a shown partial
+                out.append((text, True))
+            shown, last = False, ""
+
+        for chunk in audio_chunks:
+            if not chunk:
+                continue
+            audio_t += len(chunk) / 2 / sr
+            rest += chunk
+            n = len(rest) // fb * fb
+            frames, rest = [rest[i:i + fb] for i in range(0, n, fb)], rest[n:]
+            for f in frames:
+                det.feed(f)
+                silent = det._silent_run > 0     # the detector's per-frame decision
+                if not seg:
+                    if silent:
+                        pre.append(f)
+                        continue
+                    seg += b"".join(pre)
+                    pre.clear()
+                    dip = decoded = 0
+                seg += f
+                if silent:
+                    dip = len(seg)
+                if det._silent_run >= end_frames:                  # pause: segment over
+                    final(len(seg))
+                    seg = bytearray()
+                elif len(seg) >= max_b:                            # too long: cut at a dip
+                    cut = dip if dip > len(seg) - back_b else len(seg)
+                    final(cut)
+                    seg = seg[cut:]
+                    dip = decoded = 0
+            if seg and len(seg) - decoded >= every_b:
+                decoded = len(seg)
+                text = spoken_text(self._decode(bytes(seg)))
+                if text and text != last:
+                    out.append((text, False))
+                    shown, last = True, text
+            stamp = {"timestamp": audio_t} if self.audio_clock else {}
+            for text, is_final in out:
+                yield Partial(text=text, is_final=is_final, **stamp)
+            out.clear()
+        if seg:                                  # end of audio: commit the open segment
+            final(len(seg))
+            stamp = {"timestamp": audio_t} if self.audio_clock else {}
+            for text, is_final in out:
+                yield Partial(text=text, is_final=is_final, **stamp)
+
+
 def load_default_stt_engine(sample_rate: int = 16000, grammar: bool = False,
-                            audio_clock: bool = False):
+                            audio_clock: bool = False, engine: str | None = None,
+                            hotwords_score: float | None = None):
     """Return the best available offline STT engine.
 
-    Prefers the lower-latency sherpa-onnx streaming model when it's installed and
-    the model is present; otherwise falls back to Vosk. `grammar` forces Vosk
-    (its deck-vocabulary constraint mode has no sherpa equivalent here).
-    `audio_clock` (unpaced bench replay) requires sherpa — no silent fallback.
+    `engine` (default: env SMARTPPT_STT, else "sherpa"): "whistle" returns
+    WhistleEngine and raises when it is not installed. Otherwise this prefers the
+    lower-latency sherpa-onnx streaming model when it's installed and the model is
+    present, and falls back to Vosk. `grammar` forces Vosk (its deck-vocabulary
+    constraint mode has no sherpa equivalent here). `hotwords_score` (default: env
+    SMARTPPT_STT_HOTWORDS, else 0 = off) turns on sherpa's hotword biasing.
+    `audio_clock` (unpaced bench replay) requires sherpa or whistle — no silent fallback.
     """
+    engine = engine or os.environ.get("SMARTPPT_STT") or "sherpa"
+    if engine == "whistle":
+        return WhistleEngine(sample_rate=sample_rate, audio_clock=audio_clock)
+    if engine != "sherpa":
+        raise ValueError(f"unknown STT engine {engine!r} (sherpa | whistle)")
+    if hotwords_score is None:
+        hotwords_score = float(os.environ.get("SMARTPPT_STT_HOTWORDS") or 0.0)
     if not grammar and _sherpa_model_present():
         try:
-            return SherpaEngine(sample_rate=sample_rate, audio_clock=audio_clock)
+            return SherpaEngine(sample_rate=sample_rate, audio_clock=audio_clock,
+                                hotwords_score=hotwords_score)
         except Exception as e:  # missing dep / bad model -> fall back, don't crash
             if audio_clock:
                 raise

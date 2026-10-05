@@ -9,7 +9,8 @@ from src.live import LiveTranscriber
 from src.live_controller import LiveController
 from src.stt import Partial, RollingBuffer
 
-UNITS = [{"uid": u, "text": u, "summary": "", "talk": [], "terms": []} for u in ("t", "a", "b")]
+UNITS = [{"uid": u, "text": t, "summary": "", "talk": [], "terms": []}
+         for u, t in (("t", "title"), ("a", "alpha"), ("b", "beta"))]
 
 
 class KeywordDecider:
@@ -27,7 +28,8 @@ class KeywordDecider:
 
 def _ptr(**kw):
     d = KeywordDecider({"t": "title", "a": "alpha", "b": "beta"})
-    p = ClauseParams(**{"min_words": 2, "commit": 0.0, "gap": 0.5, "switch": 1.0, **kw})
+    p = ClauseParams(**{"min_words": 2, "commit": 0.0, "gap": 0.5, "jump_gap": 0.5, "switch": 1.0,
+                        "title_extra": 2.0, **kw})
     return ClausePointer(d, UNITS, p, low_prior={"t"}), d
 
 
@@ -58,6 +60,26 @@ def test_title_units_need_the_extra_margin():
     cp, _ = _ptr(title_extra=1.0)
     assert cp.update("the title here".split()).active is None
     assert cp.update("the title title".split()).active == "t"
+
+
+def test_a_new_clause_needs_jump_gap_to_move_a_lit_box():
+    cp, _ = _ptr(jump_gap=1.5)
+    cp.update("look alpha".split())
+    assert cp.update("look alpha now beta".split(), [2]).active == "a"        # beta 1 vs alpha 0: < 1.5
+    assert cp.update("look alpha now beta beta".split()).active == "b"        # 2 vs 0
+    fresh, _ = _ptr(jump_gap=1.5)
+    assert fresh.update("now beta".split()).active == "b"                     # first light: plain gap
+
+
+def test_titles_light_only_on_their_own_words():
+    class Loud(KeywordDecider):                     # scores the title high whatever is said
+        def decide(self, clause, context, units):
+            return {**super().decide(clause, context, units), "t": 9.0}
+    p = ClauseParams(min_words=2, commit=0.0, gap=0.5, title_extra=1.0)
+    cp = ClausePointer(Loud({"t": "title", "a": "alpha", "b": "beta"}), UNITS, p, low_prior={"t"})
+    assert cp.title_words == {"t": {"title"}}
+    assert cp.update("so how alpha".split()).active == "a"          # title gated out: alpha wins
+    assert cp.update("so how alpha the title".split()).active == "t"
 
 
 def test_max_words_starts_a_new_clause_and_keeps_context():
@@ -132,6 +154,8 @@ def test_slide_units_reads_the_map():
     assert [u["uid"] for u in units] == ["t", "a", "b"]
     assert units[1]["text"] == "Alpha stage" and units[1]["summary"] == "alpha"
     assert head == {"t": "s1_t", "a": "s1_a", "b": "s1_b"} and low == {"t"}
+    units, _, _ = slide_units(_mapped_index()["slides"][0], {"w": 4.0, "h": 5.0})
+    assert [u["terms"] for u in units] == [["on the left top"], ["on the left"], ["on the left bottom"]]
 
 
 class _NoScores:
@@ -149,7 +173,7 @@ def test_controller_uses_the_clause_pointer_on_mapped_slides_only():
     m = _NoScores()
     dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
     c = LiveController(m, _mapped_index(), normalizer=lambda t: t, decider=dec,
-                       clause_params=ClauseParams(min_words=2, gap=0.5))
+                       clause_params=ClauseParams(min_words=2, gap=0.5, commit=0.0))
     c.push(Partial("now the alpha", False, 1.0))
     ev = c.feed()
     assert ev.active_id == "s1_a" and ev.tail == "now the alpha" and not m.seen
@@ -172,8 +196,72 @@ def test_controller_tail_pointer_ignores_maps():
 def test_controller_slide_speech_starts_at_reset():
     dec = KeywordDecider({"t": "pipeline", "a": "alpha", "b": "beta"})
     c = LiveController(_NoScores(), _mapped_index(), normalizer=lambda t: t, decider=dec,
-                       clause_params=ClauseParams(min_words=2, gap=0.5))
+                       clause_params=ClauseParams(min_words=2, gap=0.5, commit=0.0))
     c.push(Partial("beta beta beta", False, 1.0))
     c.reset()                                            # slide shown again: old words don't count
     c.push(Partial("beta beta beta and alpha now", False, 2.0))
     assert c.feed().active_id == "s1_a"
+
+
+class Scripted:
+    """Scores from a queue, one dict per decider call; none = 0."""
+
+    def __init__(self, *calls):
+        self.calls = list(calls)
+
+    def decide(self, clause, context, units):
+        return {**self.calls.pop(0), "none": 0.0}
+
+
+CARD_UNITS = [{"uid": u, "text": "", "summary": "", "talk": [], "terms": [], "parents": p}
+              for u, p in (("c", []), ("a", ["c"]), ("b", []))]
+
+
+def _card_ptr(*calls, **kw):
+    p = ClauseParams(**{"min_words": 1, "commit": 0.0, "gap": 1.0, "jump_gap": 2.0, "switch": 1.0,
+                        "card": 1.0, "repair": 0.0, **kw})
+    return ClausePointer(Scripted(*calls), CARD_UNITS, p)
+
+
+def test_a_child_within_card_lights_its_card_and_holds_it():
+    cp = _card_ptr({"a": 3.0, "c": 2.5, "b": 0.0}, {"a": 3.0, "c": 2.4, "b": 0.0})
+    d = cp.update(["one"])
+    assert (d.active, cp.committed) == ("c", "c")         # child a wins by 0.5 <= card: the card lights
+    assert cp.update(["one", "two"]).active == "c"        # same evidence: no churn back to the child
+    off = _card_ptr({"a": 3.0, "c": 2.5, "b": 0.0}, card=-1.0)
+    assert off.update(["one"]).active is None             # off: a over c by 0.5 < gap, nothing lights
+
+
+def test_a_child_far_above_its_card_lights_itself():
+    cp = _card_ptr({"a": 5.0, "c": 2.5, "b": 0.0})
+    assert cp.update(["one"]).active == "a"
+
+
+def test_moving_between_a_card_and_its_child_is_no_topic_jump():
+    cp = _card_ptr({"c": 3.0, "a": 0.0, "b": 0.0}, {"a": 4.0, "b": 2.5, "c": 1.0}, card=0.5)
+    assert cp.update(["x"]).active == "c"
+    assert cp.update(["x", "y"], [1]).active == "a"       # 1.5 over b: gap 1 suffices (own card -> child)
+    cp = _card_ptr({"c": 3.0, "a": 0.0, "b": 0.0}, {"b": 4.0, "a": 2.5, "c": 1.0}, card=0.5)
+    cp.update(["x"])
+    assert cp.update(["x", "y"], [1]).active == "c"       # unrelated b needs jump_gap 2
+
+
+def test_slide_units_reads_card_relations():
+    idx = _mapped_index()
+    idx["slides"][0]["map"]["relations"] = [{"from": "a", "to": "b", "type": "part_of"},
+                                            {"from": "b", "to": "a", "type": "flow"}]
+    units, _, _ = slide_units(idx["slides"][0])
+    assert [u["parents"] for u in units] == [[], ["b"], []]
+
+
+def test_the_pointer_scores_the_repaired_clause():
+    seen = []
+
+    class Rec(KeywordDecider):
+        def decide(self, clause, context, units):
+            seen.append(clause)
+            return super().decide(clause, context, units)
+    units = [{"uid": "k", "text": "Linux kernel", "summary": "", "talk": [], "terms": []},
+             {"uid": "a", "text": "alpha", "summary": "", "talk": [], "terms": []}]
+    cp = ClausePointer(Rec({"k": "kernel", "a": "alpha"}), units, ClauseParams(min_words=2, gap=0.5, commit=0.0, repair=0.25))
+    assert cp.update("the colonel".split()).active == "k" and seen == ["the kernel"]
