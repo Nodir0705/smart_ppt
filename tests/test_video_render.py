@@ -334,12 +334,16 @@ def test_render_deck_is_complete_or_not_built(ffmpeg, tmp_path, capsys, monkeypa
     deck, dh = P.out / "deck.mp4", P.out / "deck.hash"
 
     def run(**kw):
-        rc = render("D", size=(320, 180), root=tmp_path, **kw)
+        rc = render("D", size=(320, 180), root=tmp_path, captions=False, **kw)
         return rc, capsys.readouterr().out
 
     rc, out = run()
     assert rc == 0 and "dropped cue 5" in out and deck.exists()
     assert len(set(_video(P.out / "slide_002.mp4"))) == 1               # "cues": [] -> a plain slide
+    one = (P.out / "slide_001.srt").read_text()                         # sidecars even without burn-in
+    assert one.startswith("1\n00:00:00,100 --> 00:00:01,000\nWe start by reading pages.\n\n2\n")
+    assert one.endswith(" --> 00:00:02,000\nThen grading answers\nneeds eight GB memory.\n\n")   # 43 chars: 2 lines
+    assert (P.out / "deck.srt").read_text().split("\n\n")[2].startswith("3\n00:00:02,700 --> ")   # 2 s + 0.6 s gap
     good = (deck.read_bytes(), dh.read_text())
 
     rc, out = run()

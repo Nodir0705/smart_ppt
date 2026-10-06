@@ -19,6 +19,11 @@ then ``deck.mp4``. Deterministic: every frame is ``draw(base, state_at(i / fps))
   ``DRAW_VERSION`` is the renderer's own (``VERSION`` also keys the voice cache): bump it
   whenever drawing changes, or unchanged slides keep their old frames.
   A hash is deleted before its output is rebuilt and written after it is done.
+- Captions (``captions``): burned in unless ``captions=False`` (CLI ``--no-captions``,
+  which is part of the slide hash); the frame memo key is (effect state, caption
+  state). The ``.srt`` sidecars are written either way, as plain functions of the
+  timings: ``slide_NNN.srt`` for every rendered or cached slide (ends at the wav's
+  end) and ``deck.srt`` with each deck.mp4 (offsets = wav lengths + ``GAP_S``).
 
 Decisions where the plan left details open:
 - Invalid cues (spec §4): failing cues are dropped and the rest re-validated
@@ -58,13 +63,14 @@ from PIL import Image
 
 from src.simulate_to_video import _wav_duration_s
 from tools.video import ROOT, VERSION, numbered, paths
+from tools.video.captions import at as caption_at, draw as draw_caption, layout, srt, srt_deck, timed
 from tools.video.cues import SLIDE_W, effective_until, resolve, validate, warnings
 from tools.video.effects import Effect, draw, lens_box, state_at
 from tools.video.geometry import Letterbox
 from tools.video.script import sentences, words
 
 FPS = 30
-DRAW_VERSION = 2            # 2: effects polish (glow, back ease, arms, ring, lens)
+DRAW_VERSION = 3            # 2: effects polish (glow, back ease, arms, ring, lens); 3: captions
 GAP_S = 0.6
 OVERLAP = ("concurrency:", "zoom overlaps")
 SHIM = Path.home() / ".venvs" / "ffmpeg-static" / "shim"
@@ -138,14 +144,23 @@ def build_plan(cues, slide, sents, rows, lb: Letterbox) -> list[Effect]:
     return plan
 
 
+def compose(base, state, cap) -> Image.Image:
+    """One frame: the effects ``state`` on ``base``, then the caption ``cap`` (``captions.at``'s value)."""
+    img = draw(base, state)
+    if cap:
+        draw_caption(img, *cap)
+    return img
+
+
 def render_slide(png, slide, slide_size, sheet, sents, rows, wav, out_mp4,
-                 size=(1920, 1080), fps=FPS) -> list[str]:
+                 size=(1920, 1080), fps=FPS, captions=True) -> list[str]:
     """Render one slide MP4; returns the dropped-cue log. Raises ValueError if refused."""
     cues, dropped = playable(sheet, slide, sents, rows, slide_size["w"])
     img = Image.open(png)
     lb = Letterbox(slide_size["w"], slide_size["h"], img.width, img.height, *size)
     base = lb.place(img)
     plan = build_plan(cues, slide, sents, rows, lb)
+    caps = layout(sents, rows, plan, size) if captions else []
     n = int(_wav_duration_s(Path(wav)) * fps) + 1
     cmd = ["ffmpeg", "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[0]}x{size[1]}", "-framerate", str(fps), "-i", "-",
@@ -155,9 +170,9 @@ def render_slide(png, slide, slide_size, sheet, sents, rows, wav, out_mp4,
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errf)
         try:
             for i in range(n):
-                state = state_at(i / fps, plan)
-                if state != last:
-                    buf, last, unique = draw(base, state).tobytes(), state, unique + 1
+                key = (state_at(i / fps, plan), caption_at(i / fps, caps))
+                if key != last:
+                    buf, last, unique = compose(base, *key).tobytes(), key, unique + 1
                 proc.stdin.write(buf)
             proc.stdin.close()
         except BrokenPipeError:
@@ -238,7 +253,7 @@ def check(deck: str, only: int | None = None, root: Path = ROOT) -> int:
     return 1 if bad else 0
 
 
-def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = ROOT) -> int:
+def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = ROOT, captions=True) -> int:
     """The ``render`` step: every scripted slide, then deck.mp4 if none was refused. 1 if any refused."""
     P = paths(deck, root)
     slides, slide_size = _index(P)
@@ -250,7 +265,7 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
         print(f"no scripts in {P.script}" + (f" for slide {only}" if only is not None else ""))
         return 1
     P.out.mkdir(parents=True, exist_ok=True)
-    parts, keys, refused = [], [], 0
+    parts, keys, subs, refused = [], [], [], 0
     for n, _ in scripted:
         sents, tim = _load(P, n)
         if not sents:
@@ -267,7 +282,7 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
         sheet = json.loads(sheets[n].read_text())
         png = P.slides / f"{name}.png"
         mp4, hf, lf = P.out / f"{name}.mp4", P.out / f"{name}.hash", P.out / f"{name}.dropped.txt"
-        key = _sha(json.dumps([sheet, sents, tim, slides[n], VERSION, DRAW_VERSION, list(size), FPS],
+        key = _sha(json.dumps([sheet, sents, tim, slides[n], VERSION, DRAW_VERSION, list(size), FPS, captions],
                               sort_keys=True).encode() + png.read_bytes())
         if mp4.exists() and hf.exists() and hf.read_text() == key:
             print(f"slide {n}: cached {mp4}")
@@ -276,7 +291,8 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
             print(f"slide {n}: rendering")
             hf.unlink(missing_ok=True)        # ffmpeg truncates the mp4: no hash may outlive a failed run
             try:
-                dropped = render_slide(png, slides[n], slide_size, sheet, sents, tim["sentences"], wav, mp4, size)
+                dropped = render_slide(png, slides[n], slide_size, sheet, sents, tim["sentences"], wav, mp4, size,
+                                       captions=captions)
             except ValueError as e:
                 print(f"  refused: {e}")
                 refused += 1
@@ -285,6 +301,8 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
             hf.write_text(key)                # last: so a hash only ever sits next to a finished mp4 + log
         for e in dropped:
             print(f"  dropped {e}")
+        subs.append((timed(sents, tim["sentences"]), _wav_duration_s(wav)))
+        (P.out / f"{name}.srt").write_text(srt(*subs[-1]), encoding="utf-8")
         parts.append(mp4)
         keys.append(key)
     if only is None and refused:
@@ -299,4 +317,5 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
             concat(parts, deck_mp4)
             dh.write_text(key)
             print(f"deck: {len(parts)} slides -> {deck_mp4}")
+        (P.out / "deck.srt").write_text(srt_deck(subs, GAP_S), encoding="utf-8")
     return 1 if refused else 0

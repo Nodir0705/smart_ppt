@@ -185,6 +185,24 @@ slide renders with the valid ones; this is logged.
     (decoration and empty space are free), then sits nearest the source.
 - **Units:** an effect on a unit uses the union bbox of its members, padded by
   6 px.
+- **Captions** (`tools/video/captions.py`; on by default, `--no-captions` turns the
+  burn-in off): one caption per sentence, its words as written, on at most 2 lines
+  of ≤ 42 characters with the break where the longer line is shortest. A longer
+  sentence becomes the fewest chunks that fit, evened out by least sum of squared
+  lengths (no orphan chunk). A chunk shows from its first word's start to the next
+  chunk's start; the last one holds to the end of the slide.
+  - Look: a HUD panel, bottom-centred with a 4 % margin, rounded, in the halo colour
+    at alpha 0.6. Text is DejaVu Sans (a system font, never downloaded) at 3.3 % of
+    the frame height, white, with the spoken word in the accent (karaoke). Pure
+    punctuation is never lit, and nothing is lit once the chunk's last word ends.
+  - Placement is decided once per chunk, so the panel never jumps mid-chunk. If the
+    bottom panel would cover a focus (at its 108 % snap), a glide's path or a zoom
+    lens live during the chunk (each grown by 16 px), it moves to the top. If both
+    spots are covered, it goes where it covers less.
+  - Frames are memoized on (effect state, chunk, lit word).
+  - Sidecars: `slide_NNN.srt` for every rendered slide and `deck.srt` with
+    `deck.mp4` (offsets = wav lengths + 0.6 s). They are written with or without
+    the burn-in.
 - **Encoding:** the static ffmpeg (`~/.venvs/ffmpeg-static/shim`) encodes the
   frames with the slide's voice track into `slide_NNN.mp4`, and all slides are
   concatenated into `deck.mp4` with a 0.6 s pause between slides. Rendering

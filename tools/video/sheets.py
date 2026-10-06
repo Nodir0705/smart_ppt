@@ -4,9 +4,10 @@ in the cue sheet), for judging effects without watching the video.
 
 Each sheet is a 2x2 grid of half-size frames: the cue's start + 0.1 s, + 0.5 s,
 + 1.0 s and its last frame, with the cue summary and its anchor sentence
-printed underneath. Frames are the renderer's own (``draw(base, state_at(i /
-FPS, plan))`` from ``render.build_plan``), on its frame grid, so every effect
-live at that moment is in them, not only cue K. Offsets past the cue's end
+printed underneath. Frames are the renderer's own (``render.compose`` of
+``state_at(i / FPS, plan)`` from ``render.build_plan`` and the caption at that
+time, unless ``captions=False``), on its frame grid, so every effect live at
+that moment is in them, not only cue K. Offsets past the cue's end
 clamp to its last frame; a cue that holds to the end of the slide ends on the
 slide's last frame (wav length, as in ``render``). Dropped cues get no sheet
 (printed with the reason); a slide's old sheets are deleted before its new
@@ -24,10 +25,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from src.simulate_to_video import _wav_duration_s
 from tools.video import ROOT, numbered, paths
+from tools.video.captions import at as caption_at, layout
 from tools.video.cues import effective_until
-from tools.video.effects import draw, state_at
+from tools.video.effects import state_at
 from tools.video.geometry import Letterbox
-from tools.video.render import FPS, _index, _load, _pick, build_plan, no_sheets, playable
+from tools.video.render import FPS, _index, _load, _pick, build_plan, compose, no_sheets, playable
 
 OFFSETS = (0.1, 0.5, 1.0)
 INK, PAPER = (230, 236, 242), (16, 20, 26)
@@ -66,7 +68,7 @@ def _sheet(frames, labels, lines, size) -> Image.Image:
     return img
 
 
-def sheets(deck: str, only: int | None = None, size=(1920, 1080), root: Path = ROOT) -> int:
+def sheets(deck: str, only: int | None = None, size=(1920, 1080), root: Path = ROOT, captions=True) -> int:
     """Write the contact sheets; 1 if any slide had to be skipped."""
     P = paths(deck, root)
     slides, slide_size = _index(P)
@@ -101,13 +103,14 @@ def sheets(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
         lb = Letterbox(slide_size["w"], slide_size["h"], img.width, img.height, *size)
         base = lb.place(img)
         plan = build_plan(cues, slides[n], sents, rows, lb)
+        caps = layout(sents, rows, plan, size) if captions else []
         iv = effective_until({"cues": cues}, rows)
         total = int(_wav_duration_s(wav) * FPS) + 1
         for old in out.glob(f"{name}_c*.png"):
             old.unlink()
         for k, c, (t0, t1) in zip(kept, cues, iv):
             idx = frames_for(t0, t1, total)
-            frames = [draw(base, state_at(i / FPS, plan)) for i in idx]
+            frames = [compose(base, state_at(i / FPS, plan), caption_at(i / FPS, caps)) for i in idx]
             labels = [f"{tag}  t={i / FPS:.2f} s" for tag, i in zip(("+0.1 s", "+0.5 s", "+1.0 s", "end"), idx)]
             text = [f"slide {n} · {_summary(k, c, sents, t0, t1)}", f"s{c['at']['s']}: {' '.join(sents[c['at']['s']])}"]
             dest = out / f"{name}_c{k}.png"
