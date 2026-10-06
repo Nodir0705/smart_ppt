@@ -37,12 +37,21 @@ def resample(pcm: bytes, src_rate: int, dst_rate: int, width: int = 2,
     if _audioop is not None:
         out, _ = _audioop.ratecv(pcm, width, channels, src_rate, dst_rate, None)
         return out
+    return resample_poly(pcm, src_rate, dst_rate, channels)
+
+
+def resample_poly(pcm: bytes, src_rate: int, dst_rate: int, channels: int = 1) -> bytes:
+    """Anti-aliased polyphase resample of 16-bit PCM (scipy), deterministic.
+    ``audioop.ratecv`` is linear with no anti-alias filter, so 22-24 kHz TTS
+    downsampled with it aliases its top band into the ASR input."""
+    if src_rate == dst_rate:
+        return pcm
     import numpy as np
-    from scipy.signal import resample_poly
+    from scipy.signal import resample_poly as _poly
 
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
     if channels > 1:
         samples = samples.reshape(-1, channels)
     g = gcd(src_rate, dst_rate)
-    resampled = resample_poly(samples, dst_rate // g, src_rate // g, axis=0)
+    resampled = _poly(samples, dst_rate // g, src_rate // g, axis=0)
     return np.clip(np.round(resampled), -32768, 32767).astype(np.int16).tobytes()

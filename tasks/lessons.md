@@ -359,3 +359,22 @@ defaults. Then the sealed `casual` talk once. Nothing adopted; no default change
   min_words, makes every config ~4 s for 3 talks (0 misses afterwards); the cached default row matched
   `clause_replay` exactly. `clause_replay --styles casual` now works (SCRIPTS has it; `--record` and the defaults
   still cover only original / jumpy / meaning).
+
+## 2026-10-06 — Video voice upgrade: Kokoro-82M replaces Piper amy-low (AI_Handout slide 4 only)
+Benched 5 voices on the first 3 sentences of `script/AI_Handout_Checker/slide_004.md` (99 normalized words). WER is
+from Whistle on 16 kHz copies; RTF is CPU wall / audio s with a fresh process or session per run, as the pipeline does.
+amy-low 15/99 (RTF 0.03) · Kokoro af_heart 13/99 (0.27) · cori-high 22/99 (0.16) · libritts_r-medium 24/99 (0.05) ·
+ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default is now `kokoro-heart`.
+- **Piper was never deterministic.** Its VITS graph has 8-10 RandomNormalLike ops. Their generator is seeded at session
+  build and advances on every run, so amy-low gave 3 different lengths in 3 runs. The voice hash cache hid this.
+  Fix: `onnxruntime.set_seed(0)` and a fresh `InferenceSession` before each slide. Kokoro v1.0's graph has no random
+  ops and is bit-identical across processes.
+- **The higher-quality Piper voices did worse on intelligibility.** The 22 kHz "high" voices mangle spelled-out
+  letters and names ("O C R", "Qwen three", "python nano dot py") more than amy-low does. Check the model-card
+  licences: lessac (Blizzard, research-only), ryan (CC BY-NC-SA) and hfc_female (NC) are out. libritts_r and alba
+  are fine-tuned from lessac.
+- **The slide wav now stays at the voice's own rate.** The old path downsampled everything to 16 kHz. Whistle gets
+  `src.pcm.resample_poly` copies, which are anti-aliased; `audioop.ratecv` is linear.
+- **Slide 4 coverage is a tie** (mean 87.6 % Kokoro against 88.2 % amy). Kokoro says "P D F" / "C S V" fluently,
+  so Whistle writes "pdf" and `timings.match` cannot pair it with the letters "p d f". That costs s0 and s4 their
+  85 % flag. The fix belongs in `match` (letter runs against an acronym), not in the voice.

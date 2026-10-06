@@ -13,25 +13,25 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageDraw
 
-from src.tts import TARGET_RATE, PiperTTS
+from src.pcm import resample_poly
+from src.tts import TARGET_RATE
 import tools.video.render as R
 from tools.video import paths
 from tools.video.render import SHIM, check, concat, no_sheets, playable, render, render_slide
 from tools.video.script import words
-from tools.video.voice import voice, whistle_words
+from tools.video.voice import VOICES, Kokoro, Piper, deterministic, load_tts, resolve, voice, whistle_words
 
 FPS = 30
 
 
 # ---- voice ------------------------------------------------------------------
 
-class _FakeTTS(PiperTTS):
+class _FakeTTS:
     """No voice model: every sentence is 0.5 s of a constant tone."""
-    def __init__(self):
-        pass
+    rate = TARGET_RATE
 
-    def _pcm16k(self, text):
-        return b"\x10\x00" * (TARGET_RATE // 2)
+    def synth(self, sents):
+        return [b"\x10\x00" * (TARGET_RATE // 2) for _ in sents]
 
 
 class _Boom:
@@ -92,6 +92,80 @@ def test_voice_failure_leaves_no_stale_cache(tmp_path):
     assert not (T / "slide_002.hash").exists() and not (T / "slide_002.json").exists()  # render refuses
     md.write_text("First it reads the page.\n")                        # revert
     assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=ok) == [2]     # re-voiced, not "cached"
+
+
+def test_voice_wav_keeps_the_native_rate_whistle_gets_16k(tmp_path):
+    """A 24 kHz voice: the slide wav stays 24 kHz, each sentence goes to Whistle at 16 kHz."""
+    class Tts24k:
+        rate = 24000
+
+        def synth(self, sents):
+            return [b"\x10\x00" * 12000 for _ in sents]           # 0.5 s each
+
+    md = tmp_path / "script/D/slide_001.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("One.\nTwo.\n")
+    sizes = []
+    asr = lambda pcm: sizes.append(len(pcm)) or [{"word": "one", "start": 0.0, "end": 0.2}]
+    assert voice("D", root=tmp_path, tts=Tts24k(), asr=asr) == [1]
+    assert sizes == [TARGET_RATE, TARGET_RATE]                       # 0.5 s at 16 kHz, 2 bytes/sample
+    with wave.open(str(tmp_path / "out/video/D/voice/slide_001.wav"), "rb") as w:
+        assert (w.getframerate(), w.getnframes()) == (24000, 2 * (12000 + 8400))
+    tim = json.loads((tmp_path / "out/video/D/timings/slide_001.json").read_text())
+    assert tim["duration"] == pytest.approx(1.7) and tim["sentences"][1][0]["start"] == 0.85
+
+
+def test_voice_cache_key_follows_the_voice(tmp_path):
+    md = tmp_path / "script/D/slide_001.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("One.\n")
+    ok = lambda pcm: [{"word": "one", "start": 0.0, "end": 0.2}]
+    assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=ok, name="amy-low") == [1]
+    assert voice("D", root=tmp_path, tts=_Boom(), asr=_boom_asr, name="amy-low") == []
+    assert voice("D", root=tmp_path, tts=_FakeTTS(), asr=ok, name="kokoro:am_michael") == [1]
+
+
+def test_resolve_names_specs_and_unknown():
+    assert resolve("amy-low") == "piper:out/voices/en_US-amy-low.onnx"
+    assert all(resolve(n) == s for n, s in VOICES.items())
+    assert resolve("kokoro:bf_emma") == "kokoro:bf_emma"                # raw spec passes through
+    assert resolve("piper:x/y.onnx") == "piper:x/y.onnx"
+    for bad in ("nope", "espeak:en", "kokoro:", "piper:"):
+        with pytest.raises(ValueError, match="voice"):
+            resolve(bad)
+
+
+def test_load_tts_picks_the_backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(Piper, "__init__", lambda self, model: setattr(self, "model", model))
+    monkeypatch.setattr(Kokoro, "__init__", lambda self, vid: setattr(self, "vid", vid))
+    assert load_tts("piper:out/voices/a.onnx").model.name == "a.onnx"
+    assert load_tts("kokoro-heart").vid == "af_heart"
+
+
+def test_kokoro_reports_a_missing_venv_or_model(tmp_path):
+    with pytest.raises(RuntimeError, match="Kokoro: venv python not found"):
+        Kokoro("af_heart", python=tmp_path / "nope", model=tmp_path, voices=tmp_path)
+
+
+def test_deterministic_helper():
+    class Fixed:
+        def synth(self, sents):
+            return [s.encode() for s in sents]
+
+    class Drifts:
+        n = 0
+
+        def synth(self, sents):
+            self.n += 1
+            return [s.encode() + bytes([self.n]) for s in sents]
+
+    assert deterministic(Fixed(), ["a b", "c"]) is True
+    assert deterministic(Drifts(), ["a b", "c"]) is False
+
+
+def test_resample_poly():
+    assert resample_poly(b"\x01\x00" * 160, TARGET_RATE, TARGET_RATE) == b"\x01\x00" * 160   # same rate: untouched
+    assert len(resample_poly(b"\x00\x00" * 2400, 24000, TARGET_RATE)) == 2 * 1600            # 0.1 s stays 0.1 s
 
 
 def test_whistle_words_asks_for_word_timestamps():

@@ -1,5 +1,5 @@
 """CLI: ``python3 -m tools.video {packets-draft,voice,packets-direct,validate,render,all} <deck>
-[--only N] [--size WxH]``.
+[--only N] [--size WxH] [--voice NAME]``.
 
 ``packets-draft`` / ``packets-direct`` write the agent packets and end with a
 ``todo:`` line (see ``packets``); the draft and direct steps themselves are the
@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("step", choices=["packets-draft", "voice", "packets-direct", "validate", "render", "all"])
     ap.add_argument("deck")
     ap.add_argument("--only", type=int, help="this slide number only")
+    ap.add_argument("--voice", default=voice.DEFAULT_VOICE,
+                    help=f"voice step: one of {sorted(voice.VOICES)} or piper:<model.onnx> | kokoro:<voice id>"
+                         f" (default {voice.DEFAULT_VOICE})")
     ap.add_argument("--size", type=_size, default=(1920, 1080), help="WxH, default 1920x1080")
     ap.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
@@ -36,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.step == "packets-direct":
         packets.direct(a.deck, a.only, a.root)
     if a.step in ("voice", "all"):
-        voice.voice(a.deck, a.only, a.root)
+        voice.voice(a.deck, a.only, a.root, name=a.voice)
     if a.step == "validate":
         return render.check(a.deck, a.only, a.root)
     if a.step in ("render", "all"):

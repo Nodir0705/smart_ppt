@@ -13,7 +13,7 @@ Effects are choreographed to the exact words of the narration.
 - **Output:** a recorded video (MP4). There is no live talk, so the whole
   narration is known before any effect is drawn.
 - **Input:** a `.pptx` plus a narration script. **Claude drafts the script and
-  the user edits it.** The script is read by the existing Piper TTS voice.
+  the user edits it.** The script is read by an offline TTS voice (default Kokoro-82M, see §3).
 - **Brain:** Claude, via Claude Code agents with one agent per slide, as for the
   slide maps. The file formats are model-agnostic, so a local Qwen3.5 path can be
   added later and measured against Claude (v2).
@@ -33,7 +33,7 @@ decks/<deck>.pptx
  │                     understanding maps out/maps/<deck>/slide_NNN.json
  ├─ draft    (new)     Claude, 1 agent/slide → script/<deck>/slide_NNN.md
  ├─ (user edits the .md files)
- ├─ voice    (new)     Piper per sentence + word timings → out/video/<deck>/voice/
+ ├─ voice    (new)     TTS per sentence + word timings → out/video/<deck>/voice/
  ├─ direct   (new)     Claude, 1 agent per changed slide → out/video/<deck>/cues/slide_NNN.json
  └─ render   (new)     deterministic HUD renderer → out/video/<deck>/slide_NNN.mp4, deck.mp4
 ```
@@ -64,9 +64,15 @@ decks/<deck>.pptx
 
 ## 3. Voice and word timings
 
-- Each sentence is synthesized separately with Piper (`out/voices/en_US-amy-low.onnx`)
-  and joined with a 350 ms pause, reusing `src/tts.synthesize_segments` and its
-  sentence start times.
+- Each sentence is synthesized separately and joined with a 350 ms pause. The
+  voice is `--voice <name>` (registry in `tools/video/voice.py`: `piper:<model.onnx>`
+  or `kokoro:<voice id>`). Default `kokoro-heart` = Kokoro-82M `af_heart`
+  (Apache-2.0, 24 kHz, own venv `~/.venvs/smartppt-kokoro`); `amy-low` (Piper, 16 kHz)
+  stays available. Bench 2026-10-06 (3 slide-4 sentences): Whistle WER 13/99 against
+  amy-low's 15/99, CPU RTF 0.27, deterministic. The slide wav keeps the voice's own
+  rate; Whistle gets each sentence resampled to 16 kHz. Piper is seeded
+  (`onnxruntime.set_seed` + a fresh session per slide): unseeded, its VITS noise made
+  every run different.
 - **Word times** come from Whistle (`~/models/whistle/whistle.cact`, run through
   the existing Whistle server, extended to return the engine's word timestamps) run on each
   sentence's clean audio.
