@@ -230,7 +230,7 @@ def check(deck: str, only: int | None = None, root: Path = ROOT) -> int:
         sheet = json.loads(f.read_text())
         errs = validate(sheet, slides[n], sents, rows, slide_size["w"])
         print(f"slide {n}: " + (f"{len(errs)} errors" if errs else "VALID"))
-        for e in errs + warnings(sheet, slides[n], sents, rows):
+        for e in errs + warnings(sheet, slides[n], sents, rows, slide_size["w"]):
             print(f"  {e}")
         if rows is None:
             print(f"  note: timings {'missing' if tim is None else 'stale'}, run voice before render")

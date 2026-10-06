@@ -343,3 +343,8 @@ def test_dead_air_is_a_warning_not_an_error():
     cue = {"cues": [{"effect": "focus", "target": "u1", "at": at(1, 1)}]}
     assert warnings(cue, SLIDE, said) == []                                               # nominal clock: 0.4 s late
     assert warnings({"cues": "nope"}, SLIDE, SENTENCES) == []
+    # a cue validate refuses (a ring too wide for a 10 in slide) is not the "first cue"
+    ring = {"effect": "ring", "target": "e3", "at": at(0, 1)}
+    wide = with_box("e3", box(5.0, 3.0, 3.0, 1.0))
+    assert warnings({"cues": [ring, *late["cues"]]}, wide, SENTENCES, TIMINGS) == []
+    assert len(warnings({"cues": [ring, *late["cues"]]}, wide, SENTENCES, TIMINGS, slide_w=10.0)) == 1

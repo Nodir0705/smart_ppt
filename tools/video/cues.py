@@ -315,13 +315,13 @@ def validate(sheet, slide: dict, sentences, timings=None, slide_w=SLIDE_W) -> li
     return [f"cue {i}: {msg}" for i, msg in sorted(errors, key=lambda e: e[0])]
 
 
-def warnings(sheet, slide: dict, sentences, timings=None) -> list[str]:
+def warnings(sheet, slide: dict, sentences, timings=None, slide_w=SLIDE_W) -> list[str]:
     """Advice that does not make the sheet invalid (spec §4): dead air at the start."""
     cues = sheet.get("cues") if isinstance(sheet, dict) else None
     if not isinstance(cues, list):
         return []
     rows = timings or _nominal(sentences)
-    starts = [rows[c["at"]["s"]][c["at"]["w"]]["start"] for c in cues if _check(c, slide, sentences) is None]
+    starts = [rows[c["at"]["s"]][c["at"]["w"]]["start"] for c in cues if _check(c, slide, sentences, slide_w) is None]
     if not starts:
         return []
     els = slide.get("elements", [])
