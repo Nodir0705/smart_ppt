@@ -18,10 +18,9 @@
   px), so a frame costs three mask pastes.
 - Placement (``place``/``layout``), once per chunk so it never jumps mid-chunk:
   bottom-centred, ``MARGIN`` off the frame edge, unless it would cover a focus
-  (at its 108 % snap), a glide's whole path or a zoom lens live at any moment
-  of the chunk (each grown by ``GAP``); then top-centred. If both spots are
-  covered, the one covering less (ties: top). Rings and underlines are not
-  avoided.
+  (at its 108 % snap), a glide's whole path, a zoom lens, a ring (at its snap)
+  or an underline live at any moment of the chunk (each grown by ``GAP``); then
+  top-centred. If both spots are covered, the one covering less (ties: top).
 """
 from __future__ import annotations
 
@@ -162,9 +161,11 @@ def place(wh, frame_size, avoid) -> tuple:
 def _avoid(plan, t0, t1, frame_h) -> list:
     g, out = round(GAP * frame_h / REF_H), []
     for e in plan:
-        if e.t0 < t1 and t0 < e.t1 and e.kind in ("focus", "glide", "zoom"):
+        if e.t0 < t1 and t0 < e.t1:
             b = (_scale(e.box, SNAP_FROM) if e.kind == "focus" else
-                 union([e.extra["from"], e.box]) if e.kind == "glide" else e.extra["lens"])
+                 union([e.extra["from"], e.box]) if e.kind == "glide" else
+                 e.extra["lens"] if e.kind == "zoom" else
+                 _scale(e.box, HUD["ring"] * SNAP_FROM) if e.kind == "ring" else e.box)
             out.append(_grow(b, g))
     return out
 

@@ -106,7 +106,7 @@ def test_srt_format_and_offsets():
 
 # ---- placement --------------------------------------------------------------
 
-def test_panel_goes_to_the_top_only_when_the_bottom_would_cover_a_focus_or_lens():
+def test_panel_goes_to_the_top_only_when_the_bottom_would_cover_an_avoided_box():
     frame, wh = (1280, 720), (500, 80)
     bottom = place(wh, frame, [])
     assert bottom == (390, 720 - 29 - 80)                            # centred, 4 % bottom margin
@@ -116,16 +116,17 @@ def test_panel_goes_to_the_top_only_when_the_bottom_would_cover_a_focus_or_lens(
     assert place(wh, frame, [(600, 650, 100, 40), (0, 0, 1280, 50)]) == bottom
 
 
-def test_layout_dodges_every_focus_glide_and_lens_live_during_the_caption():
-    sents = [words("One two three."), words("Four five six."), words("Seven eight nine."), words("Ten eleven.")]
-    caps = timed(sents, _rows(sents))
+def test_layout_dodges_every_effect_live_during_the_caption():
+    sents = [words("One two three."), words("Four five six."), words("Seven eight nine."),
+             words("Ten eleven."), words("Twelve thirteen.")]
     low, high = (400, 620, 480, 60), (100, 300, 200, 60)    # bottom-centre, mid-left
     plan = [Effect("focus", 1.0, 10.0, low, {"spotlight": False}),               # sentence 0, at the bottom
             Effect("glide", 10.0, 20.0, high, {"from": low, "spotlight": False}),  # path starts at the bottom
-            Effect("ring", 20.0, 30.0, low),                                       # marks are not avoided
-            Effect("zoom", 30.0, 33.0, high, {"lens": (500, 600, 300, 100)})]
+            Effect("ring", 20.0, 30.0, low),                                       # a mark at the bottom: dodged
+            Effect("zoom", 30.0, 33.0, high, {"lens": (500, 600, 300, 100)}),
+            Effect("underline", 40.0, 50.0, (300, 640, 600, 30))]                 # underline at the bottom: dodged
     tops = [c.xy[1] < 360 for c in layout(sents, _rows(sents), plan, (1280, 720))]
-    assert tops == [True, True, False, True]
+    assert tops == [True, True, True, True, True]
 
 
 def test_draw_is_deterministic_and_highlights_in_the_accent():
