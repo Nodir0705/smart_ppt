@@ -29,8 +29,8 @@ const SCOUT = {
 }
 const RESULT = {
   type: 'object',
-  properties: { sentences: { type: 'integer' }, note: { type: 'string' } },
-  required: ['sentences', 'note'],
+  properties: { sentences: { type: 'integer' }, words: { type: 'integer' }, note: { type: 'string' } },
+  required: ['sentences', 'words', 'note'],
 }
 
 const draftPrompt = n => `You write the spoken narration for slide ${n} of the deck "${DECK}". A text-to-speech voice reads it word for word while a video points at what each sentence mentions. Edit no file except your output.
@@ -41,13 +41,16 @@ Inputs:
 - Do NOT read ${ROOT}/out/bench/*/presenter*, any trace, adjudication or benchmark file, or ${ROOT}/tasks/lessons.md. Use only the packet and the image.
 
 Write ${ROOT}/script/${DECK}/slide_${pad(n)}.md (create the directory if needed):
-- 3 to 6 sentences, one per line, nothing else: no headings, bullets, numbering or comment lines.
+- 3 to 5 sentences, one per line, nothing else: no headings, bullets, numbering or comment lines.
+- Short: 55 to 80 words in total (about twenty five seconds spoken). Each sentence at most 20 words and one idea; split a sentence that carries two.
+- Open on the slide's subject: the first sentence names what this slide is about.
+- No filler: no "so" or "now" to start a sentence, no "here we have", "as you can see", "let's take a closer look", "basically"; every sentence says something about the slide.
 - Spoken-ready, because it is read exactly as written: numbers as words ("eight gigabytes", "fifteen to thirty three"), no digits, no symbols (% & / + = # * → ✓ and the like), no markdown, no brackets.
 - A natural presenter: paraphrase and explain rather than read the slide aloud, say why it matters, and use transitions ("first", "then", "next", "finally") when walking a sequence. Name the specific things on the slide by their words or meaning, since the video points at whatever each sentence talks about.
-- Continuity: connect from the previous slide's message (or open the talk if there is none) and, where it is natural, lead into the next slide's message (or close the talk if there is none). Do not repeat the previous slide's content.
+- Continuity: a few words inside the opening sentence connect from the previous slide's message (or open the talk if there is none) and, where it is natural, a few words in the last sentence lead into the next slide's message (or close the talk if there is none). Never a sentence of its own; do not repeat the previous slide's content.
 
-Then check the file: 3 to 6 non-empty lines, and grep -n '[0-9]' on it prints nothing. Fix and re-check if not.
-Return sentences (the count) and note (at most 20 words on anything hard about this slide).`
+Then check the file: 3 to 5 non-empty lines, wc -w prints 55 to 80, awk 'NF>20' on it prints nothing, and grep -n '[0-9]' on it prints nothing. Fix and re-check if not.
+Return sentences (the count), words (the wc -w total) and note (at most 20 words on anything hard about this slide).`
 
 phase('Scout')
 const scout = await agent(`Run exactly: cd ${ROOT} && python3 -m tools.video packets-draft ${DECK}${ONLY}
