@@ -1,6 +1,5 @@
-So here's what the checker actually does, and the whole idea fits in one line, a scan goes in and a graded page comes out.
-First, the before picture is the student's scanned tense exercise, with the handwritten answers exactly as they were handed in.
-Then the same page comes back on the right, automatically marked up in red without anyone grading it by hand.
-A tick means the student got it right, like the past simple and will future answers.
-When an answer is wrong, it gets a cross with the fix written in, so the empty present perfect answer is corrected to have been.
-Finally, anything it isn't sure about, like was worked under past continuous, gets a question mark for a teacher to glance at, and next we'll see the single command that produces all of this.
+Instead of slow hand grading, the checker turns a student's scanned handout into a graded page.
+First comes the before picture, the raw scan of a tense exercise with handwritten answers.
+Then the same page comes back automatically marked in red.
+Correct answers get a tick, and wrong ones get a cross with the right answer written beside it.
+Finally, a question mark flags uncertain answers for a teacher's glance, all produced by a single command.

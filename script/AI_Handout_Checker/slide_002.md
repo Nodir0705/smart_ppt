@@ -1,6 +1,5 @@
-The reason we built it is simple, grading handouts by hand just doesn't scale.
-First, it's slow and repetitive, a teacher marks the same worksheet thirty plus times for one class in one evening.
-Then the scans themselves are messy, phone photos and Cam Scanner P D Fs that come in crooked, full of handwriting and circled answers.
-Next, hand marking gives you no class level insight, so you never see which question most students missed.
-Finally, privacy matters, because student work can't be uploaded to a cloud A P I just to get graded, so it all has to stay local.
-And look at a single handout on the right, with fifteen to thirty three gradable items per page, three answer formats, and about one minute to hand mark every copy, which is exactly the work the checker takes over.
+The checker exists because grading handouts by hand simply doesn't scale.
+First, each handout has fifteen to thirty three items and takes about a minute, repeated over thirty times an evening.
+Then the scans are messy, crooked phone photos full of handwriting and circled answers.
+Next, hand marking never shows which question most of the class missed.
+Finally, privacy keeps student work off the cloud, so every scanned page must be marked locally.
