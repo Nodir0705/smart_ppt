@@ -2,7 +2,9 @@
 import copy
 import math
 
-from tools.video.cues import content, effective_until, resolve, stem, validate
+import pytest
+
+from tools.video.cues import content, effective_until, resolve, stem, validate, warnings
 
 
 def box(x, y, w, h):
@@ -23,8 +25,8 @@ SLIDE = {
          "bbox": box(1.0, 3.0, 2.4, 0.5), "line_bboxes": [L0, L1],
          "line_texts": ["Turns pixels into text", "catches hand drawn circles"],
          "pointable": True, "map_unit": "u2"},
-        {"id": "e3", "type": "body", "text": "8 GB GPU memory", "bbox": box(5.0, 3.0, 2.0, 0.3), "value": "8 GB",
-         "line_bboxes": [box(5.0, 3.0, 2.0, 0.3)], "line_texts": ["8 GB GPU memory"],
+        {"id": "e3", "type": "body", "text": "8 GB GPU memory", "bbox": box(5.0, 3.0, 1.0, 0.3), "value": "8 GB",
+         "line_bboxes": [box(5.0, 3.0, 1.0, 0.3)], "line_texts": ["8 GB GPU memory"],
          "pointable": True, "map_unit": "u3"},
         {"id": "e4", "type": "caption", "text": "Page 1", "bbox": box(12.0, 7.0, 0.5, 0.1),
          "line_bboxes": [box(12.0, 7.0, 0.5, 0.1)], "line_texts": ["Page 1"], "pointable": False},
@@ -140,8 +142,8 @@ def test_third_mark_at_once_is_an_error():
 
 def test_same_word_flags_only_the_extra_cue():
     marks = {"cues": [{"effect": "underline", "target": "e2", "at": at(2, 2)},
-                      {"effect": "ring", "target": "e2", "at": at(2, 2)},
-                      {"effect": "ring", "target": "e2", "at": at(2, 2)}]}
+                      {"effect": "ring", "target": "u2", "at": at(2, 2)},
+                      {"effect": "ring", "target": "u2", "at": at(2, 2)}]}
     errs = validate(marks, SLIDE, SENTENCES)
     assert len(errs) == 1 and has(errs, 2, "concurrency")
     zooms = {"cues": [{"effect": "zoom", "target": "e2", "at": at(2, 4)},
@@ -280,3 +282,64 @@ def test_explicit_until_wins_when_earlier_for_foci_and_always_for_marks():
     assert effective_until(sheet, TIMINGS) == [(10.0, 20.0),       # focus: own until before the next focus
                                                (22.0, 43.0),       # mark: until outlasts the next focus
                                                (40.0, math.inf)]
+
+
+# ---------- ring needs a compact target ----------
+
+def with_box(eid, b):
+    slide = copy.deepcopy(SLIDE)
+    next(e for e in slide["elements"] if e["id"] == eid)["bbox"] = b
+    return slide
+
+
+def test_ring_needs_a_compact_target():
+    assert validate(VALID, with_box("e3", box(5.0, 3.0, 1.2, 0.3)), SENTENCES) == []      # 4:1 is the limit
+    for b in (box(5.0, 3.0, 2.0, 0.3),        # one-line sentence, 6.7:1
+              box(5.0, 3.0, 0.2, 1.0),        # tall and thin, 5:1
+              box(5.0, 3.0, 3.6, 1.0)):       # 3.6:1 but 27 % of the slide width
+        errs = validate(VALID, with_box("e3", b), SENTENCES)
+        assert has(errs, 5, "ring needs a compact target") and "use underline" in errs[0], b
+    wide = with_box("e3", box(5.0, 3.0, 3.0, 1.0))                                        # 22.5 %
+    assert validate(VALID, wide, SENTENCES) == []
+    assert has(validate(VALID, wide, SENTENCES, slide_w=10.0), 5, "compact")              # 30 % of a 4:3 slide
+    under = {"cues": [{"effect": "underline", "target": "e3", "at": at(4, 2)}]}           # the fix it names
+    assert validate(under, with_box("e3", box(5.0, 3.0, 2.0, 0.3)), SENTENCES) == []
+
+
+# ---------- zoom source ----------
+
+def zoom(target, region=None):
+    cue = {"effect": "zoom", "target": target, "at": at(2, 4)}
+    return resolve(dict(cue, region=region) if region else cue, SLIDE, SENTENCES)["source"]
+
+
+def test_zoom_source_snaps_out_to_whole_lines():
+    # e2 = (1.0, 3.0, 2.4, 0.5); lines L0 = (1.0, 3.0, 2.0, 0.2), L1 = (1.0, 3.3, 2.4, 0.2)
+    assert zoom("e2", [0.25, 0.7, 0.3, 0.2]) == pytest.approx((1.0, 3.3, 2.4, 0.2))       # part of L1 -> all of L1
+    assert zoom("e2", [0.4, 0.1, 0.2, 0.6]) == pytest.approx((1.0, 3.0, 2.4, 0.5))        # parts of both lines
+    assert zoom("e2") == (1.0, 3.0, 2.4, 0.5)                                             # no region: the target
+    assert resolve({"effect": "ring", "target": "e2", "at": at(2, 0)}, SLIDE, SENTENCES)["source"] is None
+
+
+def test_zoom_source_on_a_photo_pads_4_percent_inside_the_target():
+    # e1 = picture (1.0, 2.0, 0.5, 0.5), no lines: pad 0.04 * 0.5 = 0.02 in each side
+    assert zoom("e1", [0.2, 0.2, 0.5, 0.5]) == pytest.approx((1.08, 2.08, 0.29, 0.29))
+    assert zoom("e1", [0.0, 0.0, 1.0, 0.5]) == pytest.approx((1.0, 2.0, 0.5, 0.27))       # clamped to the photo
+
+
+# ---------- warnings: dead air ----------
+
+def test_dead_air_is_a_warning_not_an_error():
+    # sentence 0 ("... how the grading pipeline works") refers to u1; its first word starts at 0.0
+    late = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5)}]}               # 5.0 s in
+    w = warnings(late, SLIDE, SENTENCES, TIMINGS)
+    assert len(w) == 1 and "dead air" in w[0] and "sentence 0" in w[0] and "'u1'" in w[0]
+    assert validate(late, SLIDE, SENTENCES, TIMINGS) == []
+    on_time = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 3)}]}            # 3.0 s: not > 3.0
+    assert warnings(on_time, SLIDE, SENTENCES, TIMINGS) == []
+    assert warnings({"cues": []}, SLIDE, SENTENCES, TIMINGS) == []                       # nothing pointed at
+    # the clock starts at the first sentence that refers to something, not at the slide start
+    said = [["Hello", "everyone,", "welcome", "back", "today."], ["The", "pipeline", "reads."]]
+    cue = {"cues": [{"effect": "focus", "target": "u1", "at": at(1, 1)}]}
+    assert warnings(cue, SLIDE, said) == []                                               # nominal clock: 0.4 s late
+    assert warnings({"cues": "nope"}, SLIDE, SENTENCES) == []

@@ -91,7 +91,7 @@ decks/<deck>.pptx
   {"effect": "focus",     "target": "u3",     "at": {"s": 2, "w": 3}, "spotlight": true},
   {"effect": "underline", "target": "s4_e11", "at": {"s": 2, "w": 7}, "line": 0},
   {"effect": "glide",     "target": "u4",     "at": {"s": 3, "w": 2}},
-  {"effect": "ring",      "target": "s4_e19", "at": {"s": 5, "w": 9}},
+  {"effect": "ring",      "target": "s10_e1", "at": {"s": 1, "w": 10}},
   {"effect": "zoom",      "target": "s5_e5",  "at": {"s": 4, "w": 1}, "region": [0.1, 0.4, 0.5, 0.3], "until": {"s": 4, "w": 12}}
 ]}
 ```
@@ -103,7 +103,9 @@ decks/<deck>.pptx
   without it the underline goes under the line whose `line_texts` share the
   most content words with the anchor sentence (ties go to the first line).
 - **`region`:** zoom only. A sub-rectangle of the target as fractions
-  (x, y, w, h) of its bbox. Without it the zoom shows the whole target.
+  (x, y, w, h) of its bbox. Without it the zoom shows the whole target. The
+  renderer snaps it out to every text line it touches (whole lines, so no word
+  is cut); on a photo (no lines) it pads it by 4 % of the target each side.
 - **`until`:** optional. Without it, effects end by these defaults:
   - focus holds until the next focus or glide;
   - spotlight follows its focus;
@@ -118,12 +120,21 @@ valid sheet. The validator checks:
 - glide goes from the current focus to its target;
 - at most 1 focus, 2 marks (underline/ring) and 1 zoom are active at once;
 - spotlight only accompanies a focus;
+- a ring needs a compact target: its union bbox at most 4:1 either way and at
+  most 25 % of the slide width, else "ring needs a compact target — use
+  underline". (4:1, not 3:1: this deck's stat targets "15–33", "~1 min",
+  "30/33", "14/15" measure 3.1–3.9:1 and ring well; the two flat swooshes of
+  the first build were 42:1 and 57:1.)
 - **the "why" rule:** the anchor sentence must refer to the target. That means
   it shares at least one content word with the target's text, map `talk` or
   `terms` (stemmed, stopwords removed), OR the target is the next unit in a
   `flow` relation from the current focus and the anchor word is a transition
   word (`next`, `then`, `finally`, `after`, `second`, `third`, …). A failing cue
   is reported with the reason.
+
+**Warnings** (printed by `validate`, never an error): **dead air** — the first
+cue starts more than 3.0 s after the first word of the first sentence that
+refers to a pointable unit (the why rule's word match).
 
 Invalid sheets are returned to the director agent once with the validator
 errors. If the sheet is still invalid, the failing cues are dropped and the
@@ -140,13 +151,7 @@ slide renders with the valid ones; this is logged.
     can't miscount;
   - the effect vocabulary with its rules.
 - **Output:** the cue sheet.
-- **Guidance:** focus on what each sentence is about, with spotlight on
-  sentences that single one thing out. Underline the specific line when a
-  sentence quotes or paraphrases one line of a multi-line unit. Ring a stat or
-  number on the word where it is spoken. Glide when the narration walks a
-  flow. Zoom when the sentence describes a detail in a photo or text too small
-  to read. Leave slide intros/outros and pure explanation unpointed. Prefer
-  fewer, well-timed effects to many.
+- **Guidance** (`tools/video/packets.py` GUIDANCE = `video-direct.js`): Focus on what each sentence is about, with spotlight on sentences that single one thing out. Open on the subject: the first effect lands on the first sentence that refers to something. Underline the specific line when a sentence quotes or paraphrases one line of a multi-line unit. Ring a stat or number on the word where it is spoken, but only a compact target (at most 4:1 and a quarter of the slide wide); a wide or sentence-long target gets an underline instead. Glide when the narration walks a flow. Zoom when the sentence describes a detail in a photo or text too small to read. Leave slide intros/outros and pure explanation unpointed. Prefer fewer, well-timed effects to many.
 - **The director is blind** to presenter scripts, traces and benchmarks.
 
 ## 6. HUD renderer — `tools/video/render.py` (deterministic)
@@ -155,17 +160,29 @@ slide renders with the valid ones; this is logged.
   The slide PNG is letterboxed onto the frame. Each frame is
   `f(t, slide image, cues, timings, index)` with no randomness and no wall clock.
 - **Accent:** one HUD colour (cyan `#38d4ff`) with a 2 px dark halo and a soft
-  outer glow, so it reads on light and dark slides. The spotlight dims to 55 %
+  outer glow (the halo shape Gaussian-blurred, 6 px at 1080p, cached per
+  stroke), so it reads on light and dark slides. Pixel sizes are at 1080p and
+  scale with the frame height. The spotlight dims to 55 %
   brightness with a 6 px feathered edge around the focus.
 - **Effect animations:**
-  - focus: corner brackets snap in over 180 ms, scaling from 108 % to 100 %;
+  - focus: corner brackets snap in over 180 ms, scaling from 108 % to 100 %
+    with a ~5 % overshoot ease ("back": 1 + 2.2(p−1)³ + 1.2(p−1)²); each arm
+    is 0.18 × the box's short side but at least 18 px (one-line targets get
+    "[ ]");
   - glide: the brackets move along the straight path between the two bboxes
     over 400 ms, with ease-in-out;
   - underline: draws left to right over 350 ms;
-  - ring: an ellipse around the target, drawn clockwise over 400 ms, then held;
-  - zoom: a 2.2× magnifier lens with a HUD frame, placed in the largest empty
-    region of the slide, with a thin leader line to the source region; it fades
-    in and out over 200 ms.
+  - ring: an ellipse 1.3× the padded box (a circumscribing one is 1.41×;
+    1.12× and 1.2× cut the digits of the deck's stats), kept inside the frame,
+    drawn clockwise over 400 ms with the back ease and snapping in from 108 %
+    like the brackets (a sweep past 360° draws nothing new), then held;
+  - zoom: a magnifier lens with a HUD frame and a thin leader line to the
+    source region; it fades in and out over 200 ms. Placement: never over the
+    source or a focus/glide live during the zoom. Try 2.2×, then 2.1× … 1.6×,
+    and take the first scale with a spot clear of the title and every
+    pointable element (12 px gap), nearest the source. If none fits, the 1.6×
+    lens covers the least title area, then the least other content
+    (decoration and empty space are free), then sits nearest the source.
 - **Units:** an effect on a unit uses the union bbox of its members, padded by
   6 px.
 - **Encoding:** the static ffmpeg (`~/.venvs/ffmpeg-static/shim`) encodes the
@@ -181,6 +198,10 @@ slide renders with the valid ones; this is logged.
   - each effect's geometry at chosen times (pure functions);
   - change-detection hashes;
   - a small render of a synthetic slide that is byte-identical across two runs.
+- **Contact sheets:** `python3 -m tools.video sheets <deck> [--only N]` writes,
+  per played cue, the frames at start + 0.1 / 0.5 / 1.0 s and its last frame
+  as a 2×2 half-size grid with the cue summary and its sentence underneath, to
+  `out/video/<deck>/sheets/slide_NNN_cK.png` (K = the cue's index in its sheet).
 - **Timing check:** for every sentence, Whistle must have aligned at least 85 %
   of the script words. Any sentence below that is reported.
 - **Frame audit (agent, at the end of the first build):** render the frame at

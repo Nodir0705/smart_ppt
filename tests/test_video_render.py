@@ -188,10 +188,10 @@ def _box(x, y, w, h):
 SLIDE = {
     "slide_number": 1,
     "elements": [
-        {"id": "e1", "text": "Reading pages", "bbox": _box(1, 1, 5, 1), "line_bboxes": [_box(1, 1, 5, 1)],
+        {"id": "e1", "text": "Reading pages", "bbox": _box(1, 1, 3, 1), "line_bboxes": [_box(1, 1, 3, 1)],
          "line_texts": ["Reading pages"], "pointable": True, "map_unit": "u1"},
-        {"id": "e2", "text": "Grading answers fast", "bbox": _box(1, 3.5, 5, 1.2),
-         "line_bboxes": [_box(1, 3.5, 4, 0.5), _box(1, 4.1, 2, 0.5)],
+        {"id": "e2", "text": "Grading answers fast", "bbox": _box(1, 3.5, 3.2, 1.2),   # compact enough to ring
+         "line_bboxes": [_box(1, 3.5, 3, 0.5), _box(1, 4.1, 2, 0.5)],
          "line_texts": ["Grading answers", "fast"], "pointable": True, "map_unit": "u2"},
         {"id": "e3", "text": "8 GB memory", "bbox": _box(8, 5, 3, 1), "line_bboxes": [_box(8, 5, 3, 1)],
          "line_texts": ["8 GB memory"], "pointable": True, "map_unit": "u3"},

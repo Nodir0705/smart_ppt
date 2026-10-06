@@ -34,13 +34,16 @@ from pathlib import Path
 from tools.video import ROOT, paths
 from tools.video.script import sentences, words
 
-# Spec §5 guidance, verbatim; video-direct.js carries the same text (a test checks).
+# Spec §5 guidance (+ the 2026-10-06 polish: compact rings, open on the subject);
+# video-direct.js carries the same text (a test checks).
 GUIDANCE = ("focus on what each sentence is about, with spotlight on sentences that single one thing "
-            "out. Underline the specific line when a sentence quotes or paraphrases one line of a "
-            "multi-line unit. Ring a stat or number on the word where it is spoken. Glide when the "
-            "narration walks a flow. Zoom when the sentence describes a detail in a photo or text too "
-            "small to read. Leave slide intros/outros and pure explanation unpointed. Prefer fewer, "
-            "well-timed effects to many.")
+            "out. Open on the subject: the first effect lands on the first sentence that refers to "
+            "something. Underline the specific line when a sentence quotes or paraphrases one line of a "
+            "multi-line unit. Ring a stat or number on the word where it is spoken, but only a compact "
+            "target (at most 4:1 and a quarter of the slide wide); a wide or sentence-long target gets an "
+            "underline instead. Glide when the narration walks a flow. Zoom when the sentence describes "
+            "a detail in a photo or text too small to read. Leave slide intros/outros and pure "
+            "explanation unpointed. Prefer fewer, well-timed effects to many.")
 
 VOCAB = {  # spec §4 (schema, defaults, validator rules) + §5 (guidance)
     "version": 1,
@@ -49,7 +52,7 @@ VOCAB = {  # spec §4 (schema, defaults, validator rules) + §5 (guidance)
         {"effect": "focus", "target": "u3", "at": {"s": 2, "w": 3}, "spotlight": True},
         {"effect": "underline", "target": "s4_e11", "at": {"s": 2, "w": 7}, "line": 0},
         {"effect": "glide", "target": "u4", "at": {"s": 3, "w": 2}},
-        {"effect": "ring", "target": "s4_e19", "at": {"s": 5, "w": 9}},
+        {"effect": "ring", "target": "s10_e1", "at": {"s": 1, "w": 10}},
         {"effect": "zoom", "target": "s5_e5", "at": {"s": 4, "w": 1}, "region": [0.1, 0.4, 0.5, 0.3],
          "until": {"s": 4, "w": 12}},
     ],
@@ -70,9 +73,11 @@ VOCAB = {  # spec §4 (schema, defaults, validator rules) + §5 (guidance)
         "focus": "corner brackets snap onto the target; holds until the next focus or glide",
         "glide": "the focus brackets move from the current focus to the target",
         "underline": "a line drawn left to right under one text line; holds until the next focus",
-        "ring": "an ellipse drawn around the target; holds until the next focus",
-        "zoom": "a 2.2x magnifier lens of the target (or its region) in the slide's largest empty "
-                "area, with a leader line to the source; lasts 3.0 s",
+        "ring": "an ellipse drawn around a compact target (a stat, a number, a short label); "
+                "holds until the next focus",
+        "zoom": "a magnifier lens of the target (or its region, snapped out to whole text lines; on a "
+                "photo padded 4 %) at 2.2x, shrunk down to 1.6x to stay clear of slide content, never "
+                "over the focus or the source, with a leader line to the source; lasts 3.0 s",
     },
     "rules": [
         "every target exists on this slide and is pointable",
@@ -81,10 +86,16 @@ VOCAB = {  # spec §4 (schema, defaults, validator rules) + §5 (guidance)
         "glide goes from the current focus to a different target",
         "at most 1 focus, 2 marks (underline/ring) and 1 zoom are active at once",
         "spotlight only accompanies a focus",
+        "ring needs a compact target: its box at most 4:1 either way and at most 25 % of the slide "
+        "width (otherwise use underline)",
         "why rule: the anchor sentence must refer to the target: it shares at least one content "
         "word with the target's text or its unit's talk or terms (stemmed, stopwords removed), OR "
         "the target is the next unit in a flow relation from the current focus and the sentence "
         "has a transition word (next, then, finally, after, second, third, ...)",
+    ],
+    "warnings": [
+        "dead air (a warning, not an error): the first cue starts more than 3.0 s after the first "
+        "word of the first sentence that refers to a pointable unit (the why rule's word match)",
     ],
     "guidance": GUIDANCE,
 }

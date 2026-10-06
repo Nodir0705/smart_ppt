@@ -18,8 +18,8 @@ const DECK = A.deck
 const pad = n => String(n).padStart(3, '0')
 const ONLY = A.only ? ` --only ${A.only}` : ''
 
-// Spec §5, verbatim (tools/video/packets.py GUIDANCE; a test checks they match).
-const GUIDANCE = 'focus on what each sentence is about, with spotlight on sentences that single one thing out. Underline the specific line when a sentence quotes or paraphrases one line of a multi-line unit. Ring a stat or number on the word where it is spoken. Glide when the narration walks a flow. Zoom when the sentence describes a detail in a photo or text too small to read. Leave slide intros/outros and pure explanation unpointed. Prefer fewer, well-timed effects to many.'
+// Spec §5 + the 2026-10-06 polish (tools/video/packets.py GUIDANCE; a test checks they match).
+const GUIDANCE = 'focus on what each sentence is about, with spotlight on sentences that single one thing out. Open on the subject: the first effect lands on the first sentence that refers to something. Underline the specific line when a sentence quotes or paraphrases one line of a multi-line unit. Ring a stat or number on the word where it is spoken, but only a compact target (at most 4:1 and a quarter of the slide wide); a wide or sentence-long target gets an underline instead. Glide when the narration walks a flow. Zoom when the sentence describes a detail in a photo or text too small to read. Leave slide intros/outros and pure explanation unpointed. Prefer fewer, well-timed effects to many.'
 
 const SCOUT = {
   type: 'object',
@@ -54,7 +54,7 @@ ${GUIDANCE}
 Anchor "at" on the word that names the thing (its noun or number). Every cue must pass the why rule: when the anchor sentence shares no content word with the target's text, talk or terms (and is not a transition to the next flow unit), choose another target or drop the cue.
 
 Then run: cd ${ROOT} && python3 -m tools.video validate ${DECK} --only ${n}
-It must print the line "slide ${n}: VALID" (a "note: timings missing" or "stale" line is fine: the voice step may not have run yet). If it prints errors, fix the sheet and re-run; at most 2 repair rounds, then stop.
+It must print the line "slide ${n}: VALID" (a "note: timings missing" or "stale" line is fine: the voice step may not have run yet). If it prints errors, fix the sheet and re-run; at most 2 repair rounds, then stop. A "warning: dead air" line is not an error, but act on it: move the first cue onto the sentence it names (or say in note why that sentence stays unpointed).
 
 Return valid (from the last validator run), errors (its last error lines, [] when valid), cues (the count) and note (at most 25 words).`
 

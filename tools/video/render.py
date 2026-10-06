@@ -15,7 +15,9 @@ then ``deck.mp4``. Deterministic: every frame is ``draw(base, state_at(i / fps))
   Built only when no slide was refused, so it is never missing a slide (the
   old deck is left alone); skipped under ``--only``.
 - Hash cache: ``slide_NNN.hash`` = sha1(cue sheet, script words, timings json,
-  index slide, VERSION, size, fps, PNG bytes); ``deck.hash`` = sha1(slide hashes, gap).
+  index slide, VERSION, DRAW_VERSION, size, fps, PNG bytes); ``deck.hash`` = sha1(slide hashes, gap).
+  ``DRAW_VERSION`` is the renderer's own (``VERSION`` also keys the voice cache): bump it
+  whenever drawing changes, or unchanged slides keep their old frames.
   A hash is deleted before its output is rebuilt and written after it is done.
 
 Decisions where the plan left details open:
@@ -30,11 +32,15 @@ Decisions where the plan left details open:
   refuse the slide ("rerun voice").
 - Effect boxes: a target's (unit union or element) bbox padded 6 px; underline
   uses the unpadded line box; a glide starts from the box of the focus/glide
-  before it and keeps that focus's spotlight. Zoom: the target box (or its
-  ``region``) is the source, the lens avoids every pointable element's box
-  (non-pointable ones are decoration, footers, backgrounds).
+  before it and keeps that focus's spotlight. Zoom: the source is
+  ``cues.resolve``'s (region snapped to whole lines / padded on a photo); the
+  lens (``effects.lens_box``, placed after every other effect is known) never
+  covers the source or a focus/glide box live during the zoom, and avoids the
+  title, then every other pointable element (non-pointable ones are decoration,
+  footers, backgrounds), while any scale down to 1.6x fits.
 - ``validate`` (CLI) prints ``slide N: VALID`` or ``slide N: K errors`` plus the
-  errors (never the word INVALID, so a grep for VALID stays honest); it uses
+  errors (never the word INVALID, so a grep for VALID stays honest), then any
+  ``cues.warnings`` lines (``  warning: ...``; they never fail the check); it uses
   the timings only when they match the script, and otherwise adds a
   ``note: timings missing/stale`` line (render would refuse the slide).
 """
@@ -52,12 +58,13 @@ from PIL import Image
 
 from src.simulate_to_video import _wav_duration_s
 from tools.video import ROOT, VERSION, numbered, paths
-from tools.video.cues import effective_until, resolve, validate
+from tools.video.cues import SLIDE_W, effective_until, resolve, validate, warnings
 from tools.video.effects import Effect, draw, lens_box, state_at
 from tools.video.geometry import Letterbox
 from tools.video.script import sentences, words
 
 FPS = 30
+DRAW_VERSION = 2            # 2: effects polish (glow, back ease, arms, ring, lens)
 GAP_S = 0.6
 OVERLAP = ("concurrency:", "zoom overlaps")
 SHIM = Path.home() / ".venvs" / "ffmpeg-static" / "shim"
@@ -78,14 +85,14 @@ def _sha(data: bytes) -> str:
 
 # ---------- one slide ----------
 
-def playable(sheet, slide, sents, rows) -> tuple[list, list[str]]:
+def playable(sheet, slide, sents, rows, slide_w=SLIDE_W) -> tuple[list, list[str]]:
     """The sheet's valid cues and a log of the dropped ones (original indices)."""
     if [[w["word"] for w in r] for r in rows] != sents:
         raise ValueError("timings are stale (script words changed): rerun voice")
     cues = sheet.get("cues") if isinstance(sheet, dict) else None
     keep, log = list(range(len(cues) if isinstance(cues, list) else 0)), []
     while True:
-        errs = validate({"cues": [cues[i] for i in keep] if cues is not None else None}, slide, sents, rows)
+        errs = validate({"cues": [cues[i] for i in keep] if cues is not None else None}, slide, sents, rows, slide_w)
         if not errs:
             return [cues[i] for i in keep], log
         bad: dict[int, list[str]] = {}
@@ -102,8 +109,11 @@ def playable(sheet, slide, sents, rows) -> tuple[list, list[str]]:
 def build_plan(cues, slide, sents, rows, lb: Letterbox) -> list[Effect]:
     """Validated cues -> ``Effect`` timeline in frame px and slide-audio seconds."""
     iv = effective_until({"cues": cues}, rows)
-    occupied = [lb.box_px(e["bbox"]) for e in slide["elements"] if e.get("pointable") and e.get("bbox")]
-    plan, held = [], None                     # held: (box, spotlight) of the current focus/glide
+    els = [e for e in slide["elements"] if e.get("bbox")]
+    is_title = [("title" in (e.get("type"), e.get("map_role"))) for e in els]
+    title = [lb.box_px(e["bbox"]) for e, t in zip(els, is_title) if t]
+    soft = [lb.box_px(e["bbox"]) for e, t in zip(els, is_title) if e.get("pointable") and not t]
+    plan, held, zooms = [], None, []          # held: (box, spotlight) of the current focus/glide
     for i in sorted(range(len(cues)), key=lambda i: (iv[i][0], i)):
         c, (t0, t1), kind = cues[i], iv[i], cues[i]["effect"]
         r = resolve(c, slide, sents)
@@ -118,18 +128,20 @@ def build_plan(cues, slide, sents, rows, lb: Letterbox) -> list[Effect]:
             plan.append(Effect(kind, t0, t1, lb.box_px(r["line_bbox"], pad_px=0)))
         elif kind == "ring":
             plan.append(Effect(kind, t0, t1, box))
-        else:                                 # zoom
-            if "region" in c:
-                (x, y, w, h), (rx, ry, rw, rh) = r["bbox"], c["region"]
-                box = lb.box_px((x + rx * w, y + ry * h, rw * w, rh * h))
-            plan.append(Effect(kind, t0, t1, box, {"lens": lens_box(box, lb.size, occupied + [box])}))
+        else:                                 # zoom: the lens once every focus is known
+            zooms.append(len(plan))
+            plan.append(Effect(kind, t0, t1, lb.box_px(r["source"])))
+    for k in zooms:
+        z = plan[k]
+        live = [e.box for e in plan if e.kind in ("focus", "glide") and e.t0 < z.t1 and z.t0 < e.t1]
+        plan[k] = z._replace(extra={"lens": lens_box(z.box, lb.size, soft, live, title)})
     return plan
 
 
 def render_slide(png, slide, slide_size, sheet, sents, rows, wav, out_mp4,
                  size=(1920, 1080), fps=FPS) -> list[str]:
     """Render one slide MP4; returns the dropped-cue log. Raises ValueError if refused."""
-    cues, dropped = playable(sheet, slide, sents, rows)
+    cues, dropped = playable(sheet, slide, sents, rows, slide_size["w"])
     img = Image.open(png)
     lb = Letterbox(slide_size["w"], slide_size["h"], img.width, img.height, *size)
     base = lb.place(img)
@@ -203,7 +215,7 @@ def _load(P, n):
 def check(deck: str, only: int | None = None, root: Path = ROOT) -> int:
     """The ``validate`` step: 0 if every cue sheet is valid, else 1."""
     P = paths(deck, root)
-    slides, _ = _index(P)
+    slides, slide_size = _index(P)
     files, bad = _pick(numbered(P.cues, "json"), only), 0
     if not files:
         print(no_sheets(P, only))
@@ -215,9 +227,10 @@ def check(deck: str, only: int | None = None, root: Path = ROOT) -> int:
             continue
         sents, tim = _load(P, n)
         rows = tim["sentences"] if tim and [[w["word"] for w in r] for r in tim["sentences"]] == sents else None
-        errs = validate(json.loads(f.read_text()), slides[n], sents, rows)
+        sheet = json.loads(f.read_text())
+        errs = validate(sheet, slides[n], sents, rows, slide_size["w"])
         print(f"slide {n}: " + (f"{len(errs)} errors" if errs else "VALID"))
-        for e in errs:
+        for e in errs + warnings(sheet, slides[n], sents, rows):
             print(f"  {e}")
         if rows is None:
             print(f"  note: timings {'missing' if tim is None else 'stale'}, run voice before render")
@@ -254,8 +267,8 @@ def render(deck: str, only: int | None = None, size=(1920, 1080), root: Path = R
         sheet = json.loads(sheets[n].read_text())
         png = P.slides / f"{name}.png"
         mp4, hf, lf = P.out / f"{name}.mp4", P.out / f"{name}.hash", P.out / f"{name}.dropped.txt"
-        key = _sha(json.dumps([sheet, sents, tim, slides[n], VERSION, list(size), FPS], sort_keys=True).encode()
-                   + png.read_bytes())
+        key = _sha(json.dumps([sheet, sents, tim, slides[n], VERSION, DRAW_VERSION, list(size), FPS],
+                              sort_keys=True).encode() + png.read_bytes())
         if mp4.exists() and hf.exists() and hf.read_text() == key:
             print(f"slide {n}: cached {mp4}")
             dropped = lf.read_text().splitlines() if lf.exists() else []
