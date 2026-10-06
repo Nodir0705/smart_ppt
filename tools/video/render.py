@@ -5,7 +5,7 @@ then ``deck.mp4``. Deterministic: every frame is ``draw(base, state_at(i / fps))
   near-black. Consecutive frames with an equal ``state_at`` reuse the previous
   frame's bytes. They are piped as raw rgb24 into ffmpeg as in
   ``src.simulate_to_video._render_and_encode`` (``-threads 1`` x264, but
-  ``-crf 20``), with the slide wav as aac 128k, ``-shortest``.
+  ``-crf 20``), with the slide wav as aac 48 kHz stereo 192k (16 kHz mono TTS plays poorly in many players), ``-shortest``.
 - Slides = the scripted ones (``script/<deck>/slide_NNN.md``). One without a
   cue sheet, timings, voice wav or index entry is refused with the reason; an
   empty script is skipped (voice skips it too) with a printed line. The wav is
@@ -63,7 +63,7 @@ OVERLAP = ("concurrency:", "zoom overlaps")
 SHIM = Path.home() / ".venvs" / "ffmpeg-static" / "shim"
 ENCODE = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20",
           "-threads", "1",                    # multi-threaded x264 is not byte-deterministic
-          "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+          "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", "-movflags", "+faststart"]
 
 
 def use_static_ffmpeg() -> None:
