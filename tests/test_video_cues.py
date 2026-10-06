@@ -1,0 +1,350 @@
+"""Cue sheet schema + validator (tools/video/cues.py) on a synthetic slide."""
+import copy
+import math
+
+import pytest
+
+from tools.video.cues import content, effective_until, resolve, stem, validate, warnings
+
+
+def box(x, y, w, h):
+    return {"x": x, "y": y, "w": w, "h": h, "units": "inches"}
+
+
+L0, L1 = box(1.0, 3.0, 2.0, 0.2), box(1.0, 3.3, 2.4, 0.2)
+
+SLIDE = {
+    "slide_number": 1,
+    "elements": [
+        {"id": "e0", "type": "title", "text": "Grading pipeline overview", "bbox": box(0.7, 0.8, 6.0, 0.4),
+         "line_bboxes": [box(0.7, 0.8, 6.0, 0.4)], "line_texts": ["Grading pipeline overview"],
+         "pointable": True, "map_unit": "u1"},
+        {"id": "e1", "type": "picture", "text": None, "bbox": box(1.0, 2.0, 0.5, 0.5),
+         "pointable": True, "map_unit": "u2"},
+        {"id": "e2", "type": "bullet", "text": "Turns pixels into text catches hand drawn circles",
+         "bbox": box(1.0, 3.0, 2.4, 0.5), "line_bboxes": [L0, L1],
+         "line_texts": ["Turns pixels into text", "catches hand drawn circles"],
+         "pointable": True, "map_unit": "u2"},
+        {"id": "e3", "type": "body", "text": "8 GB GPU memory", "bbox": box(5.0, 3.0, 1.0, 0.3), "value": "8 GB",
+         "line_bboxes": [box(5.0, 3.0, 1.0, 0.3)], "line_texts": ["8 GB GPU memory"],
+         "pointable": True, "map_unit": "u3"},
+        {"id": "e4", "type": "caption", "text": "Page 1", "bbox": box(12.0, 7.0, 0.5, 0.1),
+         "line_bboxes": [box(12.0, 7.0, 0.5, 0.1)], "line_texts": ["Page 1"], "pointable": False},
+        {"id": "e5", "type": "arrow", "text": None, "bbox": box(3.5, 3.0, 1.0, 0.1), "pointable": False},
+    ],
+    "map": {
+        "message": "A pipeline that reads, then fits in eight gigabytes.",
+        "units": {"u1": ["e0"], "u2": ["e1", "e2"], "u3": ["e3"]},
+        "info": {
+            "u1": {"summary": "Title.", "talk": ["how it works"], "terms": ["pipeline"]},
+            "u2": {"summary": "Stage A reads.", "talk": ["first it reads the page"], "terms": ["stage a", "ocr"]},
+            "u3": {"summary": "Memory.", "talk": ["it runs on a modest gpu"], "terms": ["eight gigabytes"]},
+        },
+        "relations": [{"from": "u2", "to": "u3", "type": "flow"},
+                      {"from": "u2", "to": "u1", "type": "explains"}],
+        "order": ["u1", "u2", "u3"],
+    },
+}
+
+SENTENCES = [s.split() for s in [
+    "So here is how the grading pipeline works.",
+    "Stage one turns pixels into text, so the printed stuff — all in one go.",
+    "It even catches the circles kids draw by hand.",
+    "Next, everything has to squeeze onto cheap hardware.",
+    "That takes eight gigabytes of memory.",
+]]
+
+
+def at(s, w):
+    return {"s": s, "w": w}
+
+
+VALID = {"slide": 1, "version": 1, "cues": [
+    {"effect": "focus", "target": "u1", "at": at(0, 5), "until": at(4, 0)},   # replaced by the next focus
+    {"effect": "focus", "target": "u2", "at": at(1, 0), "spotlight": True},
+    {"effect": "underline", "target": "e2", "at": at(2, 2)},
+    {"effect": "zoom", "target": "e2", "at": at(2, 4), "until": at(2, 8), "region": [0, 0.5, 1, 0.5]},
+    {"effect": "glide", "target": "u3", "at": at(3, 0)},                      # no shared word: flow + "Next"
+    {"effect": "ring", "target": "e3", "at": at(4, 2)},
+]}
+
+# word w of sentence s starts at 10*s + w seconds
+TIMINGS = [[{"word": w, "start": 10.0 * s + i, "end": 10.0 * s + i + 0.5} for i, w in enumerate(ws)]
+           for s, ws in enumerate(SENTENCES)]
+
+
+def sheet_with(edit):
+    sheet = copy.deepcopy(VALID)
+    edit(sheet["cues"])
+    return sheet
+
+
+def errors_for(edit, timings=None):
+    return validate(sheet_with(edit), SLIDE, SENTENCES, timings)
+
+
+def has(errors, cue, word):
+    assert any(e.startswith(f"cue {cue}:") and word in e for e in errors), errors
+    return True
+
+
+# ---------- stemming ----------
+
+def test_stem_and_content_words():
+    assert stem("reads") == stem("reading") == "read"
+    assert stem("marked") == "mark" and stem("boxes") == "box"
+    assert stem("pass") == "pass"                         # len <= 4: untouched
+    assert stem("pages") == stem("page")                  # plural of an -e word
+    assert stem("grades") == stem("grade") == stem("grading") == stem("graded")
+    assert content("The marks, and reading!") == {"mark", "read"}
+    assert stem("class") == stem("classes") == "class"   # -ss is not a plural
+    assert stem("process") == stem("processes") == "process"
+
+
+# ---------- validate ----------
+
+def test_valid_sheet():
+    assert validate(VALID, SLIDE, SENTENCES) == []
+    assert validate(VALID, SLIDE, SENTENCES, TIMINGS) == []
+
+
+def test_unknown_or_unpointable_target():
+    assert has(errors_for(lambda c: c[5].update(target="u9")), 5, "unknown target")
+    assert has(errors_for(lambda c: c[5].update(target="e4")), 5, "not pointable")
+
+
+def test_bad_line_index():
+    assert has(errors_for(lambda c: c[2].update(line=2)), 2, "line")
+    assert errors_for(lambda c: c[2].update(line=1)) == []
+    assert errors_for(lambda c: c[2].update(line=None)) == []   # null = default line, as in resolve
+
+
+def test_positions_out_of_range_and_until_order():
+    assert has(errors_for(lambda c: c[5].update(at=at(5, 0))), 5, "range")
+    assert has(errors_for(lambda c: c[5].update(at=at(4, 6))), 5, "range")
+    assert has(errors_for(lambda c: c[3].update(until=at(2, 4))), 3, "until")   # == at
+    assert has(errors_for(lambda c: c[3].update(until=at(2, 1))), 3, "until")   # before at
+
+
+def test_second_focus_replaces_the_first():
+    # the first focus says until (4,0), but the second focus replaces it: no conflict
+    sheet = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5), "until": at(4, 0)},
+                      {"effect": "focus", "target": "u2", "at": at(1, 0)}]}
+    assert validate(sheet, SLIDE, SENTENCES, TIMINGS) == []
+    assert effective_until(sheet, TIMINGS)[0] == (5.0, 10.0)
+
+
+def test_third_mark_at_once_is_an_error():
+    # glides do not end marks: ring e1 + underline e2 + ring e3 all live at (4,2)
+    errs = errors_for(lambda c: c.append({"effect": "ring", "target": "e1", "at": at(1, 1)}))
+    assert has(errs, 5, "concurrency")
+
+
+def test_same_word_flags_only_the_extra_cue():
+    marks = {"cues": [{"effect": "underline", "target": "e2", "at": at(2, 2)},
+                      {"effect": "ring", "target": "u2", "at": at(2, 2)},
+                      {"effect": "ring", "target": "u2", "at": at(2, 2)}]}
+    errs = validate(marks, SLIDE, SENTENCES)
+    assert len(errs) == 1 and has(errs, 2, "concurrency")
+    zooms = {"cues": [{"effect": "zoom", "target": "e2", "at": at(2, 4)},
+                      {"effect": "zoom", "target": "e2", "at": at(2, 4)}]}
+    errs = validate(zooms, SLIDE, SENTENCES)
+    assert len(errs) == 1 and has(errs, 1, "zoom")
+
+
+def test_overlapping_zoom_is_an_error():
+    errs = errors_for(lambda c: c.append({"effect": "zoom", "target": "e2", "at": at(2, 6), "until": at(2, 8)}))
+    assert has(errs, 6, "zoom")
+    # a zoom after the first one ends is fine
+    assert errors_for(lambda c: c.append({"effect": "zoom", "target": "e3", "at": at(4, 3)})) == []
+
+
+def test_spotlight_only_on_focus():
+    assert has(errors_for(lambda c: c[2].update(spotlight=True)), 2, "spotlight")
+
+
+def test_region_only_on_zoom_and_inside_the_target():
+    assert has(errors_for(lambda c: c[3].update(region=[0.5, 0.5, 0.6, 0.2])), 3, "region")   # x + w > 1
+    assert has(errors_for(lambda c: c[3].update(region=[0, 0, 1])), 3, "region")
+    assert has(errors_for(lambda c: c[5].update(region=[0, 0, 1, 1])), 5, "region")          # ring
+
+
+def test_glide_needs_a_current_focus():
+    sheet = {"cues": [{"effect": "glide", "target": "u3", "at": at(4, 0)}]}
+    assert has(validate(sheet, SLIDE, SENTENCES), 0, "glide")
+    # gliding to the target that already has the focus goes nowhere
+    assert has(errors_for(lambda c: c[4].update(target="u2", at=at(1, 3))), 4, "glide")
+
+
+def test_why_rule():
+    # sentence 0 does not talk about the memory stat
+    assert has(errors_for(lambda c: c[5].update(at=at(0, 1))), 5, "why")
+    # "Next" + no shared word, and u1 follows u2 only by "explains", not "flow"
+    assert has(errors_for(lambda c: c[4].update(target="u1")), 4, "why")
+    # flow successor of the focus, but no transition word in the sentence
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
+                      {"effect": "glide", "target": "u3", "at": at(1, 3)}]}
+    assert has(validate(sheet, SLIDE, SENTENCES), 1, "why")
+    # transition word, but u3 is a flow successor of u2, not of the current focus u1
+    sheet = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5)},
+                      {"effect": "glide", "target": "u3", "at": at(3, 0)}]}
+    assert has(validate(sheet, SLIDE, SENTENCES), 1, "why")
+
+
+def test_why_rule_transitions_that_are_also_stopwords():
+    # "then"/"now" are stopwords too: the transition check must not use content()
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
+                      {"effect": "glide", "target": "u3", "at": at(3, 0)}]}
+    for word in ("Then,", "Now,"):
+        said = SENTENCES[:3] + [[word, "everything", "has", "to", "squeeze", "into", "cheap", "hardware."]]
+        assert validate(sheet, SLIDE, said) == [], word
+
+
+def without(unit, field):
+    slide = copy.deepcopy(SLIDE)
+    slide["map"]["info"][unit][field] = []
+    return slide
+
+
+def test_why_rule_uses_talk_terms_and_numbers():
+    talk = {"cues": [{"effect": "ring", "target": "e3", "at": at(0, 1)}]}
+    said = [["A", "modest", "card."]]                     # "modest" is only in u3's talk
+    assert validate(talk, SLIDE, said) == []
+    assert has(validate(talk, without("u3", "talk"), said), 0, "why")
+    terms = {"cues": [{"effect": "focus", "target": "u2", "at": at(0, 1)}]}
+    said = [["The", "OCR", "step."]]                      # "ocr" is only in u2's terms
+    assert validate(terms, SLIDE, said) == []
+    assert has(validate(terms, without("u2", "terms"), said), 0, "why")
+    # spoken "eight" matches the slide's "8" (terms removed so only the digit can match)
+    said = [["Just", "eight", "gigs."]]
+    assert validate(talk, without("u3", "terms"), said) == []
+
+
+def test_malformed_cues_are_errors_not_crashes():
+    sheet = {"cues": [{"effect": "focus", "at": at(0, 0)},
+                      {"effect": "ring", "target": "e3", "at": {"s": "4", "w": 2}},
+                      {"effect": "sparkle", "target": "e3", "at": at(4, 2)},
+                      "focus u1",
+                      {"effect": "ring", "target": ["e3"], "at": at(4, 2)}]}
+    errs = validate(sheet, SLIDE, SENTENCES)
+    assert [e.split(":")[0] for e in errs] == [f"cue {i}" for i in range(5)]
+    assert validate({"cues": "nope"}, SLIDE, SENTENCES) and validate([], SLIDE, SENTENCES)
+
+
+# ---------- resolve ----------
+
+def test_resolve_unit_and_element():
+    r = resolve({"effect": "focus", "target": "u2", "at": at(1, 0)}, SLIDE, SENTENCES)
+    assert r["ids"] == ["e1", "e2"]
+    assert r["bbox"] == (1.0, 2.0, 2.4, 1.5)          # union of e1 and e2
+    assert r["line"] is None
+    r = resolve({"effect": "ring", "target": "e2", "at": at(2, 0)}, SLIDE, SENTENCES)
+    assert r["ids"] == ["e2"] and r["bbox"] == (1.0, 3.0, 2.4, 0.5)
+
+
+def test_resolve_default_underline_line():
+    def line(s, sentences=SENTENCES, **kw):
+        return resolve({"effect": "underline", "target": "e2", "at": at(s, 0), **kw}, SLIDE, sentences)
+
+    assert line(2)["line"] == 1 and line(2)["line_bbox"] == (1.0, 3.3, 2.4, 0.2)   # catches/hand/circles
+    assert line(1)["line"] == 0                                                   # turns/pixels/text
+    assert line(4)["line"] == 0                                                   # no overlap -> first
+    assert line(0, [["text", "hand"]])["line"] == 0                               # tie -> first
+    assert line(1, line=1)["line"] == 1                                           # explicit wins
+
+
+# ---------- effective_until ----------
+
+def test_effective_until_defaults():
+    iv = effective_until(VALID, TIMINGS)
+    assert iv == [(5.0, 10.0),        # focus clipped by the next focus despite until (4,0)
+                  (10.0, 30.0),       # focus (and its spotlight) ends at the glide
+                  (22.0, math.inf),   # underline: no later focus
+                  (24.0, 28.0),       # zoom with explicit until
+                  (30.0, math.inf),   # glide holds to the end
+                  (42.0, math.inf)]   # ring
+
+
+def test_marks_end_at_next_focus_not_glide_and_zoom_lasts_3s():
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0)},
+                      {"effect": "underline", "target": "e2", "at": at(2, 2)},
+                      {"effect": "glide", "target": "u3", "at": at(3, 0)},
+                      {"effect": "focus", "target": "u3", "at": at(4, 0)},
+                      {"effect": "zoom", "target": "e3", "at": at(4, 2)}]}
+    assert effective_until(sheet, TIMINGS) == [(10.0, 30.0), (22.0, 40.0), (30.0, 40.0),
+                                               (40.0, math.inf), (42.0, 45.0)]
+
+
+def test_explicit_until_wins_when_earlier_for_foci_and_always_for_marks():
+    sheet = {"cues": [{"effect": "focus", "target": "u2", "at": at(1, 0), "until": at(2, 0)},
+                      {"effect": "underline", "target": "e2", "at": at(2, 2), "until": at(4, 3)},
+                      {"effect": "focus", "target": "u3", "at": at(4, 0)}]}
+    assert effective_until(sheet, TIMINGS) == [(10.0, 20.0),       # focus: own until before the next focus
+                                               (22.0, 43.0),       # mark: until outlasts the next focus
+                                               (40.0, math.inf)]
+
+
+# ---------- ring needs a compact target ----------
+
+def with_box(eid, b):
+    slide = copy.deepcopy(SLIDE)
+    next(e for e in slide["elements"] if e["id"] == eid)["bbox"] = b
+    return slide
+
+
+def test_ring_needs_a_compact_target():
+    assert validate(VALID, with_box("e3", box(5.0, 3.0, 1.2, 0.3)), SENTENCES) == []      # 4:1 is the limit
+    for b in (box(5.0, 3.0, 2.0, 0.3),        # one-line sentence, 6.7:1
+              box(5.0, 3.0, 0.2, 1.0),        # tall and thin, 5:1
+              box(5.0, 3.0, 3.6, 1.0)):       # 3.6:1 but 27 % of the slide width
+        errs = validate(VALID, with_box("e3", b), SENTENCES)
+        assert has(errs, 5, "ring needs a compact target") and "use underline" in errs[0], b
+    wide = with_box("e3", box(5.0, 3.0, 3.0, 1.0))                                        # 22.5 %
+    assert validate(VALID, wide, SENTENCES) == []
+    assert has(validate(VALID, wide, SENTENCES, slide_w=10.0), 5, "compact")              # 30 % of a 4:3 slide
+    under = {"cues": [{"effect": "underline", "target": "e3", "at": at(4, 2)}]}           # the fix it names
+    assert validate(under, with_box("e3", box(5.0, 3.0, 2.0, 0.3)), SENTENCES) == []
+
+
+# ---------- zoom source ----------
+
+def zoom(target, region=None):
+    cue = {"effect": "zoom", "target": target, "at": at(2, 4)}
+    return resolve(dict(cue, region=region) if region else cue, SLIDE, SENTENCES)["source"]
+
+
+def test_zoom_source_snaps_out_to_whole_lines():
+    # e2 = (1.0, 3.0, 2.4, 0.5); lines L0 = (1.0, 3.0, 2.0, 0.2), L1 = (1.0, 3.3, 2.4, 0.2)
+    assert zoom("e2", [0.25, 0.7, 0.3, 0.2]) == pytest.approx((1.0, 3.3, 2.4, 0.2))       # part of L1 -> all of L1
+    assert zoom("e2", [0.4, 0.1, 0.2, 0.6]) == pytest.approx((1.0, 3.0, 2.4, 0.5))        # parts of both lines
+    assert zoom("e2") == (1.0, 3.0, 2.4, 0.5)                                             # no region: the target
+    assert resolve({"effect": "ring", "target": "e2", "at": at(2, 0)}, SLIDE, SENTENCES)["source"] is None
+
+
+def test_zoom_source_on_a_photo_pads_4_percent_inside_the_target():
+    # e1 = picture (1.0, 2.0, 0.5, 0.5), no lines: pad 0.04 * 0.5 = 0.02 in each side
+    assert zoom("e1", [0.2, 0.2, 0.5, 0.5]) == pytest.approx((1.08, 2.08, 0.29, 0.29))
+    assert zoom("e1", [0.0, 0.0, 1.0, 0.5]) == pytest.approx((1.0, 2.0, 0.5, 0.27))       # clamped to the photo
+
+
+# ---------- warnings: dead air ----------
+
+def test_dead_air_is_a_warning_not_an_error():
+    # sentence 0 ("... how the grading pipeline works") refers to u1; its first word starts at 0.0
+    late = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 5)}]}               # 5.0 s in
+    w = warnings(late, SLIDE, SENTENCES, TIMINGS)
+    assert len(w) == 1 and "dead air" in w[0] and "sentence 0" in w[0] and "'u1'" in w[0]
+    assert validate(late, SLIDE, SENTENCES, TIMINGS) == []
+    on_time = {"cues": [{"effect": "focus", "target": "u1", "at": at(0, 3)}]}            # 3.0 s: not > 3.0
+    assert warnings(on_time, SLIDE, SENTENCES, TIMINGS) == []
+    assert warnings({"cues": []}, SLIDE, SENTENCES, TIMINGS) == []                       # nothing pointed at
+    # the clock starts at the first sentence that refers to something, not at the slide start
+    said = [["Hello", "everyone,", "welcome", "back", "today."], ["The", "pipeline", "reads."]]
+    cue = {"cues": [{"effect": "focus", "target": "u1", "at": at(1, 1)}]}
+    assert warnings(cue, SLIDE, said) == []                                               # nominal clock: 0.4 s late
+    assert warnings({"cues": "nope"}, SLIDE, SENTENCES) == []
+    # a cue validate refuses (a ring too wide for a 10 in slide) is not the "first cue"
+    ring = {"effect": "ring", "target": "e3", "at": at(0, 1)}
+    wide = with_box("e3", box(5.0, 3.0, 3.0, 1.0))
+    assert warnings({"cues": [ring, *late["cues"]]}, wide, SENTENCES, TIMINGS) == []
+    assert len(warnings({"cues": [ring, *late["cues"]]}, wide, SENTENCES, TIMINGS, slide_w=10.0)) == 1
