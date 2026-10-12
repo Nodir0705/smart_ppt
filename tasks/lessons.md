@@ -156,6 +156,12 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
 - **Thread count is measured, not assumed:** i5-14400F (6P+4E) best at 12 threads (131 ms); 16 threads thrashes
   (p90 1.5 s).
 
+- **Benched end to end (2026-10-12), the 1.5B decider loses to the TinyBERT cross-encoder.** clause_replay on
+  AI_Handout, LLM scores cached so pointer margins could be swept on the tune talks only (586 configs). No config
+  reached the cross encoder's lit on either tune talk. Held-out meaning, cross vs LLM tuned for balance: lit 57 vs 48/59,
+  false ids 8 vs 5, sw/step 1.22 vs 1.31, at 16 vs 136 ms/call. The max-lit LLM config reached 54/59 only by jumping
+  3.0 boxes/step. Oracle agreement (61-66%) did not predict this; bench the full pointer before calling a decider usable.
+
 ## Clause pointer: decide per clause, point and hold (2026-10-02)
 
 - **Segmenting into clauses fixed hopping; the decider fixed wrong ids.** The same bge-small cosine as today,
