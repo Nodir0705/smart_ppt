@@ -389,3 +389,17 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
 - **Slide 4 coverage is a tie** (mean 87.6 % Kokoro against 88.2 % amy). Kokoro says "P D F" / "C S V" fluently,
   so Whistle writes "pdf" and `timings.match` cannot pair it with the letters "p d f". That costs s0 and s4 their
   85 % flag. The fix belongs in `match` (letter runs against an acronym), not in the voice.
+
+## Unseen-deck test (TapHole, 18 slides) and where the lateness comes from (2026-10-12)
+
+- **The pointer mostly generalizes, frozen.** Shipped params, Claude maps, three blind talk scripts: lit 63/65,
+  59/70, 68/72 (original / jumpy / meaning) vs AI_Handout 46/48, 59/61, 57/59. Wrong ids are higher on the
+  original talk (12 vs 3; false s 46.8 vs 4.5) and spread 1–2 per slide, not one broken slide. The jumpy talk is
+  the weak spot (84% lit). Closing "questions" slides light their graphic in every talk.
+- **Real decks expose parser gaps, not pointer gaps.** Embedded videos (slides 12, 17) and one picture (slide 10)
+  never reach the index, and three text boxes on slide 8 carry the wrong bbox. Talk and map agents both flagged them;
+  nothing downstream can point at what the parser drops.
+- **STT lag is 0.51 s median (p90 0.67), on both decks, in every talk style** (`tools/stt_lag.py`, Whistle word stamps
+  on the clean TTS as truth). It matches sherpa's 320 ms decode chunk (chunk-16 zipformer). It is ~20% of the
+  ~2.4 s lateness; the presenter naming the item ~1.4–2.0 s into the sentence is ~70%; the decision after hearing
+  the naming word adds ~0.3 s. Waiting for fewer words (min_words 5 → 2) saved ≤0.27 s and added wrong ids.

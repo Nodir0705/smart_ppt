@@ -597,3 +597,17 @@ trajectories); short-override confirm + stale release (e611d5d; AI 2.19 sw/step,
 (stack / picture+caption / card panel) — policy, viewer, simulators and benches all at unit level; gap 0.035, clear 16,
 stale off. AI 43/48, 1.58 sw/step, adj 9.4 s; Open-Q 89/117, 2.01, adj 46.2 s (worse, flagged); hand 38/40 f1 fl1;
 filler 3; verbatim 462/741. Next: kicker/title lights.
+
+## 2026-10-12 — Generalization test on an unseen deck (TapHole) + STT lag
+
+Deck: `decks/TapHole.pptx` (copy of `[Tap hole][Netvision]AI model for tap hole detection_R1_22May2025.pptx`, 18 slides).
+Rule: no retuning — shipped params and prompts only; TapHole is a pure holdout.
+
+- [ ] 1a. Build default index + slide PNGs (`tools.deck_bench --only TapHole`)
+- [ ] 1b. Slide maps (Claude agents, blind to scripts) → `out/maps/TapHole/`, all validate
+- [ ] 1c. Three talk scripts (original / jumpy / meaning), agents blind to maps, annotated `refers_to`
+- [ ] 1d. Map index (`--variant map`), presenter audio, record STT, `clause_replay --deck TapHole --holdout`
+- [ ] 1e. Compare with AI_Handout rows (same params); list failure modes per slide
+- [ ] 1f. Video: draft script → voice → cue sheets → validate → render → contact-sheet audit
+- [ ] 2. STT lag: per word, spoken time (Whistle on the clean TTS wav) vs first appearance in sherpa partials (AI_Handout + TapHole)
+- [ ] Report + lessons
