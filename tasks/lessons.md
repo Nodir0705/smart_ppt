@@ -161,6 +161,11 @@ Problem: 1-2 word mentions ("Stage", "8 GB") rarely lit — the 8-word STT tail 
   reached the cross encoder's lit on either tune talk. Held-out meaning, cross vs LLM tuned for balance: lit 57 vs 48/59,
   false ids 8 vs 5, sw/step 1.22 vs 1.31, at 16 vs 136 ms/call. The max-lit LLM config reached 54/59 only by jumping
   3.0 boxes/step. Oracle agreement (61-66%) did not predict this; bench the full pointer before calling a decider usable.
+- **Laya (open Jev-style choice model, ModernBERT-large 421M, zero-shot) loses too (2026-10-12).** Same harness: choice
+  over the units' cross-encoder descriptions + a "none" option, score = log p (GPU-scored; CPU argmax matched 99/100).
+  Held-out meaning, cross vs Laya tuned for balance: lit 57 vs 46/59, false ids 8 vs 7, sw/step 1.22 vs 1.50, late
+  2.43 vs 3.22 s; max-lit Laya 54/59 at 2.59 sw/step. CPU 467 ms/call at 12 threads (1.5 s on 1 thread) vs 16 ms.
+  Generic "System One" choice models are the same shape as the cross-encoder, just bigger and not trained for this.
 
 ## Clause pointer: decide per clause, point and hold (2026-10-02)
 
