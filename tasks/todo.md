@@ -603,11 +603,16 @@ filler 3; verbatim 462/741. Next: kicker/title lights.
 Deck: `decks/TapHole.pptx` (copy of `[Tap hole][Netvision]AI model for tap hole detection_R1_22May2025.pptx`, 18 slides).
 Rule: no retuning — shipped params and prompts only; TapHole is a pure holdout.
 
-- [ ] 1a. Build default index + slide PNGs (`tools.deck_bench --only TapHole`)
-- [ ] 1b. Slide maps (Claude agents, blind to scripts) → `out/maps/TapHole/`, all validate
-- [ ] 1c. Three talk scripts (original / jumpy / meaning), agents blind to maps, annotated `refers_to`
-- [ ] 1d. Map index (`--variant map`), presenter audio, record STT, `clause_replay --deck TapHole --holdout`
-- [ ] 1e. Compare with AI_Handout rows (same params); list failure modes per slide
-- [ ] 1f. Video: draft script → voice → cue sheets → validate → render → contact-sheet audit
-- [ ] 2. STT lag: per word, spoken time (Whistle on the clean TTS wav) vs first appearance in sherpa partials (AI_Handout + TapHole)
-- [ ] Report + lessons
+- [x] 1a. Build default index + slide PNGs (`tools.deck_bench --only TapHole`)
+- [x] 1b. Slide maps (Claude agents, blind to scripts) → `out/maps/TapHole/`, all validate
+- [x] 1c. Three talk scripts (original / jumpy / meaning), agents blind to maps, annotated `refers_to`
+- [x] 1d. Map index (`--variant map`), presenter audio, record STT, `clause_replay --deck TapHole --holdout`
+- [x] 1e. Compare with AI_Handout rows (same params); list failure modes per slide
+- [x] 1f. Video: draft script → voice → cue sheets → validate → render → contact-sheet audit
+- [x] 2. STT lag: per word, spoken time (Whistle on the clean TTS wav) vs first appearance in sherpa partials (AI_Handout + TapHole)
+- [x] Report + lessons
+
+Review (2026-10-12): pointer frozen on TapHole lit 63/65, 59/70, 68/72 (wrong ids 12/7/5); STT lag 0.51 s median on
+both decks (~20% of lateness; presenter naming late ~70%). Video: 99 cues, audit 57/99 (AI_Handout 77/77); ~30
+failures = captions over slide content / titles on dense slides; 4 = brackets off-frame (fixed d58545e);
+render deterministic. Parser drops embedded videos + one picture, wrong bbox on slide 8. Open: caption band.
