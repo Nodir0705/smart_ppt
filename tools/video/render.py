@@ -70,7 +70,7 @@ from tools.video.geometry import Letterbox
 from tools.video.script import sentences, words
 
 FPS = 30
-DRAW_VERSION = 4            # 2: effects polish (glow, back ease, arms, ring, lens); 3: captions; 4: they dodge marks
+DRAW_VERSION = 5            # 2: effects polish (glow, back ease, arms, ring, lens); 3: captions; 4: they dodge marks; 5: brackets in frame
 GAP_S = 0.6
 OVERLAP = ("concurrency:", "zoom overlaps")
 SHIM = Path.home() / ".venvs" / "ffmpeg-static" / "shim"

@@ -197,3 +197,11 @@ def test_accent_strokes_have_a_soft_glow():
     assert b > r + 5                                    # cyan tint
     assert out.getpixel((200, 150)) == (128, 128, 128)  # the box centre is untouched
     assert draw(frame, state_at(1.0, plan), HUD).tobytes() == out.tobytes()
+
+
+def test_brackets_stay_in_the_frame_when_the_target_touches_its_edge():
+    frame = Image.new("RGB", (640, 360), (128, 128, 128))
+    out = draw(frame, state_at(1.0, [Effect("focus", 0.0, 9.0, (560, 100, 100, 60))]), HUD)   # 20 px past the right edge
+    near = lambda p: all(abs(p[i] - HUD["accent"][i]) < 40 for i in range(3))
+    right_arm = [y for y in range(100, 160) if any(near(out.getpixel((x, y))) for x in range(630, 640))]
+    assert len(right_arm) >= 10                          # the right arms are drawn inside the frame

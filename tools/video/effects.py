@@ -256,7 +256,8 @@ def _spotlight(img, box, style):
 def _brackets(img, src, a, style):
     x, y, w, h = a.box
     L = arm_len(a.box, img.height, style)
-    x1, y1 = x + w, y + h
+    m = style["line_w"]                       # a box at (or past) the frame edge keeps its arms on screen
+    x, y, x1, y1 = max(x, m), max(y, m), min(x + w, img.width - m), min(y + h, img.height - m)
     _paint(img, tuple(("line", pts, style["line_w"]) for pts in (
         ((x, y + L), (x, y), (x + L, y)), ((x1 - L, y), (x1, y), (x1, y + L)),
         ((x1, y1 - L), (x1, y1), (x1 - L, y1)), ((x + L, y1), (x, y1), (x, y1 - L)))), style)
