@@ -583,7 +583,7 @@ def main(argv: list[str] | None = None) -> int:
 
     index = json.loads(Path(args.input).read_text())
     deck = args.deck or index["deck"]
-    pdf_path = deck_pdf(deck, args.pdf_dir)
+    pdf_path = deck_pdf(deck, args.pdf_dir, text_layer=True)
     refined = refine_index(index, pdf_path)
 
     # measure column-chart bars from the rendered slides (falls back to the

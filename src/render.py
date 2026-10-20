@@ -45,9 +45,9 @@ def _table_picture(frame):
     fills each math cell with a crop of a picture of the whole table), a `p:pic`
     of that picture at the frame — soffice ignores the crops and stretches the
     picture into every cell, tiling the table with miniatures of itself. None
-    when the cells reference no picture, or several (rendered as is)."""
-    rids = {b.get(_R_EMBED) for b in frame.iterfind(
-        f".//{_A_NS}tc/{_A_NS}tcPr/{_A_NS}blipFill/{_A_BLIP}")}
+    when the cells reference no embedded picture, or several (rendered as is)."""
+    rids = {rid for b in frame.iterfind(f".//{_A_NS}tc/{_A_NS}tcPr/{_A_NS}blipFill/{_A_BLIP}")
+            if (rid := b.get(_R_EMBED))}
     if not rids:
         return None
     cnvpr = frame.find(f"{_P_NS}nvGraphicFramePr/{_P_NS}cNvPr")
@@ -180,7 +180,9 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out", *,
 def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> list[Path]:
     """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths.
 
-    The intermediate PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`)
+    The visual PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`); the
+    refine stage asks `deck_pdf(..., text_layer=True)` for its glyph PDF, which
+    is this same file unless the deck has equation boxes
     so downstream tools (e.g. text-bbox refinement) can reuse it.
     """
     pptx_path = Path(pptx_path).resolve()
@@ -195,7 +197,7 @@ def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> l
     for p in _existing_pngs(out_dir):
         p.unlink()
 
-    # 1) pptx → pdf (cached at out_dir.parent/<stem>.pdf so refine_text reuses it)
+    # 1) pptx → visual pdf (cached at out_dir.parent/<stem>.pdf)
     pdf_path = deck_pdf(pptx_path, out_dir.parent)
 
     with tempfile.TemporaryDirectory(prefix="smartppt_render_") as td:

@@ -107,6 +107,39 @@ def test_table_math_fallback_renders_as_one_picture(tmp_path):
         f"(one block at the frame = 0.50 / ~1.0; tiled per cell = 0.75 / ~0.44)")
 
 
+def test_table_picture_ignores_blips_without_an_embed():
+    # A cell blip that only links (r:link) or is empty has no r:embed; the table
+    # then has no embedded picture to draw once, so it is rendered as is — not a
+    # TypeError that aborts the render.
+    from lxml import etree
+    from src.render import _table_picture
+    frame = etree.fromstring(
+        '<p:graphicFrame xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+        ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<p:nvGraphicFramePr><p:cNvPr id="7" name="Table 6"/></p:nvGraphicFramePr>'
+        '<p:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></p:xfrm>'
+        '<a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:tcPr><a:blipFill>'
+        '<a:blip r:link="rId9"/></a:blipFill></a:tcPr></a:tc></a:tr></a:tbl>'
+        '</a:graphicData></a:graphic></p:graphicFrame>')
+    assert _table_picture(frame) is None
+
+
+def test_refine_cli_asks_for_the_text_layer_pdf(tmp_path, monkeypatch):
+    # `python3 -m src.refine_text` must refine against the same PDF build_index
+    # does — the one with the glyphs — or equation decks differ between the two.
+    import json
+    import src.refine_text as R
+    seen = []
+    monkeypatch.setattr(R, "deck_pdf", lambda deck, pdf_dir, **kw: seen.append(kw) or tmp_path / "x.pdf")
+    monkeypatch.setattr(R, "refine_index", lambda index, pdf: index)
+    idx = tmp_path / "index.json"
+    idx.write_text(json.dumps({"deck": str(DECK), "slides": []}))
+    R.main(["--input", str(idx), "--out", str(tmp_path / "refined.json"),
+            "--pdf-dir", str(tmp_path), "--slides", str(tmp_path / "none")])
+    assert seen == [{"text_layer": True}]
+
+
 def test_build_index_refines_from_the_text_layer_pdf(tmp_path, monkeypatch):
     # The refine stage must read the text-layer PDF (the visual one has no
     # glyphs where equation boxes are). Wiring only: soffice stubbed, refine
