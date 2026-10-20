@@ -456,6 +456,15 @@ def test_ink_annotation_resolves_to_its_fallback_picture(tmp_path):
     assert els[1]["needs_vision"] is True
 
 
+def test_table_cell_reads_equation_runs(tmp_path):
+    # Cell text goes through the same paragraph reader as text boxes, so an
+    # `a14:m` equation in a cell (q₁: math-italic q over a subscript 1) reads
+    # "q1" instead of python-pptx's empty `cell.text`; plain cells unchanged.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["table_math_cell"].path)["slides"] for e in s["elements"]]
+    assert [e["text"] for e in els] == ["δ", "0", "start", "q1"], els
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

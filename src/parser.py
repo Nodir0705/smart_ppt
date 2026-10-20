@@ -229,10 +229,15 @@ def _paragraph_text(p) -> str:
     return "".join(parts)
 
 
+def _frame_text(text_frame) -> str:
+    """Text of a text frame (shape or table cell): paragraphs joined with "\\n"."""
+    return "\n".join(_paragraph_text(p._p) for p in text_frame.paragraphs).strip()
+
+
 def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
-    return "\n".join(_paragraph_text(p._p) for p in shape.text_frame.paragraphs).strip()
+    return _frame_text(shape.text_frame)
 
 
 _IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
@@ -562,7 +567,9 @@ def _expand_table(shape, slide_no: int, start_idx: int) -> list[Element]:
         for ci, cell in enumerate(row.cells):
             cell_x = bbox.x + sum(col_widths[:ci])
             cell_y = bbox.y + sum(row_heights[:ri])
-            text = (cell.text or "").strip()
+            # the same reader as text boxes: python-pptx `cell.text` skips
+            # `a14:m` equations (a δ transition table read 9 of 12 cells empty)
+            text = _frame_text(cell.text_frame)
             out.append(Element(
                 id=f"s{slide_no}_e{idx}",
                 type="table_cell",

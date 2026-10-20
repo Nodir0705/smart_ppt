@@ -365,6 +365,31 @@ def _build_table(out_dir: Path) -> CorpusDeck:
                       note="2x3 table -> one table_cell per cell")
 
 
+def _build_table_math_cell(out_dir: Path) -> CorpusDeck:
+    """A table whose cell holds an equation (a δ transition table listing
+    states q₁, q₂ …): the cell's txBody carries the math in `a14:m`, which
+    python-pptx `cell.text` skips — 9 of 12 cells of MIT's δ table read empty.
+    The math cell must read "q1" (math-italic 𝑞 over a subscript 1, NFKC
+    normalised); plain cells stay verbatim."""
+    from lxml import etree
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    t = s.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(6), Inches(2)).table
+    t.cell(0, 0).text = "δ"
+    t.cell(0, 1).text = "0"
+    t.cell(1, 0).text = "start"
+    t.cell(1, 1).text_frame.paragraphs[0]._p.append(etree.fromstring(
+        f'<a14:m xmlns:a14="{_A14_NS}"><m:oMath xmlns:m="{_M_NS}"><m:sSub>'
+        '<m:e><m:r><m:t>\U0001D45E</m:t></m:r></m:e>'
+        '<m:sub><m:r><m:t>1</m:t></m:r></m:sub></m:sSub></m:oMath></a14:m>'))
+    path = out_dir / "table_math_cell.pptx"
+    prs.save(str(path))
+    return CorpusDeck("table_math_cell", str(path), expected_texts=["δ", "start", "q1"],
+                      expected_types=["table_cell"] * 4,
+                      note="a14:m equation inside a table cell -> cell text 'q1'")
+
+
 def _build_duplicate_text(out_dir: Path) -> CorpusDeck:
     """Two separate boxes with IDENTICAL text. The parser must NOT dedup them to
     one element — they are distinct pointables at distinct positions (the real
@@ -743,6 +768,7 @@ _BUILDERS = [
     _build_titled_chart_acronym,
     _build_nested_groups,
     _build_table,
+    _build_table_math_cell,
     _build_duplicate_text,
     _build_unicode_text,
     _build_image_baked_text,
