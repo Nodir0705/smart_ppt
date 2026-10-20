@@ -1,7 +1,12 @@
 """Positional element-id remapping between two index builds. Synthetic indexes only."""
 from __future__ import annotations
 
-from tools.remap_ids import build_id_map
+import json
+
+import pytest
+
+from tools.remap_ids import apply, build_id_map, main, remap_file, remap_json
+from tools.slide_map import validate
 
 
 def _el(eid, type, text, x, y, w=2.0, h=0.4):
@@ -28,7 +33,7 @@ def test_insertion_shifts_later_ids():
     r = build_id_map(_index(OLD), _index(new))
     assert r["deck"] == "deck.pptx"
     assert r["map"] == {"s1_e0": "s1_e0", "s1_e1": "s1_e2", "s1_e2": "s1_e3", "s1_e3": "s1_e4"}
-    assert r["new"] == ["s1_e1"] and r["dropped"] == [] and r["retyped"] == []
+    assert r["new"] == ["s1_e1"] and r["dropped"] == [] and r["retyped"] == [] and r["text_changed"] == []
 
 
 def test_deletion_drops_old_id_and_shifts_down():
@@ -43,6 +48,18 @@ def test_retype_without_text_change_is_matched_and_reported():
     r = build_id_map(_index(old), _index(new))
     assert r["map"] == {"s1_e0": "s1_e0"}
     assert r["retyped"] == [{"old": "s1_e0", "new": "s1_e0", "from": "diagram_label", "to": "title"}]
+
+
+def test_text_change_same_type_and_place_is_matched_and_reported():
+    old = [("bullet", "Reads handwriting", 1.0, 3.0), ("bullet", "Grades it", 1.0, 3.5)]
+    new = [("bullet", "Reads handwriting now", 1.0, 3.0), ("bullet", "Grades it", 1.0, 3.5)]
+    r = build_id_map(_index(old), _index(new))
+    assert r["map"] == {"s1_e0": "s1_e0", "s1_e1": "s1_e1"} and r["dropped"] == [] and r["new"] == []
+    assert r["text_changed"] == [{"old": "s1_e0", "new": "s1_e0", "from": "Reads handwriting",
+                                  "to": "Reads handwriting now"}]
+    # retype AND text change together is a different element: dropped + new
+    r = build_id_map(_index(old[:1]), _index([("title", "Reads handwriting now", 1.0, 3.0)]))
+    assert r["map"] == {"s1_e0": None} and r["new"] == ["s1_e0"]
 
 
 def test_duplicate_texts_resolved_by_iou_not_order():
@@ -75,9 +92,6 @@ def test_slides_only_on_one_side():
 
 
 # ---- applying the map ----
-
-from tools.remap_ids import main, remap_file, remap_json   # noqa: E402
-from tools.slide_map import validate   # noqa: E402
 
 NEW = [OLD[0], ("body", "x = y + 1", 5.0, 1.5), OLD[0 + 2], OLD[3]]   # arrow dropped, equation inserted at e1
 MAP = {"s1_e0": "s1_e0", "s1_e1": None, "s1_e2": "s1_e2", "s1_e3": "s1_e3"}
@@ -117,9 +131,16 @@ def test_remap_slide_map_drops_empty_unit_adds_new_id_and_validates():
     assert m["units"][2]["members"] == ["s1_e1"] and m["units"][2]["summary"] == "x = y + 1"
     assert m["relations"] == [{"type": "explains", "from": "u3", "to": "u1"}]
     assert m["order"] == ["u1", "u3", "u4"]
-    assert rep["dropped"] == ["s1_e1"] and rep["new"] == ["s1_e1"]
+    assert rep["dropped"] == ["s1_e1"] and rep["new"] == ["s1_e1"] and rep["errors"] == []
     packet = {"slide": 1, "elements": new_index["slides"][0]["elements"]}
     assert validate(m, packet) == []
+
+
+def test_remap_slide_map_reports_what_fixup_cannot_repair():
+    m = _slide_map()
+    del m["message"]
+    _, rep = remap_file(m, MAP, _index(NEW))
+    assert rep["errors"] == ["message missing"]
 
 
 def test_remap_presenter_script_lists_dropped_segments():
@@ -133,17 +154,29 @@ def test_remap_presenter_script_lists_dropped_segments():
     assert rep["segments"] == [(1, ["s1_e1"], "Look at the arrow and the title.")]
 
 
-def test_apply_rewrites_tree_in_place(tmp_path, capsys):
-    import json
+def test_expected_steps_emptied_by_a_drop_are_pruned_and_reported():
+    ex = {"slides": [{"slide": 1, "expected": [["s1_e1"], ["s1_e0", "s1_e1"], ["s1_e3"]]}]}
+    out, rep = remap_file(ex, MAP, _index(NEW))
+    assert out["slides"][0]["expected"] == [["s1_e0"], ["s1_e3"]]
+    assert rep["pruned"] == [(1, 0, ["s1_e1"])] and rep["dropped"] == ["s1_e1"]
+
+
+def _tree(tmp_path):
     (tmp_path / "old.json").write_text(json.dumps(_index(OLD)))
     (tmp_path / "new.json").write_text(json.dumps(_index(NEW)))
     maps = tmp_path / "maps"
     (maps / "packets").mkdir(parents=True)
     (maps / "slide_001.json").write_text(json.dumps(_slide_map(), indent=1) + "\n")
+    return maps
+
+
+def test_apply_rewrites_tree_in_place(tmp_path, capsys):
+    maps = _tree(tmp_path)
     packet = json.dumps({"slide": 1, "png": "x.png", "elements": [{"id": "s1_e1"}]})
     (maps / "packets" / "slide_001.json").write_text(packet)
     (maps / "notes.txt").write_text("s1_e1 stays")
     (maps / "index.json").write_text(json.dumps(_index(OLD)))   # an index must never be rewritten
+    (maps / "trace.json").write_text('[{"active_id": "s1_e1"}]')  # list-shaped bench output: left alone
     script = tmp_path / "presenter_script.json"
     script.write_text(json.dumps({"deck": "d", "slides": [{"slide": 1, "segments": [
         {"text": "The arrow.", "refers_to": ["s1_e1", "s1_e3"]}]}]}, indent=2))
@@ -156,8 +189,39 @@ def test_apply_rewrites_tree_in_place(tmp_path, capsys):
     assert (maps / "packets" / "slide_001.json").read_text() == packet
     assert (maps / "notes.txt").read_text() == "s1_e1 stays"
     assert json.loads((maps / "index.json").read_text()) == _index(OLD)
+    assert (maps / "trace.json").read_text() == '[{"active_id": "s1_e1"}]'
     raw = script.read_text()
     assert json.loads(raw)["slides"][0]["segments"][0]["refers_to"] == ["s1_e3"]
     assert raw.startswith('{\n  "deck"') and not raw.endswith("\n")             # indent=2, no newline kept
     out = capsys.readouterr().out
     assert "The arrow." in out and "s1_e1" in out and "packets/slide_001.json" in out
+
+
+def test_apply_needs_out_and_runs_once_per_map_file(tmp_path):
+    maps = _tree(tmp_path)
+    args = [str(tmp_path / "old.json"), str(tmp_path / "new.json")]
+    with pytest.raises(SystemExit):                       # --apply without --out
+        main([*args, "--apply", str(maps)])
+    assert main([*args, "--out", str(tmp_path / "map.json"), "--apply", str(maps)]) == 0
+    once = (maps / "slide_001.json").read_text()
+    with pytest.raises(SystemExit):                       # the map file is the run-once marker
+        main([*args, "--out", str(tmp_path / "map.json"), "--apply", str(maps)])
+    assert (maps / "slide_001.json").read_text() == once
+
+
+def test_apply_refuses_deck_roots_and_missing_paths(tmp_path):
+    root = tmp_path / "deck"
+    (root / "default").mkdir(parents=True)
+    with pytest.raises(SystemExit):
+        apply([root], MAP, _index(NEW))
+    with pytest.raises(FileNotFoundError):
+        apply([tmp_path / "nope"], MAP, _index(NEW))
+
+
+def test_apply_writes_nothing_when_any_file_fails(tmp_path):
+    maps = _tree(tmp_path)
+    before = (maps / "slide_001.json").read_text()
+    (maps / "zz_bad.json").write_text("{")
+    with pytest.raises(json.JSONDecodeError):
+        apply([maps], MAP, _index(NEW))
+    assert (maps / "slide_001.json").read_text() == before
