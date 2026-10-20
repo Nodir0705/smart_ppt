@@ -107,8 +107,10 @@ def _gap(b: dict, words: list[dict]) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
-# inches: a run wholly outside its box must still be near it (render line spacing
-# can drift ~1.4 in from the parser's estimate down a long code listing), and
+# inches: among SEVERAL free occurrences of a text, one wholly outside the parser's
+# box still competes within this radius (render line spacing drifts ~1.4 in from
+# the parser's estimate down a long code listing). Not a proximity requirement: a
+# text that occurs once on the page is taken wherever it is (see align_words), and
 # 1-3 char texts ("2", "F4") must land inside their box.
 ALIGN_MAX_GAP = 2.0
 BESIDE_GAP = 0.5  # inches: bullet indent / punctuation spacing on one line
@@ -127,11 +129,15 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     so an element's glyphs are found by locating its (normalised) text in the
     page's word stream — independent of where the parser thinks the box is
     (overflowing text, boxes offset from the render, full-slide label boxes).
-    A match must start and end on word boundaries; among several, the one most
-    inside the element's box wins, and one wholly outside it must lie within
-    ALIGN_MAX_GAP. Longer texts claim first so short ones can't steal their words.
-    Elements whose text isn't found (autonumbering, glyph drift) are left to
-    geometric `assign_words`.
+    A match must start and end on word boundaries. A text that occurs once on the
+    page is taken wherever the stream puts it: the parser's box is a guess that
+    drifts without bound down a long placeholder (font sizes inherited from the
+    master, autofit shrink) — TapHole slide 8 lost its last three paragraphs at
+    2.1-2.7 in. Among several occurrences the one most inside the element's box
+    wins, and one wholly outside it must lie within ALIGN_MAX_GAP; 1-3 char texts
+    must land inside their box. Longer texts claim first so short ones can't
+    steal their words. Elements whose text isn't found (autonumbering, glyph
+    drift) are left to geometric `assign_words`.
     """
     norms = [_norm(w["text"]) for w in words]
     stream = "".join(norms)
@@ -147,23 +153,24 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     spans: dict[str, list] = {}
     for eid, bbox, text in sorted(elements, key=lambda e: -len(_norm(e[2]))):
         target = _norm(text)
-        best = None
+        found = []  # free word-aligned occurrences: (inside fraction, gap, a, b)
         at = stream.find(target) if target else -1
         while at != -1:
             end = at + len(target)
             if at in starts and end in ends:
                 a, b = owner[at], owner[end - 1]
-                span = words[a:b + 1]
                 if not any(taken[a:b + 1]):
+                    span = words[a:b + 1]
                     inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
-                    gap = _gap(bbox, span)
-                    if inside > 0 or (len(target) >= 4 and gap <= ALIGN_MAX_GAP):
-                        key = (-inside, gap)
-                        if best is None or key < best[0]:
-                            best = (key, a, b)
+                    found.append((inside, _gap(bbox, span), a, b))
             at = stream.find(target, at + 1)
-        if best is not None:
-            _, a, b = best
+        if len(target) >= 4 and len(found) == 1:
+            near = found  # unique on the page: the stream alone locates it
+        else:
+            near = [f for f in found
+                    if f[0] > 0 or (len(target) >= 4 and f[1] <= ALIGN_MAX_GAP)]
+        if near:
+            _, _, a, b = min(near, key=lambda f: (-f[0], f[1]))
             taken[a:b + 1] = [True] * (b + 1 - a)
             spans[eid] = [a, b, text]
     # Grow spans over punctuation-only words beside them on the same line:

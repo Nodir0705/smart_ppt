@@ -290,3 +290,55 @@ def test_text_rendered_below_its_parsed_box_is_found_by_stream_alignment(monkeyp
     out = _refine_one_slide(monkeypatch, els, words)
     assert out["a"]["bbox"]["y"] == pytest.approx(1.9) and out["a"]["bbox"]["w"] == pytest.approx(1.15)
     assert out["b"]["bbox"]["y"] == pytest.approx(2.3)
+
+
+@pytest.mark.skipif(SOFFICE_MISSING, reason="soffice not installed")
+def test_paragraphs_drifted_far_below_parsed_boxes_still_align(tmp_path):
+    """Body-placeholder paragraphs inherit their font size from the master
+    (python-pptx sees None, the parser guesses 16 pt lines), so the parser's
+    guessed line boxes drift further from the rendered glyphs with every
+    paragraph — past any fixed proximity radius (TapHole slide 8: 15 paragraphs
+    with inherited sizes + normAutofit 92.5 %, the last three lost). A text that
+    occurs once in the page's content stream is located by the stream alone."""
+    import pypdfium2 as pdfium
+    from pptx import Presentation
+
+    from src.parser import parse_deck
+    from src.refine_text import refine_index
+    from src.render import deck_pdf
+
+    tokens = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India"]
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])  # Title and Content: body inherits 32 pt
+    slide.shapes.title.text = "Inherited sizes"
+    tf = slide.placeholders[1].text_frame
+    for i, tok in enumerate(tokens):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = f"{tok} line {i + 1}"
+    deck = tmp_path / "inherited_size.pptx"
+    prs.save(deck)
+
+    pdf = deck_pdf(deck, tmp_path)
+    index = parse_deck(str(deck))
+    doc = pdfium.PdfDocument(str(pdf))
+    page = doc[0]
+    textpage = page.get_textpage()
+    page_h = page.get_size()[1]
+    glyph_y = {}
+    for tok in tokens:
+        hit = textpage.search(tok, match_whole_word=True).get_next()
+        assert hit, f"{tok} missing from the PDF text layer"
+        glyph_y[tok] = (page_h - textpage.get_charbox(hit[0], loose=False)[3]) / 72
+    doc.close()
+
+    paras = {e["text"].split()[0]: e for e in index["slides"][0]["elements"] if e["type"] == "bullet"}
+    assert set(paras) == set(tokens)
+    last = paras[tokens[-1]]["bbox"]
+    # precondition: the parser's guess for the last paragraph sits > 2 in above its glyphs
+    assert glyph_y[tokens[-1]] - (last["y"] + last["h"]) > 2.0, "drift too small to exercise the bug"
+
+    refine_index(index, pdf)
+    for tok in tokens:
+        e = paras[tok]
+        assert e["line_bboxes"], f"{tok}: not refined ({e['bbox_source']})"
+        assert e["line_bboxes"][0]["y"] == pytest.approx(glyph_y[tok], abs=0.1), tok
