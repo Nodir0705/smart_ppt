@@ -416,12 +416,13 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
     # z-order = document order: a later opaque rect fully covering a text box
     # hides it on the rendered slide. Controls (one slide each) stay indexed:
     # noFill cover, 50 % alpha cover, rect drawn before the text, partial cover,
-    # an ANIMATED cover (entrance/exit effect: the audience sees what is under
-    # it at some point), shapes whose AABB exceeds their paint — a rotated bar,
-    # an ellipse — with the text in the unpainted part of the AABB, and
-    # pictures that may show through: an RGBA PNG, an `a:alphaModFix`-faded
-    # one. An opaque RGB picture still hides its text (the control). The
-    # picture itself is always an element (`None` = its text-less image).
+    # shapes whose AABB exceeds their paint — a rotated bar, an ellipse — with
+    # the text in the unpainted part of the AABB, and pictures that may show
+    # through: an RGBA PNG, an `a:alphaModFix`-faded one. An opaque RGB
+    # picture still hides its text (the control), and so does an ANIMATED
+    # cover: the index is the rendered slide, animation builds are not
+    # modelled (slide 6). The picture itself is always an element (`None` =
+    # its text-less image).
     decks = {d.name: d for d in build_corpus(tmp_path)}
     index = parse_deck(decks["occluded_text"].path)
     per_slide = [[e["text"] for e in s["elements"]] for s in index["slides"]]
@@ -431,7 +432,7 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
         ["Cover is half transparent"],
         ["Rect is underneath"],
         ["Only partly covered"],
-        ["Cover enters on click"],
+        [],
         ["Beside a rotated bar"],
         ["In an ellipse's corner"],
         ["Under an RGBA picture", None],

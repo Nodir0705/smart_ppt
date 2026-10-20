@@ -610,7 +610,9 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
             _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
         if animated:
             # a stripped <p:timing> whose one effect targets the cover (python-
-            # pptx cannot author timing; the parser reads only the p:spTgt ids)
+            # pptx cannot author timing). Documents the model: the index is the
+            # rendered slide, so a cover that only appears on click still hides
+            # what is under it — animation builds are not modelled.
             s._element.append(etree.fromstring(
                 f'<p:timing xmlns:p="{_P_NS}"><p:tnLst><p:par><p:cTn><p:childTnLst>'
                 '<p:set><p:cBhvr><p:tgtEl>'
@@ -660,10 +662,9 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
     return CorpusDeck("occluded_text", str(path),
                       expected_texts=["Cover has no fill", "Cover is half transparent",
                                       "Rect is underneath", "Only partly covered",
-                                      "Cover enters on click", "Beside a rotated bar",
-                                      "In an ellipse's corner", "Under an RGBA picture",
-                                      "Under a faded picture"],
-                      note="text under a later opaque shape -> not indexed; 9 controls stay")
+                                      "Beside a rotated bar", "In an ellipse's corner",
+                                      "Under an RGBA picture", "Under a faded picture"],
+                      note="text under a later opaque shape (animated or not) -> not indexed; 8 controls stay")
 
 
 def _png(size=(320, 240), color=(90, 130, 180)):
