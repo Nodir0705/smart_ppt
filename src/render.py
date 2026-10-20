@@ -9,12 +9,107 @@ and the count matches the deck, it skips re-rendering.
 
 from __future__ import annotations
 
+import logging
+import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation
+
+_log = logging.getLogger(__name__)
+
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+_A_BLIP = _A_NS + "blip"
+_SLIDE_RE = re.compile(r"ppt/slides/slide\d+\.xml")
+
+# a picture shape at a frame: id/name/embed/xfrm filled in by _table_picture
+_PIC_XML = (
+    '<p:pic xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+    ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<p:nvPicPr><p:cNvPr id="" name=""/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+    '<p:blipFill><a:blip/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+    '<p:spPr><a:xfrm/><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+)
+
+
+def _table_picture(frame):
+    """For a table Fallback whose cells are filled with ONE picture (PowerPoint
+    fills each math cell with a crop of a picture of the whole table), a `p:pic`
+    of that picture at the frame — soffice ignores the crops and stretches the
+    picture into every cell, tiling the table with miniatures of itself. None
+    when the cells reference no embedded picture, or several (rendered as is)."""
+    rids = {rid for b in frame.iterfind(f".//{_A_NS}tc/{_A_NS}tcPr/{_A_NS}blipFill/{_A_BLIP}")
+            if (rid := b.get(_R_EMBED))}
+    if not rids:
+        return None
+    cnvpr = frame.find(f"{_P_NS}nvGraphicFramePr/{_P_NS}cNvPr")
+    if len(rids) > 1:
+        _log.warning("table %r: fallback cells reference %d pictures; rendered as is",
+                     cnvpr.get("name"), len(rids))
+        return None
+    pic = etree.fromstring(_PIC_XML)
+    pic.find(f"{_P_NS}nvPicPr/{_P_NS}cNvPr").attrib.update(cnvpr.attrib)
+    pic.find(f"{_P_NS}blipFill/{_A_BLIP}").set(_R_EMBED, rids.pop())
+    pic.find(f"{_P_NS}spPr/{_A_NS}xfrm").extend(list(frame.find(_P_NS + "xfrm")))
+    return pic
+
+
+def _inline_fallbacks(slide_xml: bytes) -> bytes | None:
+    """Replace each `mc:AlternateContent` whose Fallback holds a picture by that
+    Fallback's children, in place (a table by the one picture of it, see
+    `_table_picture`). None when the slide has none."""
+    root = etree.fromstring(slide_xml)
+    acs = [ac for ac in root.iter(_MC_NS + "AlternateContent")
+           if ac.find(_MC_NS + "Fallback/.//" + _A_BLIP) is not None]
+    if not acs:
+        return None
+    for ac in acs:
+        parent = ac.getparent()
+        i = parent.index(ac)
+        for child in list(ac.find(_MC_NS + "Fallback")):
+            if child.tag == _P_NS + "graphicFrame":
+                pic = _table_picture(child)
+                child = child if pic is None else pic
+            parent.insert(i, child)
+            i += 1
+        parent.remove(ac)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _fallback_slides(pptx_path: Path) -> dict[str, bytes]:
+    """Slide parts (zip name -> xml) rewritten with each equation box's Fallback
+    picture in place of its `mc:AlternateContent`; empty when the deck has none.
+    (PowerPoint wraps a text box holding an equation that way; soffice renders
+    the Choice but drops the equations, leaving gaps mid-sentence.)"""
+    patched: dict[str, bytes] = {}
+    with zipfile.ZipFile(pptx_path) as zin:
+        for name in zin.namelist():
+            if _SLIDE_RE.fullmatch(name):
+                xml = _inline_fallbacks(zin.read(name))
+                if xml is not None:
+                    patched[name] = xml
+    return patched
+
+
+def _picture_copy(pptx_path: Path, patched: dict[str, bytes], tmp_dir: Path) -> Path:
+    """A copy of the pptx in `tmp_dir` with the `patched` slide parts swapped in.
+    Deterministic: original entry order and compression, fixed timestamps."""
+    copy = tmp_dir / pptx_path.name
+    with zipfile.ZipFile(pptx_path) as zin, zipfile.ZipFile(copy, "w") as zout:
+        for info in zin.infolist():
+            zi = zipfile.ZipInfo(info.filename, date_time=(1980, 1, 1, 0, 0, 0))
+            zi.compress_type = info.compress_type
+            zout.writestr(zi, patched[info.filename] if info.filename in patched
+                          else zin.read(info))
+    return copy
 
 
 def _count_slides(pptx_path: Path) -> int:
@@ -37,21 +132,39 @@ def _pdf_is_fresh(pptx_path: Path, pdf_path: Path) -> bool:
     return pdf_path.exists() and pdf_path.stat().st_mtime >= pptx_path.stat().st_mtime
 
 
-def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
-    """Produce and cache `pdf_dir/<stem>.pdf` from the pptx (mtime-keyed)."""
+def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out", *,
+             text_layer: bool = False) -> Path:
+    """Produce and cache a PDF of the pptx in `pdf_dir` (mtime-keyed).
+
+    `<stem>.pdf` (default) is the visual PDF the slide PNGs come from: an
+    equation box (`mc:AlternateContent` with a picture Fallback) is rendered
+    from that picture, so the equations show — as pixels, with no text layer.
+    `text_layer=True` gives `<stem>.text.pdf`, rendered from the original pptx:
+    soffice lays out the Choice text on the right lines (blank where the math
+    is), which is what refine_text needs for glyph boxes. A deck without such
+    boxes has one PDF serving both uses, and `text_layer=True` returns it.
+    """
     pptx_path = Path(pptx_path).resolve()
     pdf_dir = Path(pdf_dir).resolve()
     pdf_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = pdf_dir / (pptx_path.stem + ".pdf")
+    patched = _fallback_slides(pptx_path)
+    text_layer = text_layer and bool(patched)
+    pdf_path = pdf_dir / (pptx_path.stem + (".text.pdf" if text_layer else ".pdf"))
     if _pdf_is_fresh(pptx_path, pdf_path):
         return pdf_path
 
     with tempfile.TemporaryDirectory(prefix="smartppt_pdf_") as td:
         td_path = Path(td)
+        # A private user profile per run: soffice serialises on its profile, so
+        # two concurrent renders (another test run, another agent) would collide.
+        profile = td_path / "profile"
+        src = (_picture_copy(pptx_path, patched, td_path)
+               if patched and not text_layer else pptx_path)
         r = subprocess.run(
             [
                 "soffice", "--headless", "--nologo", "--nofirststartwizard",
-                "--convert-to", "pdf", "--outdir", str(td_path), str(pptx_path),
+                f"-env:UserInstallation={profile.as_uri()}",
+                "--convert-to", "pdf", "--outdir", str(td_path), str(src),
             ],
             check=False, capture_output=True, text=True, timeout=120,
         )
@@ -67,7 +180,9 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
 def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> list[Path]:
     """Render `pptx_path` into `out_dir/slide_NNN.png`. Returns ordered PNG paths.
 
-    The intermediate PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`)
+    The visual PDF is cached at `out_dir.parent/<stem>.pdf` (via `deck_pdf`); the
+    refine stage asks `deck_pdf(..., text_layer=True)` for its glyph PDF, which
+    is this same file unless the deck has equation boxes
     so downstream tools (e.g. text-bbox refinement) can reuse it.
     """
     pptx_path = Path(pptx_path).resolve()
@@ -82,7 +197,7 @@ def render_deck(pptx_path: str | Path, out_dir: str | Path, dpi: int = 150) -> l
     for p in _existing_pngs(out_dir):
         p.unlink()
 
-    # 1) pptx → pdf (cached at out_dir.parent/<stem>.pdf so refine_text reuses it)
+    # 1) pptx → visual pdf (cached at out_dir.parent/<stem>.pdf)
     pdf_path = deck_pdf(pptx_path, out_dir.parent)
 
     with tempfile.TemporaryDirectory(prefix="smartppt_render_") as td:

@@ -198,6 +198,8 @@ def image_no_text_crop() -> tuple[str, Image.Image]:
         decks = build_corpus(td)
         spec = next(d for d in decks if d.name == "image_no_text")
         prs = Presentation(spec.path)
+        # python-pptx's own shape walk raises on bare pen ink (p:contentPart);
+        # fine here, the corpus deck has none — src.parser._iter_flat skips it
         pic = next(
             shp for slide in prs.slides for shp in slide.shapes
             if shp.shape_type == 13  # MSO_SHAPE_TYPE.PICTURE

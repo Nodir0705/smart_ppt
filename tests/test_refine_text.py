@@ -290,3 +290,179 @@ def test_text_rendered_below_its_parsed_box_is_found_by_stream_alignment(monkeyp
     out = _refine_one_slide(monkeypatch, els, words)
     assert out["a"]["bbox"]["y"] == pytest.approx(1.9) and out["a"]["bbox"]["w"] == pytest.approx(1.15)
     assert out["b"]["bbox"]["y"] == pytest.approx(2.3)
+
+
+def test_text_whose_math_is_blank_in_the_pdf_still_refines(monkeypatch):
+    """Equation boxes: soffice draws the words but leaves the math blank — the
+    glyph run reads "Let be languages" for "Let A, B be languages". Its in-order
+    matching blocks (let + belanguages) cover every glyph, so the run is the
+    element's text with a gap, not a stray."""
+    from src.refine_text import select_text_words
+
+    els = [_el("eq", "Let A, B be languages", 1.0, 2.0, 8.0, 1.0)]
+    words = [_pt_word("Let", 1.1, 2.1, 0.3), _pt_word("be", 2.0, 2.1, 0.2),
+             _pt_word("languages", 2.3, 2.1, 0.9)]
+    e = _refine_one_slide(monkeypatch, els, words)["eq"]
+    assert e["bbox_source"] == "pdf_text"
+    assert len(e["line_bboxes"]) == 1, e["line_bboxes"]
+    assert e["bbox"]["x"] == pytest.approx(1.1) and e["bbox"]["x"] + e["bbox"]["w"] == pytest.approx(3.2)
+    assert e["bbox"]["y"] == pytest.approx(2.1)
+    # the blocks rule itself: the gap run is kept, an unrelated run (another
+    # shape's overflow into the box, its own stream run) is still a stray
+    w = lambda i, t: {"i": i, "text": t, "x0": i, "y0": 0, "x1": i + 0.5, "y1": 0.2}
+    kept, cover = select_text_words("Let A, B be languages",
+                                    [w(0, "Let"), w(1, "be"), w(2, "languages"),
+                                     w(4, "Quarterly"), w(5, "revenue"), w(6, "grew")])
+    assert [x["text"] for x in kept] == ["Let", "be", "languages"]
+    assert cover == pytest.approx(14 / 16)
+
+
+def test_text_with_blank_math_is_located_by_the_stream_when_its_box_drifted(monkeypatch):
+    """MIT slide 8: the parser's guessed line sits 0.5 in above the glyphs AND the
+    math is blank in the PDF, so neither the exact stream search nor containment
+    finds the line. The surviving segments abut in the stream (blank math leaves
+    no glyphs), so the run is located by its in-order matching blocks; the
+    neighbouring plain line, found exactly, is untouched."""
+    els = [_el("math", "The empty language ø is the set with no strings", 0.5, 3.135, 9.0, 0.333),
+           _el("plain", "Recognizing languages", 0.5, 3.636, 9.0, 0.4)]
+    words = [_pt_word("The", 1.0, 3.94, 0.3), _pt_word("empty", 1.4, 3.94, 0.5),
+             _pt_word("language", 2.0, 3.94, 0.8), _pt_word("is", 3.3, 3.94, 0.2),
+             _pt_word("the", 3.6, 3.94, 0.3), _pt_word("set", 4.0, 3.94, 0.3),
+             _pt_word("with", 4.4, 3.94, 0.4), _pt_word("no", 4.9, 3.94, 0.2),
+             _pt_word("strings", 5.2, 3.94, 0.6),
+             _pt_word("Recognizing", 1.0, 3.75, 1.0), _pt_word("languages", 2.1, 3.75, 0.9)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["math"]["bbox_source"] == "pdf_text"
+    assert out["math"]["bbox"]["y"] == pytest.approx(3.94)
+    assert out["math"]["bbox"]["x"] == pytest.approx(1.0) and out["math"]["bbox"]["w"] == pytest.approx(4.8)
+    assert out["plain"]["bbox"]["y"] == pytest.approx(3.75)
+
+
+def test_gap_span_with_repeated_anchor_takes_the_occurrence_at_its_own_box(monkeypatch):
+    """'is regular' is drawn twice: in B's line above and in A's own line (A's
+    math blank: "Then  is regular"). Every occurrence of the anchor is a
+    candidate and proximity chooses, so A takes its own line and B keeps hers."""
+    els = [_el("b", "This is regular.", 1.0, 2.0, 5.0, 0.3),
+           _el("a", "Then L(A) ∪ L(B) is regular", 1.0, 2.5, 5.0, 0.3)]
+    words = [_pt_word("This", 1.0, 2.05, 0.4), _pt_word("is", 1.5, 2.05, 0.2),
+             _pt_word("regular.", 1.8, 2.05, 0.7),
+             _pt_word("Then", 1.0, 2.55, 0.4), _pt_word("is", 2.6, 2.55, 0.2),
+             _pt_word("regular", 2.9, 2.55, 0.7)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "pdf_text" and out["a"]["bbox"]["y"] == pytest.approx(2.55)
+    assert out["a"]["bbox"]["x"] == pytest.approx(1.0) and out["a"]["bbox"]["w"] == pytest.approx(2.6)
+    assert out["b"]["bbox_source"] == "pdf_text" and out["b"]["bbox"]["y"] == pytest.approx(2.05)
+
+
+def test_gap_span_keeps_its_first_word_despite_an_earlier_copy_of_it(monkeypatch):
+    """The title "Let's begin" above the equation line also starts with 'let'. A
+    run grows from its anchor by the segments that ABUT it, so the equation line
+    keeps its own 'Let' rather than losing it to the earlier copy."""
+    els = [_el("t", "Let's begin", 1.0, 0.5, 3.0, 0.4),
+           _el("eq", "Let A, B be languages", 1.0, 2.0, 8.0, 1.0)]
+    words = [_pt_word("Let's", 1.0, 0.55, 0.5), _pt_word("begin", 1.6, 0.55, 0.5),
+             _pt_word("Let", 1.1, 2.1, 0.3), _pt_word("be", 2.0, 2.1, 0.2),
+             _pt_word("languages", 2.3, 2.1, 0.9)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["eq"]["bbox_source"] == "pdf_text"
+    assert out["eq"]["bbox"]["x"] == pytest.approx(1.1) and out["eq"]["bbox"]["w"] == pytest.approx(2.1)
+    assert out["t"]["bbox_source"] == "pdf_text" and out["t"]["bbox"]["y"] == pytest.approx(0.55)
+
+
+def test_gap_span_that_is_another_elements_whole_text_is_left_to_it(monkeypatch):
+    """"Theorem 2.1" has no glyphs at all; the run "Theorem" 1 in below spells
+    most of it, but it IS the neighbour's text — hers, not a gap span."""
+    els = [_el("a", "Theorem 2.1", 1.0, 1.0, 1.5, 0.3), _el("b", "Theorem", 1.0, 2.0, 1.5, 0.3)]
+    out = _refine_one_slide(monkeypatch, els, [_pt_word("Theorem", 1.0, 2.05, 0.8)])
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+
+
+def test_rescue_leaves_a_gap_span_another_unplaced_element_spells(monkeypatch):
+    """Pass 2: A's math line is far from its box; the only run spelling it sits in
+    the box of B, a long paragraph whose text spells the run (its first line)
+    without containing it verbatim. The rescue judges ownership by the same
+    gap-tolerant rule, so A does not take B's line."""
+    els = [_el("a", "Then L(A) ∪ L(B) is regular", 1.0, 0.5, 5.0, 0.3),
+           _el("b", "Then L is regular and this remark about it runs on for a while",
+               1.0, 6.4, 5.0, 0.6)]
+    words = [_pt_word("Then", 1.0, 6.55, 0.4), _pt_word("is", 2.6, 6.55, 0.2),
+             _pt_word("regular", 2.9, 6.55, 0.7)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "shape"
+
+
+def test_page_unique_rescue_does_not_steal_an_equal_length_neighbours_glyphs(monkeypatch):
+    """A="Proof" whose glyphs are not in the PDF must not take B="Proof." (same
+    normalised length, so A sorts first) from 4.5 in away: B's proximity match
+    is placed first, then A has no free occurrence left and keeps its shape box."""
+    els = [_el("a", "Proof", 1.0, 0.5, 1.0, 0.3), _el("b", "Proof.", 2.5, 4.5, 1.0, 0.4)]
+    out = _refine_one_slide(monkeypatch, els, [_pt_word("Proof.", 2.8, 5.0)])
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+
+
+def test_page_unique_rescue_leaves_words_inside_an_unplaced_owners_box(monkeypatch):
+    """B's own stream match fails (its last word was never drawn) while the word
+    A spells sits inside B's box: the rescue must not take it from B, which then
+    claims its whole run by containment."""
+    els = [_el("a", "Proof", 1.0, 0.5, 1.0, 0.3),
+           _el("b", "Proof of revenue 2024 results", 1.0, 4.9, 3.0, 0.4)]
+    words = [_pt_word("Proof", 1.0, 5.0), _pt_word("of", 1.6, 5.0),
+             _pt_word("revenue", 2.2, 5.0), _pt_word("2024", 2.8, 5.0)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+    assert out["b"]["bbox"]["x"] == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(SOFFICE_MISSING, reason="soffice not installed")
+def test_paragraphs_drifted_far_below_parsed_boxes_still_align(tmp_path):
+    """Body-placeholder paragraphs inherit their font size from the master
+    (python-pptx sees None, the parser guesses 16 pt lines), so the parser's
+    guessed line boxes drift further from the rendered glyphs with every
+    paragraph — past any fixed proximity radius (TapHole slide 8: 15 paragraphs
+    with inherited sizes + normAutofit 92.5 %, the last three lost). A text that
+    occurs once in the page's content stream is located by the stream alone."""
+    import pypdfium2 as pdfium
+    from pptx import Presentation
+
+    from src.parser import parse_deck
+    from src.refine_text import refine_index
+    from src.render import deck_pdf
+
+    tokens = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India"]
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])  # Title and Content: body inherits 32 pt
+    slide.shapes.title.text = "Inherited sizes"
+    tf = slide.placeholders[1].text_frame
+    for i, tok in enumerate(tokens):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = f"{tok} line {i + 1}"
+    deck = tmp_path / "inherited_size.pptx"
+    prs.save(deck)
+
+    pdf = deck_pdf(deck, tmp_path)
+    index = parse_deck(str(deck))
+    doc = pdfium.PdfDocument(str(pdf))
+    page = doc[0]
+    textpage = page.get_textpage()
+    page_h = page.get_size()[1]
+    glyph_y = {}
+    for tok in tokens:
+        hit = textpage.search(tok, match_whole_word=True).get_next()
+        assert hit, f"{tok} missing from the PDF text layer"
+        glyph_y[tok] = (page_h - textpage.get_charbox(hit[0], loose=False)[3]) / 72
+    doc.close()
+
+    paras = {e["text"].split()[0]: e for e in index["slides"][0]["elements"] if e["type"] == "bullet"}
+    assert set(paras) == set(tokens)
+    last = paras[tokens[-1]]["bbox"]
+    # precondition: the parser's guess for the last paragraph sits > 2 in above its glyphs
+    assert glyph_y[tokens[-1]] - (last["y"] + last["h"]) > 2.0, "drift too small to exercise the bug"
+
+    refine_index(index, pdf)
+    for tok in tokens:
+        e = paras[tok]
+        assert e["line_bboxes"], f"{tok}: not refined ({e['bbox_source']})"
+        assert e["line_bboxes"][0]["y"] == pytest.approx(glyph_y[tok], abs=0.1), tok

@@ -365,6 +365,31 @@ def _build_table(out_dir: Path) -> CorpusDeck:
                       note="2x3 table -> one table_cell per cell")
 
 
+def _build_table_math_cell(out_dir: Path) -> CorpusDeck:
+    """A table whose cell holds an equation (a δ transition table listing
+    states q₁, q₂ …): the cell's txBody carries the math in `a14:m`, which
+    python-pptx `cell.text` skips — 9 of 12 cells of MIT's δ table read empty.
+    The math cell must read "q1" (math-italic 𝑞 over a subscript 1, NFKC
+    normalised); plain cells stay verbatim."""
+    from lxml import etree
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    t = s.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(6), Inches(2)).table
+    t.cell(0, 0).text = "δ"
+    t.cell(0, 1).text = "0"
+    t.cell(1, 0).text = "start"
+    t.cell(1, 1).text_frame.paragraphs[0]._p.append(etree.fromstring(
+        f'<a14:m xmlns:a14="{_A14_NS}"><m:oMath xmlns:m="{_M_NS}"><m:sSub>'
+        '<m:e><m:r><m:t>\U0001D45E</m:t></m:r></m:e>'
+        '<m:sub><m:r><m:t>1</m:t></m:r></m:sub></m:sSub></m:oMath></a14:m>'))
+    path = out_dir / "table_math_cell.pptx"
+    prs.save(str(path))
+    return CorpusDeck("table_math_cell", str(path), expected_texts=["δ", "start", "q1"],
+                      expected_types=["table_cell"] * 4,
+                      note="a14:m equation inside a table cell -> cell text 'q1'")
+
+
 def _build_duplicate_text(out_dir: Path) -> CorpusDeck:
     """Two separate boxes with IDENTICAL text. The parser must NOT dedup them to
     one element — they are distinct pointables at distinct positions (the real
@@ -447,6 +472,398 @@ def _build_image_no_text(out_dir: Path) -> CorpusDeck:
                       note="shapes, no text -> OCR must NOT hallucinate a pointable")
 
 
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_A14_NS = "http://schemas.microsoft.com/office/drawing/2010/main"
+_M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_P14_NS = "http://schemas.microsoft.com/office/powerpoint/2010/main"
+
+
+def _build_math_textbox(out_dir: Path) -> CorpusDeck:
+    """A text box holding an equation, saved the way PowerPoint saves it: wrapped
+    in `mc:AlternateContent` whose Choice is the live box (the math in `a14:m`
+    between ordinary runs) and whose Fallback is a picture of the whole box.
+    python-pptx iterates neither branch, so the parser must resolve the Choice
+    itself and read the math runs ("Let A, B be languages", math italics
+    normalised). Plus an ordinary box with a soft line break (`a:br`), which
+    must stay a line boundary ("TAs:\\nFadi"), not glue "TAs:" to "Fadi".
+    Hand-built with lxml — python-pptx cannot author any of it."""
+    import copy
+    import io
+
+    from lxml import etree
+    from PIL import Image
+    from pptx.oxml.ns import qn
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Regular languages", y=0.3, w=8.0, h=0.8)
+
+    # Choice: "Let " + <a14:m>𝐴,␣𝐵</a14:m> + " be languages" (␣ = U+00A0)
+    choice_sp = s.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(1))
+    p = choice_sp.text_frame.paragraphs[0]
+    p.add_run().text = "Let "
+    p.add_run().text = " be languages"
+    p.runs[0]._r.addnext(etree.fromstring(
+        f'<a14:m xmlns:a14="{_A14_NS}"><m:oMath xmlns:m="{_M_NS}">'
+        '<m:r><m:t>\U0001D434</m:t></m:r><m:r><m:t>, </m:t></m:r>'
+        '<m:r><m:t>\U0001D435</m:t></m:r></m:oMath></a14:m>'))
+
+    # Fallback: the same box filled with a picture (what PowerPoint drew). The
+    # image part + relationship come from a throwaway python-pptx picture.
+    buf = io.BytesIO()
+    Image.new("RGB", (160, 20), (20, 40, 120)).save(buf, "PNG")
+    buf.seek(0)
+    pic = s.shapes.add_picture(buf, Inches(1), Inches(2), Inches(8), Inches(1))
+    fallback_sp = copy.deepcopy(choice_sp._element)
+    fallback_sp.remove(fallback_sp.txBody)
+    fallback_sp.spPr.replace(fallback_sp.spPr.find(qn("a:noFill")), etree.fromstring(
+        f'<a:blipFill xmlns:a="{_A_NS}" xmlns:r="{_R_NS}">'
+        f'<a:blip r:embed="{pic._element.blip_rId}"/><a:stretch><a:fillRect/></a:stretch>'
+        '</a:blipFill>'))
+    pic._element.getparent().remove(pic._element)
+
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "a14": _A14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="a14")
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    choice_sp._element.addprevious(ac)
+    choice.append(choice_sp._element)
+    fallback.append(fallback_sp)
+
+    tb = s.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1))
+    p = tb.text_frame.paragraphs[0]
+    p.add_run().text = "TAs:"
+    p.add_line_break()
+    p.add_run().text = "Fadi"
+
+    path = out_dir / "math_textbox.pptx"
+    prs.save(str(path))
+    return CorpusDeck("math_textbox", str(path),
+                      expected_texts=["Regular languages", "Let A, B be languages", "TAs:\nFadi"],
+                      note="mc:AlternateContent equation box -> Choice text incl. math; a:br -> newline")
+
+
+def _build_hidden_shapes(out_dir: Path) -> CorpusDeck:
+    """Shapes PowerPoint hides (`p:cNvPr hidden="1"` — Selection Pane "eye off"):
+    a hidden text box and a hidden GROUP holding a text box, beside a visible
+    box. Hidden shapes are not on the rendered slide, so none may be indexed;
+    the visible sibling must survive. python-pptx cannot author `hidden`."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Visible sibling", y=1.0)
+    hidden = _textbox(s.shapes, "Hidden box", y=2.5)
+    hidden._element.nvSpPr.cNvPr.set("hidden", "1")
+    g = s.shapes.add_group_shape()
+    g.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)).text_frame.text = "Inside hidden group"
+    g._element.nvGrpSpPr.cNvPr.set("hidden", "1")
+    path = out_dir / "hidden_shapes.pptx"
+    prs.save(str(path))
+    return CorpusDeck("hidden_shapes", str(path), expected_texts=["Visible sibling"],
+                      note="hidden shape / hidden group subtree -> not indexed")
+
+
+def _build_off_canvas(out_dir: Path) -> CorpusDeck:
+    """A text box parked entirely below the 7.5-in slide (authors stash notes
+    and leftovers off-canvas) is not on the rendered slide → not indexed. One
+    that merely overhangs the bottom edge stays."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "On the slide", y=1.0)
+    _textbox(s.shapes, "Overhanging the edge", y=7.3, h=0.5)
+    _textbox(s.shapes, "Parked off-canvas", y=9.0)
+    path = out_dir / "off_canvas.pptx"
+    prs.save(str(path))
+    return CorpusDeck("off_canvas", str(path),
+                      expected_texts=["On the slide", "Overhanging the edge"],
+                      note="shape wholly outside the slide -> not indexed; partial overlap stays")
+
+
+def _build_occluded_text(out_dir: Path) -> CorpusDeck:
+    """A text box fully under a LATER opaque rectangle is not on the rendered
+    slide (reveal covers, patches) → not indexed. One slide per control that
+    must stay: the cover with `noFill`; 50 % alpha; the rect drawn BEFORE the
+    text (under it); a rect covering the text only partially."""
+    from lxml import etree
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+
+    prs = Presentation()
+
+    def slide(text, *, rect_first=False, rect_w=6.0, fill="solid", animated=False):
+        s = _blank_slide(prs)
+        if not rect_first:
+            _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+        rect = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(1.5),
+                                  Inches(rect_w), Inches(2.0))
+        rect.text_frame.clear()
+        if fill == "none":
+            rect.fill.background()
+        else:
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = RGBColor(0, 0, 0)
+            if fill == "alpha":
+                rect._element.spPr.solidFill.srgbClr.append(etree.fromstring(
+                    f'<a:alpha xmlns:a="{_A_NS}" val="50000"/>'))
+        if rect_first:
+            _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+        if animated:
+            # a stripped <p:timing> whose one effect targets the cover (python-
+            # pptx cannot author timing). Documents the model: the index is the
+            # rendered slide, so a cover that only appears on click still hides
+            # what is under it — animation builds are not modelled.
+            s._element.append(etree.fromstring(
+                f'<p:timing xmlns:p="{_P_NS}"><p:tnLst><p:par><p:cTn><p:childTnLst>'
+                '<p:set><p:cBhvr><p:tgtEl>'
+                f'<p:spTgt spid="{rect.shape_id}"/>'
+                '</p:tgtEl></p:cBhvr></p:set>'
+                '</p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>'))
+
+    slide("Covered by an opaque rect")
+    slide("Cover has no fill", fill="none")
+    slide("Cover is half transparent", fill="alpha")
+    slide("Rect is underneath", rect_first=True)
+    slide("Only partly covered", rect_w=3.0)
+    slide("Cover enters on click", animated=True)
+
+    def corner(text, preset, *, rotation=0, box=(0.5, 1.5, 6.0, 2.0), tb=(0.6, 1.6, 1.0, 0.3)):
+        # an opaque shape whose AABB holds the text box while its PAINT does not
+        s = _blank_slide(prs)
+        _textbox(s.shapes, text, x=tb[0], y=tb[1], w=tb[2], h=tb[3])
+        sh = s.shapes.add_shape(preset, *(Inches(v) for v in box))
+        sh.text_frame.clear()
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        sh.rotation = rotation
+
+    # a 4 x 0.3 in bar at 45°: its ~3 x 3 in AABB holds a text box 0.9 in off the bar
+    corner("Beside a rotated bar", MSO_SHAPE.RECTANGLE, rotation=45,
+           box=(1.5, 3.35, 4.0, 0.3), tb=(3.2, 2.0, 0.6, 0.4))
+    # an ellipse: the AABB's corner is unpainted
+    corner("In an ellipse's corner", MSO_SHAPE.OVAL)
+
+    def picture_cover(text, color, *, fade=None, crop=None, palette=False,
+                      tb=(1.0, 2.0, 4.0, 1.0)):
+        # a picture over the text box: RGBA (alpha channel), palette + tRNS, or
+        # faded (`a:alphaModFix`) may show what is under it; one cropped to a
+        # shape (Crop ▸ Crop to Shape = `p:pic/p:spPr/a:prstGeom`) paints less
+        # than its AABB; a plain RGB rectangle hides it
+        s = _blank_slide(prs)
+        _textbox(s.shapes, text, x=tb[0], y=tb[1], w=tb[2], h=tb[3])
+        pic = s.shapes.add_picture(_png((60, 20), color, palette), Inches(0.5), Inches(1.5),
+                                   Inches(6), Inches(2))
+        if fade is not None:
+            pic._element.blipFill.blip.append(etree.fromstring(
+                f'<a:alphaModFix xmlns:a="{_A_NS}" amt="{fade}"/>'))
+        if crop is not None:
+            pic._element.spPr.find(f"{{{_A_NS}}}prstGeom").set("prst", crop)
+
+    picture_cover("Under an RGBA picture", (0, 0, 0, 128))
+    picture_cover("Under a faded picture", (0, 0, 0), fade=50000)
+    picture_cover("Under an opaque picture", (0, 0, 0))
+    picture_cover("In a cropped picture's corner", (0, 0, 0), crop="ellipse",
+                  tb=(0.6, 1.6, 1.0, 0.3))
+    picture_cover("Under a palette picture", (0, 0, 0, 128), palette=True)
+    path = out_dir / "occluded_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("occluded_text", str(path),
+                      expected_texts=["Cover has no fill", "Cover is half transparent",
+                                      "Rect is underneath", "Only partly covered",
+                                      "Beside a rotated bar", "In an ellipse's corner",
+                                      "Under an RGBA picture", "Under a faded picture",
+                                      "In a cropped picture's corner", "Under a palette picture"],
+                      note="text under a later opaque shape (animated or not) -> not indexed; 10 controls stay")
+
+
+def _png(size=(320, 240), color=(90, 130, 180), palette=False):
+    """A solid PNG; a 4-tuple colour makes it RGBA (alpha channel), and
+    `palette` a palette PNG (colour type 3) whose transparency is a `tRNS`
+    chunk — how PIL (and GIF→PNG converters) write transparent logos."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    img = Image.new("RGBA" if len(color) == 4 else "RGB", size, color)
+    if palette:
+        img.convert("P").save(buf, "PNG", transparency=0)
+    else:
+        img.save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
+
+def _build_placeholder_picture(out_dir: Path) -> CorpusDeck:
+    """A picture inserted into a layout's PICTURE placeholder ("Picture with
+    Caption"). python-pptx types it PLACEHOLDER, not PICTURE, so a shape_type
+    test dropped it as an empty decorative shape; it is a `p:pic` and must be
+    the slide's one `image` element (no alt text → needs_vision)."""
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[8])  # Picture with Caption
+    s.placeholders[1].insert_picture(_png())
+    path = out_dir / "placeholder_picture.pptx"
+    prs.save(str(path))
+    return CorpusDeck("placeholder_picture", str(path), expected_texts=[],
+                      expected_types=["image"],
+                      note="p:pic in a PICTURE placeholder -> one image element")
+
+
+def _build_movie(out_dir: Path) -> CorpusDeck:
+    """An embedded video: a `p:pic` with a poster frame, typed MEDIA by
+    python-pptx (no `.image`; the raster is `.poster_frame`). Must be the
+    slide's one `image` element and OCR must read the poster frame, not crash.
+    The video bytes are fake — python-pptx never inspects them."""
+    video = out_dir / "fake.mp4"
+    video.write_bytes(b"\0" * 400)
+    prs = Presentation()
+    s = _blank_slide(prs)
+    s.shapes.add_movie(str(video), Inches(2), Inches(1.5), Inches(6), Inches(4),
+                       poster_frame_image=_png(), mime_type="video/mp4")
+    path = out_dir / "movie.pptx"
+    prs.save(str(path))
+    return CorpusDeck("movie", str(path), expected_texts=[],
+                      expected_types=["image"],
+                      note="embedded video (p:pic + videoFile) -> one image element")
+
+
+def _build_arrow_shapes(out_dir: Path) -> CorpusDeck:
+    """What an `arrow` element is — and is not. Arrows: a connector, a block
+    RIGHT_ARROW (2 x 0.5 in), a thin solid-filled 3 x 0.05 in rectangle (a
+    drawn divider line), a LINE_INVERSE (`lineInv`, the diagonal drawn
+    bottom-left to top-right; 2 x 1 in). Not arrows (decorative, skipped): a
+    0.1-in dot OVAL and an empty zero-width text box — the old "any dimension
+    < 0.15 in" rule made both arrows. Every shape is empty-text."""
+    from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(4), Inches(1.5))
+    s.shapes.add_shape(MSO_SHAPE.RIGHT_ARROW, Inches(1), Inches(2), Inches(2), Inches(0.5))
+    bar = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(3), Inches(3), Inches(0.05))
+    bar.fill.solid()
+    s.shapes.add_shape(MSO_SHAPE.LINE_INVERSE, Inches(6), Inches(3), Inches(2), Inches(1))
+    s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(1), Inches(4), Inches(0.1), Inches(0.1))
+    s.shapes.add_textbox(Inches(5), Inches(1), Inches(0), Inches(1))
+    path = out_dir / "arrow_shapes.pptx"
+    prs.save(str(path))
+    return CorpusDeck("arrow_shapes", str(path), expected_texts=[],
+                      expected_types=["arrow"] * 4, expected_min_elements=4,
+                      note="connector/arrow preset/thin filled bar/lineInv -> arrow; dot & zero-width box -> skipped")
+
+
+def _build_background_panel(out_dir: Path) -> CorpusDeck:
+    """A full-slide empty rectangle (a drawn background) behind a title and two
+    body boxes. It holds several texts, so it is a panel, not a label box: no
+    pair may form (the old rule paired it with the title, giving the title a
+    full-slide bbox) and the title is typed by its own geometry."""
+    from pptx.enum.shapes import MSO_SHAPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height)
+    bg.text_frame.clear()
+    _textbox(s.shapes, "Panel Title", x=0.5, y=0.4, w=8.0, h=0.8)
+    _textbox(s.shapes, "First point on the panel", x=0.5, y=2.0, w=8.0, h=0.8, size=18)
+    _textbox(s.shapes, "Second point on the panel", x=0.5, y=3.0, w=8.0, h=0.8, size=18)
+    # slide 2: a panel covering ~87 % of the slide with ONE text inside is still
+    # a panel (more than half the slide), not a label box
+    s = _blank_slide(prs)
+    panel = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.3), Inches(0.3), Inches(9.4), Inches(6.9))
+    panel.text_frame.clear()
+    _textbox(s.shapes, "Lone title on a panel", x=0.5, y=0.4, w=8.0, h=0.8)
+    path = out_dir / "background_panel.pptx"
+    prs.save(str(path))
+    return CorpusDeck("background_panel", str(path),
+                      expected_texts=["Panel Title", "First point on the panel",
+                                      "Second point on the panel", "Lone title on a panel"],
+                      expected_types=["title", "body", "body", "title"],
+                      note="rect holding 3 texts, or covering > half the slide -> no pair; title by geometry")
+
+
+def _build_ink_annotation(out_dir: Path) -> CorpusDeck:
+    """Pen ink, saved the way PowerPoint saves it: `mc:AlternateContent` whose
+    Choice (Requires="p14") is a `p:contentPart` — an element python-pptx has
+    no shape class for, so handing it to the shape factory raised and the
+    per-slide isolation emitted the whole slide EMPTY — and whose Fallback is
+    a picture of the strokes. The title must survive and the ink resolves to
+    its Fallback picture (one needs_vision image), as the renderer draws it.
+    The contentPart's r:id reuses the picture's relationship so the package
+    has no dangling reference; the parser must never dereference it."""
+    from lxml import etree
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Visible title text", y=0.3, w=8.0, h=0.8)
+    pic = s.shapes.add_picture(_png((200, 100), (200, 30, 30)),
+                               Inches(2), Inches(2), Inches(4), Inches(2))
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "p14": _P14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="p14")
+    etree.SubElement(choice, f"{{{_P_NS}}}contentPart", {f"{{{_R_NS}}}id": pic._element.blip_rId})
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    pic._element.addprevious(ac)
+    fallback.append(pic._element)
+    path = out_dir / "ink_annotation.pptx"
+    prs.save(str(path))
+    return CorpusDeck("ink_annotation", str(path), expected_texts=["Visible title text"],
+                      expected_types=["title", "image"],
+                      note="ink AC (p14 contentPart Choice) -> Fallback picture; slide must not go empty")
+
+
+def _build_table_math_fallback(out_dir: Path) -> CorpusDeck:
+    """A table holding equations, saved the way PowerPoint saves it: the
+    `p:graphicFrame` wrapped in `mc:AlternateContent` whose Fallback is a copy
+    of the table in which each math cell is filled (`a:tcPr/a:blipFill`) with
+    ONE picture of the whole table. The parser must still emit the Choice's
+    cells; the renderer must draw that picture once, at the frame — soffice
+    stretches a cell fill into every cell, tiling the table with itself. The
+    picture here is four colour quadrants, so a tiled render is detectable."""
+    import copy
+    import io
+
+    from lxml import etree
+    from PIL import Image
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    texts = [["Alpha", "Beta"], ["Gamma", "Delta"]]
+    gf = s.shapes.add_table(2, 2, Inches(1), Inches(2), Inches(4), Inches(2))
+    for r, row in enumerate(texts):
+        for c, val in enumerate(row):
+            gf.table.cell(r, c).text = val
+
+    img = Image.new("RGB", (200, 200), (255, 0, 0))          # red / green
+    img.paste((0, 200, 0), (100, 0, 200, 100))              # blue / yellow
+    img.paste((0, 0, 255), (0, 100, 100, 200))
+    img.paste((255, 255, 0), (100, 100, 200, 200))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    pic = s.shapes.add_picture(buf, Inches(1), Inches(2), Inches(4), Inches(2))
+    rid = pic._element.blip_rId
+    pic._element.getparent().remove(pic._element)
+
+    fallback_gf = copy.deepcopy(gf._element)
+    for tc in fallback_gf.iter(f"{{{_A_NS}}}tc"):
+        tc.get_or_add_tcPr().append(etree.fromstring(
+            f'<a:blipFill xmlns:a="{_A_NS}" xmlns:r="{_R_NS}"><a:blip r:embed="{rid}"/>'
+            '<a:stretch><a:fillRect/></a:stretch></a:blipFill>'))
+
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "a14": _A14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="a14")
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    gf._element.addprevious(ac)
+    choice.append(gf._element)
+    fallback.append(fallback_gf)
+
+    path = out_dir / "table_math_fallback.pptx"
+    prs.save(str(path))
+    flat = [v for row in texts for v in row]
+    return CorpusDeck("table_math_fallback", str(path), expected_texts=flat,
+                      expected_types=["table_cell"] * 4,
+                      note="mc:AlternateContent table -> Choice cells parsed; fallback picture drawn once")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -474,10 +891,21 @@ _BUILDERS = [
     _build_titled_chart_acronym,
     _build_nested_groups,
     _build_table,
+    _build_table_math_cell,
     _build_duplicate_text,
     _build_unicode_text,
     _build_image_baked_text,
     _build_image_no_text,
+    _build_math_textbox,
+    _build_hidden_shapes,
+    _build_off_canvas,
+    _build_occluded_text,
+    _build_placeholder_picture,
+    _build_movie,
+    _build_arrow_shapes,
+    _build_background_panel,
+    _build_ink_annotation,
+    _build_table_math_fallback,
     _build_empty_slide,
 ]
 

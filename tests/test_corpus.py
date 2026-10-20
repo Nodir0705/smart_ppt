@@ -28,9 +28,129 @@ from tools.make_corpus import build_corpus
     ("Picture 1", ""),                                   # auto-name rejected
     ("image", ""),
     ("  ", ""),
+    # PowerPoint's auto-generated description: a generic caption whose words
+    # the slide never contains, always tagged with a marker sentence — the
+    # 2023+ one, or the 2018–2023 (PowerPoint 2019 / M365) ones
+    ("A close-up of a graph\n\nAI-generated content may be incorrect.", ""),
+    ("A diagram of a machine\n\nai-generated content may be incorrect", ""),
+    ("AI-Generated Content May Be Incorrect.", ""),
+    ("A screenshot of text\n\nDescription automatically generated", ""),
+    ("A picture containing table\n\nDescription generated with very high confidence", ""),
+    ("Diagram of the AI pipeline", "Diagram of the AI pipeline"),  # merely mentions AI: kept
 ])
 def test_clean_alt_text_rejects_junk(raw, expected):
     assert _clean_alt_text(raw) == expected
+
+
+def _two_paragraph_box():
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1))
+    tf = tb.text_frame
+    tf.text = "Instructor:  Mike Sipser"
+    tf.add_paragraph().text = "Second paragraph"
+    return tb
+
+
+def test_plain_paragraph_text_unchanged():
+    # Characterisation: ordinary runs stay verbatim (internal double space
+    # included) and paragraphs join with "\n" — pinned so the math/br-aware
+    # paragraph reader cannot drift for the shapes that have neither.
+    from src.parser import _paragraph_metrics, _paragraphs, _shape_text
+    tb = _two_paragraph_box()
+    assert _shape_text(tb) == "Instructor:  Mike Sipser\nSecond paragraph"
+    assert _paragraphs(tb) == ["Instructor:  Mike Sipser", "Second paragraph"]
+    assert [m["text"] for m in _paragraph_metrics(tb)] == _paragraphs(tb)
+
+
+def test_soft_line_break_paragraph_spans_two_lines():
+    # paragraph 1 = "a" + br + "b" occupies TWO lines, so its box is two line
+    # heights tall and paragraph 2 starts two line heights below its top — not
+    # one, which drifted every bullet after a br-paragraph upward onto it.
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from src.parser import _bullet_bboxes
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(3))
+    p1 = tb.text_frame.paragraphs[0]
+    p1.add_run().text = "a"
+    p1.add_line_break()
+    p1.add_run().text = "b"
+    p1.font.size = Pt(20)
+    p2 = tb.text_frame.add_paragraph()
+    p2.text = "c"
+    p2.font.size = Pt(20)
+
+    (t1, b1), (t2, b2) = _bullet_bboxes(tb)
+    assert (t1, t2) == ("a\nb", "c")
+    one_line = Pt(20).inches * 1.2  # 20 pt at the default 1.2 line spacing
+    assert abs(b1.h - 2 * one_line) < 1e-6, b1
+    assert abs(b2.y - (b1.y + 2 * one_line)) < 1e-6, (b1, b2)
+
+
+def _box_with_paragraphs(*paras, size=20):
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(3))
+    tf = tb.text_frame
+    for i, lines in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        for j, line in enumerate(lines):
+            if j:
+                p.add_line_break()
+            if line:
+                p.add_run().text = line
+        p.font.size = Pt(size)
+    return tb
+
+
+def test_blank_paragraph_and_trailing_break_keep_their_line():
+    # An empty spacer paragraph is no element, but it still takes a line, so
+    # the bullet after it starts two line heights down — not one (it drifted
+    # upward onto the spacer). A TRAILING soft line break ("a" + br) is a
+    # second line of its paragraph as well.
+    from pptx.util import Pt
+    from src.parser import _bullet_bboxes
+    one_line = Pt(20).inches * 1.2
+
+    (ta, ba), (tb_, bb) = _bullet_bboxes(_box_with_paragraphs(["a"], [""], ["b"]))
+    assert (ta, tb_) == ("a", "b")
+    assert abs(bb.y - (ba.y + 2 * one_line)) < 1e-6, (ba, bb)
+
+    (ta, ba), (tb_, bb) = _bullet_bboxes(_box_with_paragraphs(["a", ""], ["b"]))
+    assert (ta, tb_) == ("a", "b")
+    assert abs(ba.h - 2 * one_line) < 1e-6, ba
+    assert abs(bb.y - (ba.y + 2 * one_line)) < 1e-6, (ba, bb)
+
+
+def _a_p(inner: str):
+    from lxml import etree
+    return etree.fromstring(
+        '<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"'
+        f' xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">{inner}</a:p>')
+
+
+def test_paragraph_text_reads_math_runs_and_keeps_line_breaks_as_newlines():
+    # Equation runs sit in <a14:m> between ordinary runs (python-pptx skips them);
+    # their math-italic letters normalise to plain ones and U+00A0 to a space.
+    # A soft line break (<a:br/>) is a line boundary — "\n", the same separator
+    # paragraphs get — so each br-separated line stays its own trigger phrase.
+    # Ordinary runs are verbatim: no whitespace is absorbed around the break.
+    from src.parser import _paragraph_text
+    math = ("<a14:m><m:oMath><m:r><m:t>\U0001D434</m:t></m:r><m:r><m:t>, </m:t></m:r>"
+            "<m:r><m:t>\U0001D435</m:t></m:r></m:oMath></a14:m>")
+    p = _a_p(f"<a:r><a:t>Let </a:t></a:r>{math}<a:r><a:t> be languages</a:t></a:r>")
+    assert _paragraph_text(p) == "Let A, B be languages"
+    p = _a_p("<a:r><a:t>TAs:</a:t></a:r><a:br/><a:r><a:t>Fadi</a:t></a:r>")
+    assert _paragraph_text(p) == "TAs:\nFadi"
+    p = _a_p("<a:r><a:t>Examples: </a:t></a:r><a:br/><a:br/><a:r><a:t> program</a:t></a:r>")
+    assert _paragraph_text(p) == "Examples: \n\n program"
 
 
 def _element_texts(index: dict) -> list[str]:
@@ -311,6 +431,127 @@ def test_ocr_does_not_hallucinate_on_textless_image(tmp_path):
     assert not (imgs[0].get("text") or ""), f"OCR hallucinated: {imgs[0].get('text')!r}"
     assert imgs[0]["needs_vision"] is True
     assert imgs[0]["trigger_phrases"] == []
+
+
+def _texts(index: dict) -> list[str]:
+    return [e["text"] or "" for s in index["slides"] for e in s["elements"]]
+
+
+def test_hidden_shapes_are_not_indexed(tmp_path):
+    # `cNvPr hidden="1"` shapes are invisible on the rendered slide; a hidden
+    # group hides its whole subtree. The visible sibling is untouched.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    texts = _texts(parse_deck(decks["hidden_shapes"].path))
+    assert texts == ["Visible sibling"], texts
+
+
+def test_off_canvas_shapes_are_not_indexed(tmp_path):
+    # Wholly outside the slide (y=9 in on a 7.5-in slide) → invisible → dropped;
+    # a box overhanging the bottom edge (y=7.3, h=0.5) is still partly visible.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    texts = _texts(parse_deck(decks["off_canvas"].path))
+    assert texts == ["On the slide", "Overhanging the edge"], texts
+
+
+def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
+    # z-order = document order: a later opaque rect fully covering a text box
+    # hides it on the rendered slide. Controls (one slide each) stay indexed:
+    # noFill cover, 50 % alpha cover, rect drawn before the text, partial cover,
+    # shapes whose AABB exceeds their paint — a rotated bar, an ellipse — with
+    # the text in the unpainted part of the AABB, and pictures that may show
+    # through: an RGBA PNG, an `a:alphaModFix`-faded one. An opaque RGB
+    # picture still hides its text (the control), and so does an ANIMATED
+    # cover: the index is the rendered slide, animation builds are not
+    # modelled (slide 6). A picture cropped to a shape (prstGeom ellipse)
+    # paints less than its AABB, like an ellipse — the text in its corner
+    # stays. The picture itself is always an element (`None` = its text-less
+    # image).
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["occluded_text"].path)
+    per_slide = [[e["text"] for e in s["elements"]] for s in index["slides"]]
+    assert per_slide == [
+        [],
+        ["Cover has no fill"],
+        ["Cover is half transparent"],
+        ["Rect is underneath"],
+        ["Only partly covered"],
+        [],
+        ["Beside a rotated bar"],
+        ["In an ellipse's corner"],
+        ["Under an RGBA picture", None],
+        ["Under a faded picture", None],
+        [None],
+        ["In a cropped picture's corner", None],
+        ["Under a palette picture", None],
+    ], per_slide
+
+
+@pytest.mark.parametrize("deck,bbox", [
+    ("placeholder_picture", None),                 # the layout's placeholder geometry
+    ("movie", {"x": 2.0, "y": 1.5, "w": 6.0, "h": 4.0}),
+])
+def test_every_p_pic_is_an_image(tmp_path, deck, bbox):
+    # A picture in a layout placeholder (PLACEHOLDER) and an embedded video
+    # (MEDIA) are both `p:pic` elements → exactly one needs_vision image each.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks[deck].path)["slides"] for e in s["elements"]]
+    assert [e["type"] for e in els] == ["image"], els
+    assert els[0]["needs_vision"] is True and els[0]["text"] is None
+    if bbox:
+        assert {k: round(els[0]["bbox"][k], 2) for k in bbox} == bbox
+    # OCR reads a movie's poster frame (no `.image`) — must not raise either way
+    assert [e["type"] for s in parse_deck(decks[deck].path, ocr=True)["slides"]
+            for e in s["elements"]] == ["image"]
+
+
+def test_arrows_come_from_geometry_not_from_being_small(tmp_path):
+    # connector, RIGHT_ARROW preset, a thin filled 3x0.05 bar and a 2x1
+    # LINE_INVERSE (`lineInv`, a drawn diagonal) are arrows; the 0.1-in dot and
+    # the empty zero-width text box are decorative — absent.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["arrow_shapes"].path)["slides"] for e in s["elements"]]
+    assert [e["type"] for e in els] == ["arrow"] * 4, els
+    assert sorted((round(e["bbox"]["w"], 2), round(e["bbox"]["h"], 2)) for e in els) == [
+        (2.0, 0.5), (2.0, 1.0), (3.0, 0.05), (3.0, 0.5)]
+
+
+def test_box_holding_several_texts_is_not_a_label_box(tmp_path):
+    # A full-slide empty rect behind a title + two body boxes is a background:
+    # it pairs with nothing (no diagram_label/stat with its bbox); the title is
+    # typed by `_classify_text_shape` (y < 1.2 in, wide) with its own bbox.
+    # Slide 2: a rect covering more than half the slide is a panel even with a
+    # single text inside — that title keeps its own type and bbox too.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["background_panel"].path)["slides"] for e in s["elements"]]
+    assert [(e["type"], e["text"]) for e in els] == [
+        ("title", "Panel Title"),
+        ("body", "First point on the panel"),
+        ("body", "Second point on the panel"),
+        ("title", "Lone title on a panel"),
+    ], els
+    for title in (els[0], els[3]):
+        assert round(title["bbox"]["w"], 2) == 8.0 and round(title["bbox"]["y"], 2) == 0.4
+
+
+def test_ink_annotation_resolves_to_its_fallback_picture(tmp_path):
+    # PowerPoint ink: an mc:AlternateContent whose p14 Choice is a
+    # `p:contentPart` (python-pptx has no class for it — it used to crash the
+    # slide, which was then emitted EMPTY) and whose Fallback is a picture of
+    # the strokes. The title survives; the ink is one needs_vision image.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["ink_annotation"].path)["slides"] for e in s["elements"]]
+    assert [(e["type"], e["text"]) for e in els] == [
+        ("title", "Visible title text"), ("image", None)], els
+    assert els[1]["needs_vision"] is True
+
+
+def test_table_cell_reads_equation_runs(tmp_path):
+    # Cell text goes through the same paragraph reader as text boxes, so an
+    # `a14:m` equation in a cell (q₁: math-italic q over a subscript 1) reads
+    # "q1" instead of python-pptx's empty `cell.text`; plain cells unchanged.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["table_math_cell"].path)["slides"] for e in s["elements"]]
+    assert [e["text"] for e in els] == ["δ", "0", "start", "q1"], els
 
 
 def test_corpus_parse_is_deterministic(tmp_path):

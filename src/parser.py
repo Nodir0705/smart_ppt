@@ -8,15 +8,21 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field, asdict
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+from pptx.oxml.shapes.groupshape import CT_GroupShape
 
 _log = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
-ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
+ARROW_DIM_THRESHOLD_IN = 0.15  # thinner than this in one dimension = line-thin
+ARROW_MIN_LEN_IN = 0.5         # ... and at least this long = a drawn line (not a dot)
+OFF_CANVAS_TOL_IN = 0.05       # a shape this far outside the slide is wholly off-canvas
+OCCLUSION_TOL_IN = 0.02        # a later opaque shape reaching this close to a leaf's edges covers it
+MAX_TEXTS_IN_LABEL_BOX = 2     # a label box holds a label and at most a sub-label (KPI number + caption)
 
 
 # ---------- data classes ----------
@@ -34,6 +40,17 @@ class BBox:
 
     def contains_point(self, px: float, py: float) -> bool:
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+
+    def is_outside(self, w: float, h: float, tol: float) -> bool:
+        """Wholly outside the [0, w] x [0, h] canvas (beyond `tol`)."""
+        return (self.x + self.w < -tol or self.y + self.h < -tol
+                or self.x > w + tol or self.y > h + tol)
+
+    def covers(self, other: "BBox", tol: float) -> bool:
+        """`other` lies wholly inside this box (to within `tol`)."""
+        return (self.x - tol <= other.x and self.y - tol <= other.y
+                and other.x + other.w <= self.x + self.w + tol
+                and other.y + other.h <= self.y + self.h + tol)
 
 
 @dataclass
@@ -109,10 +126,48 @@ def _compose(parent, group_shape):
     return (g_x - choff[0] * sx, g_y - choff[1] * sy, sx, sy)
 
 
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+# python-pptx has no shape class for `p:contentPart` (pen ink): handing one to
+# the shape factory raises and the whole slide came back empty. Not a shape
+# here — an ink `mc:AlternateContent` resolves to its Fallback picture (what
+# the renderer draws) and a bare contentPart in the tree is skipped.
+_SHAPE_TAGS = tuple(t for t in CT_GroupShape._shape_tags if not t.endswith("}contentPart"))
+
+
+def _is_hidden(elm) -> bool:
+    """`p:cNvPr/@hidden` (Selection Pane "eye off"): the shape — or, on a
+    group, its whole subtree — is not on the rendered slide."""
+    cnv = elm.find("./*/" + _P_NS + "cNvPr")
+    return cnv is not None and cnv.get("hidden") in ("1", "true")
+
+
+def _shape_elms(sp_tree):
+    """Shape elements of a `p:spTree`/`p:grpSp` in document (= z-) order.
+
+    python-pptx's own walk skips `mc:AlternateContent`, which PowerPoint wraps
+    around every text box holding an equation (Choice = the live box, Fallback =
+    a picture of it), so those boxes vanished whole. Resolve each to the shapes
+    of its first alternative that holds any — the Choices first, then Fallback.
+    """
+    for elm in sp_tree.iterchildren():
+        if elm.tag in _SHAPE_TAGS:
+            yield elm
+        elif elm.tag == _MC_NS + "AlternateContent":
+            for alt in elm.iterchildren():
+                inner = [c for c in alt.iterchildren() if c.tag in _SHAPE_TAGS]
+                if inner:
+                    yield from inner
+                    break
+
+
 def _iter_flat(shapes, transform=_IDENTITY):
     """Yield (leaf_shape, transform) for every shape, recursing into groups so
     nested shapes surface with a transform that maps them to slide coordinates."""
-    for shape in shapes:
+    for elm in _shape_elms(shapes._spTree):
+        if _is_hidden(elm):
+            continue
+        shape = shapes._shape_factory(elm)
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             yield from _iter_flat(shape.shapes, _compose(transform, shape))
         else:
@@ -144,22 +199,68 @@ def _transformed_bbox(shape, transform) -> BBox:
     return _rotated_aabb(x, y, w, h, rot)
 
 
+# ---------- paragraph text ----------
+#
+# PowerPoint stores an equation as <a14:m><m:oMath>…<m:t>𝐿</m:t>…</m:oMath></a14:m>
+# between a paragraph's ordinary runs. python-pptx's `paragraph.text` skips it
+# ("Let  be languages") and `paragraph.runs` also skips <a:br/>, gluing a soft
+# line break's two lines ("TAs:Fadi"). One reader over the raw `a:p` children,
+# in document order, so every text consumer agrees.
+
+_A14_M = "{http://schemas.microsoft.com/office/drawing/2010/main}m"
+_M_T = "{http://schemas.openxmlformats.org/officeDocument/2006/math}t"
+
+
+def _paragraph_text(p) -> str:
+    """Text of an `a:p` element: `a:r`/`a:fld` verbatim, `a:br` as a newline (a
+    soft line break is a line boundary — its lines are the chunks a presenter
+    says, and `_phrases_for_text` keeps each as a phrase), and `a14:m` math as
+    its `m:t` texts NFKC-normalised — math-italic letters (𝐿, U+1D43F…) to plain
+    ones, U+00A0 to a space — so it is speakable."""
+    parts: list[str] = []
+    for child in p:
+        if child.tag in (_A_NS + "r", _A_NS + "fld"):
+            parts.append(child.findtext(_A_NS + "t") or "")
+        elif child.tag == _A_NS + "br":
+            parts.append("\n")
+        elif child.tag == _A14_M:
+            parts.append(unicodedata.normalize(
+                "NFKC", "".join(t.text or "" for t in child.iter(_M_T))))
+    return "".join(parts)
+
+
+def _frame_text(text_frame) -> str:
+    """Text of a text frame (shape or table cell): paragraphs joined with "\\n"."""
+    return "\n".join(_paragraph_text(p._p) for p in text_frame.paragraphs).strip()
+
+
 def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
-    return (shape.text_frame.text or "").strip()
+    return _frame_text(shape.text_frame)
 
 
 _IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
 _GENERIC_NAME_RE = re.compile(r"^(picture|image|graphic|object|content placeholder)\s*\d*$", re.I)
+# PowerPoint tags every description it generates itself with a marker sentence:
+# "AI-generated content may be incorrect" (2023+), "Description automatically
+# generated" / "Description generated with (very) high confidence" (2018–2023).
+# ponytail: English UI only; a localised PowerPoint writes the marker in its
+# own language — add those strings here when a deck shows one.
+_AUTO_ALT_MARKER_RE = re.compile(
+    r"ai-generated content may be incorrect|description (automatically )?generated", re.I)
 
 
 def _clean_alt_text(raw: str) -> str:
     """Keep author-meaningful alt text; drop junk that PowerPoint/exporters put
-    in `descr`/`title` — file paths, bare image filenames, and generic
-    auto-names like 'Picture 1' — which would only add noise triggers."""
+    in `descr`/`title` — file paths, bare image filenames, generic auto-names
+    like 'Picture 1', and PowerPoint's own generated captions ("A close-up of
+    a graph", words the slide never contains) — which would only add noise
+    triggers. The picture then takes the OCR / needs_vision path."""
     s = (raw or "").strip()
     if not s:
+        return ""
+    if _AUTO_ALT_MARKER_RE.search(s):  # PowerPoint-generated description
         return ""
     if "/" in s or "\\" in s:          # a file path, not a description
         return ""
@@ -190,7 +291,8 @@ def _ocr_picture(shape) -> str:
     text — the caller then leaves the image needs_vision (no false pointable).
     """
     try:
-        blob = shape.image.blob
+        # a Movie has no `.image`; its raster is the poster frame
+        blob = (getattr(shape, "image", None) or shape.poster_frame).blob
     except Exception:
         return ""  # linked or unsupported picture exposes no blob
     from .ocr import ocr_image_text
@@ -199,6 +301,120 @@ def _ocr_picture(shape) -> str:
 
 def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
+
+
+def _fill(shape):
+    """The element painting a `p:sp`'s interior: its own `spPr` fill
+    (solid/gradient/picture/pattern), else its theme `fillRef` when idx >= 1.
+    None for `noFill`, or no fill and no style (transparent)."""
+    sp_pr = shape._element.find(_P_NS + "spPr")
+    if sp_pr is None:
+        return None
+    for tag in ("solidFill", "gradFill", "blipFill", "pattFill"):
+        f = sp_pr.find(_A_NS + tag)
+        if f is not None:
+            return f
+    if sp_pr.find(_A_NS + "noFill") is not None:
+        return None
+    ref = shape._element.find(_P_NS + "style/" + _A_NS + "fillRef")
+    idx = ref.get("idx", "0") if ref is not None else "0"
+    return ref if idx.isdigit() and int(idx) >= 1 else None
+
+
+# `a:prstGeom/@prst` values that draw a line or an arrow.
+_LINE_PRESETS = frozenset(
+    "line lineInv straightConnector1 bentConnector2 bentConnector3 bentConnector4 bentConnector5 "
+    "curvedConnector2 curvedConnector3 curvedConnector4 curvedConnector5 "
+    "rightArrow leftArrow upArrow downArrow leftRightArrow upDownArrow bentArrow uturnArrow "
+    "curvedRightArrow curvedLeftArrow curvedUpArrow curvedDownArrow notchedRightArrow "
+    "stripedRightArrow swooshArrow quadArrow leftRightUpArrow leftUpArrow bentUpArrow "
+    "circularArrow leftCircularArrow leftRightCircularArrow".split())
+
+
+def _is_line_like(shape, bbox: BBox) -> bool:
+    """An empty shape that draws a line or arrow: a connector, a line/arrow
+    preset, a zero-dim freeform, or a thin (< 0.15 in) filled bar at least
+    0.5 in long (a divider line). Dots, small circles and zero-area boxes of
+    any size are decorative, not arrows."""
+    el = shape._element
+    if el.tag == _P_NS + "cxnSp":
+        return True
+    geom = el.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
+    if geom is not None and geom.get("prst") in _LINE_PRESETS:
+        return True
+    if el.find(_P_NS + "spPr/" + _A_NS + "custGeom") is not None:
+        return _is_zero_dim(bbox)
+    return (_is_zero_dim(bbox) and max(bbox.w, bbox.h) >= ARROW_MIN_LEN_IN
+            and _fill(shape) is not None)
+
+
+# ---------- visibility (what the rendered slide shows) ----------
+
+
+# Presets that paint their whole bounding box (an ellipse, a diamond, a block
+# arrow or a callout leaves AABB corners unpainted — never an occluder).
+_RECT_PRESETS = frozenset(
+    "rect roundRect snip1Rect snip2SameRect snip2DiagRect snipRoundRect "
+    "round1Rect round2SameRect round2DiagRect flowChartProcess".split())
+
+
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _picture_may_show_through(shape) -> bool:
+    """A faded picture (`a:alphaModFix` < 100 %), a PNG with an alpha channel
+    (IHDR colour type 4 or 6) or a palette PNG (type 3) with a `tRNS` chunk
+    (transparent logos, GIF→PNG) can reveal what lies under it."""
+    for fix in shape._element.iter(_A_NS + "alphaModFix"):
+        if (fix.get("amt") or "").isdigit() and int(fix.get("amt")) < 100000:
+            return True
+    try:
+        blob = (getattr(shape, "image", None) or shape.poster_frame).blob
+    except Exception:
+        return False  # linked picture: nothing to inspect, assume opaque
+    return blob[:8] == _PNG_SIG and len(blob) > 25 and (
+        blob[25] in (4, 6)
+        or blob[25] == 3 and b"tRNS" in blob[:blob.find(b"IDAT")])
+
+
+def _is_opaque(shape) -> bool:
+    """A leaf that hides whatever lies wholly under its (axis-aligned) bbox: a
+    rectangular picture without transparency, or a rectangular `p:sp` filled
+    with no `a:alpha` < 100 %. A rotated shape's AABB exceeds its paint, so it
+    never occludes; nor does one drawn or cropped to a non-rectangular preset
+    (Crop ▸ Crop to Shape writes `p:pic/p:spPr/a:prstGeom` too), custom
+    geometry, a connector, a graphic frame or a transparent shape."""
+    if (getattr(shape, "rotation", 0.0) or 0.0) % 90 != 0:
+        return False
+    tag = shape._element.tag
+    if tag not in (_P_NS + "pic", _P_NS + "sp"):
+        return False
+    geom = shape._element.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
+    if geom is None or geom.get("prst") not in _RECT_PRESETS:
+        return False
+    if tag == _P_NS + "pic":
+        return not _picture_may_show_through(shape)
+    f = _fill(shape)
+    return f is not None and not any(
+        (a.get("val") or "").isdigit() and int(a.get("val")) < 100000
+        for a in f.iter(_A_NS + "alpha"))
+
+
+def _drop_occluded(shapes_meta: list[dict], slide_no: int) -> list[dict]:
+    """Keep only leaves not wholly covered by a LATER (= above, z-order is
+    document order) opaque leaf — what the viewer shows, so a diagram under a
+    reveal cover is neither text nor a container."""
+    opaque = [_is_opaque(m["shape"]) for m in shapes_meta]
+    kept: list[dict] = []
+    for i, m in enumerate(shapes_meta):
+        # ponytail: O(n^2) per slide; slides hold tens of shapes
+        if any(opaque[j] and shapes_meta[j]["bbox"].covers(m["bbox"], OCCLUSION_TOL_IN)
+               for j in range(i + 1, len(shapes_meta))):
+            _log.debug("slide %d: %r %r hidden under a later opaque shape; dropped",
+                       slide_no, m["shape"].name, m["text"])
+            continue
+        kept.append(m)
+    return kept
 
 
 def _norm(s: str) -> str:
@@ -251,7 +467,7 @@ def _paragraphs(shape) -> list[str]:
         return []
     paras: list[str] = []
     for p in shape.text_frame.paragraphs:
-        txt = "".join(run.text for run in p.runs).strip()
+        txt = _paragraph_text(p._p).strip()
         if txt:
             paras.append(txt)
     return paras
@@ -263,19 +479,22 @@ _DEFAULT_LINE_SPACING = 1.2
 
 
 def _paragraph_metrics(shape) -> list[dict]:
-    """Per non-empty paragraph: text, line height (in), space-after (in).
+    """Per paragraph: text, line height (in), space-after (in). An empty
+    spacer paragraph is a row with text "" — it takes its line height on the
+    slide but becomes no element.
 
     Uses each paragraph's own font size when present; falls back to the
     first non-None run font size; finally to 16 pt. Line height = font * 1.2
-    unless `line_spacing` overrides (float multiplier or absolute Length).
+    unless `line_spacing` overrides (float multiplier or absolute Length),
+    times the paragraph's line count (each soft line break `a:br` adds one,
+    a trailing one included).
     """
     if not shape.has_text_frame:
         return []
     out: list[dict] = []
     for p in shape.text_frame.paragraphs:
-        text = "".join(r.text for r in p.runs).strip()
-        if not text:
-            continue
+        raw = _paragraph_text(p._p)
+        text = raw.strip()
         size = p.font.size
         if size is None:
             for r in p.runs:
@@ -293,6 +512,7 @@ def _paragraph_metrics(shape) -> list[dict]:
                 line_h = ls.inches
             except AttributeError:
                 line_h = size_in * _DEFAULT_LINE_SPACING
+        line_h *= 1 + raw.count("\n")  # every soft line break (a:br) adds a line
         sa = p.space_after
         sa_in = sa.inches if sa is not None else 0.0
         out.append({"text": text, "line_h": line_h, "space_after": sa_in})
@@ -332,41 +552,43 @@ def _bullet_bboxes(shape) -> list[tuple[str, BBox]]:
     out: list[tuple[str, BBox]] = []
     y = y0
     for m in metrics:
-        out.append((m["text"], BBox(x=frame.x, y=y, w=frame.w, h=m["line_h"])))
+        if m["text"]:  # a spacer paragraph only moves the cursor
+            out.append((m["text"], BBox(x=frame.x, y=y, w=frame.w, h=m["line_h"])))
         y += m["line_h"] + m["space_after"]
     return out
 
 
 # ---------- pair-merging (empty container + text inside) ----------
 
-def _find_container_text_pairs(shapes_meta: list[dict]) -> list[tuple[int, int]]:
+def _find_container_text_pairs(shapes_meta: list[dict], slide_w: float,
+                               slide_h: float) -> list[tuple[int, int]]:
     """Pair an empty-text shape with a text shape whose centre lies inside it.
 
     Returns list of (container_idx, text_idx). Each index appears at most
     once. Containers must have non-trivial area; text shapes must have text.
+    A box holding more than MAX_TEXTS_IN_LABEL_BOX text centres, or covering
+    more than half the slide, is a background/cover/panel, not a label box —
+    it pairs with nothing (a full-slide rectangle used to pair with the title).
     """
     pairs: list[tuple[int, int]] = []
     used: set[int] = set()
     for ci, c in enumerate(shapes_meta):
-        if ci in used:
-            continue
         if c["text"]:
             continue  # container must be empty-text
         if c["is_picture"] or c["is_table"] or c["is_chart"]:
             continue
         if c["bbox"].w < 0.5 or c["bbox"].h < 0.5:
             continue  # arrows / tiny stuff
-        for ti, t in enumerate(shapes_meta):
-            if ti == ci or ti in used:
-                continue
-            if not t["text"]:
-                continue
-            if t["is_picture"] or t["is_table"] or t["is_chart"]:
-                continue
-            tcx, tcy = t["bbox"].center()
-            if c["bbox"].contains_point(tcx, tcy):
+        if c["bbox"].w * c["bbox"].h > 0.5 * slide_w * slide_h:
+            continue  # a panel, whatever it holds
+        inside = [ti for ti, t in enumerate(shapes_meta)
+                  if t["text"] and not (t["is_picture"] or t["is_table"] or t["is_chart"])
+                  and c["bbox"].contains_point(*t["bbox"].center())]
+        if len(inside) > MAX_TEXTS_IN_LABEL_BOX:
+            continue
+        for ti in inside:
+            if ti not in used:
                 pairs.append((ci, ti))
-                used.add(ci)
                 used.add(ti)
                 break
     return pairs
@@ -391,7 +613,9 @@ def _expand_table(shape, slide_no: int, start_idx: int) -> list[Element]:
         for ci, cell in enumerate(row.cells):
             cell_x = bbox.x + sum(col_widths[:ci])
             cell_y = bbox.y + sum(row_heights[:ri])
-            text = (cell.text or "").strip()
+            # the same reader as text boxes: python-pptx `cell.text` skips
+            # `a14:m` equations (a δ transition table read 9 of 12 cells empty)
+            text = _frame_text(cell.text_frame)
             out.append(Element(
                 id=f"s{slide_no}_e{idx}",
                 type="table_cell",
@@ -590,17 +814,27 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
     #    leaf's bbox mapped from group child-space into slide coordinates)
     shapes_meta: list[dict] = []
     for shape, tf in _iter_flat(slide.shapes):
+        bbox = _transformed_bbox(shape, tf)
+        if bbox.is_outside(slide_w, slide_h, OFF_CANVAS_TOL_IN):
+            _log.debug("slide %d: %r off-canvas at %s; skipped", slide_no, shape.name, bbox)
+            continue
         shapes_meta.append({
             "shape": shape,
-            "bbox": _transformed_bbox(shape, tf),
+            "bbox": bbox,
             "text": _shape_text(shape),
-            "is_picture": shape.shape_type == MSO_SHAPE_TYPE.PICTURE,
+            # every `p:pic` — python-pptx types one in a layout placeholder
+            # PLACEHOLDER and an embedded video MEDIA, not PICTURE
+            "is_picture": shape._element.tag == _P_NS + "pic",
             "is_table": getattr(shape, "has_table", False),
             "is_chart": getattr(shape, "has_chart", False),
         })
 
+    # index = the rendered slide; animation builds are not modelled — a cover
+    # that only appears on click still hides what is under it
+    shapes_meta = _drop_occluded(shapes_meta, slide_no)
+
     # 2) merge container+text pairs (diagram labels or stat callouts)
-    pairs = _find_container_text_pairs(shapes_meta)
+    pairs = _find_container_text_pairs(shapes_meta, slide_w, slide_h)
     paired_idx: dict[int, tuple[int, int]] = {}  # any-idx → (container_idx, text_idx)
     for ci, ti in pairs:
         paired_idx[ci] = (ci, ti)
@@ -670,7 +904,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
                 needs_vision=not label,
             ))
             continue
-        if not text and _is_zero_dim(bbox):
+        if not text and _is_line_like(shape, bbox):
             elements.append(Element(
                 id=next_id(),
                 type="arrow",

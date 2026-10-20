@@ -625,49 +625,168 @@ was opened for the pilot below and its failures drive 4b, so it is a DEV deck fr
 Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_rail_Edge 설계문서, 휠레일 컨택, Amaliyot ×2).
 
 - [ ] 0. Commit `script/TapHole/` (TapHole video narration)
-- [ ] 1. Coverage report, text first: `refine_text` already finds each element's words in the PDF text layer;
-      the page words no element claimed are the text gaps (dropped shapes, unmatched lines, overflow). Report per
-      slide on the 9 dev decks. Then non-text ink: rendered slide vs the slide with its shapes removed, min-area
-      gated, split into "uncovered ink with glyphs" (missed text, bug) vs "no glyphs" (picture/diagram). Expected noise:
-      decorative empty shapes (`parser.py:682`), diagonal connectors, icons < 0.5 in².
-- [ ] 2. Picture detection: every `p:pic` is a picture (Picture, PlaceholderPicture, MEDIA) — `parser.py:597` only checks
-      `shape_type == PICTURE`. Seen: TapHole s10 (picture in a content placeholder).
-- [ ] 3. Embedded video (MEDIA, TapHole s12/s17): emit an element at the poster-frame bbox; alt text, else needs_vision.
-      Guard `_alt_text` / `_ocr_picture` for Movie shapes (`poster_frame`, no `.image`).
-- [ ] 4. `refine_text` misses lines that are in the PDF (TapHole s8 e13–e15: PDF y 6.23/6.56/~6.9 in, kept parser
-      guess 3.92–4.29) — find why the match fails, fix in `refine_text`. Checked: PDF Hangul is NFC and refine
-      normalizes NFKC, so not that. Next suspect: lines below the placeholder frame (overflow) rejected by a geometry gate.
+- [x] 1. Coverage report: `python3 -m tools.coverage out/bench/<deck>/<variant>` → `coverage/slide_NNN.png` (every element's
+      box + id drawn on the render, set-of-mark style) + `report.{md,json}` (PDF words no element covers, text elements with
+      no words under them). Baseline (pre-fix indexes, 2026-10-20): test_deck 0/190 words unclaimed, AI_Handout 0/1202,
+      TapHole 37/984 (all s8 = the refine miss), MIT 340/813 (the equation boxes; s8 has 2 elements for 87 words),
+      Open-Q 0/2541 but 5 empty text elements: s1_e7 and s8_e28 sit OFF the slide (y 9.5 / 8.9 in on 7.5), three "};"
+      code bullets keep a 12-in frame box (text has no alnum → unrefinable; known, not now). Picture-only gaps (TapHole
+      s10 panel) show only in the overlay — by design. Ceiling: lines cluster on y only, so two columns merge.
+      Note: `refine_text._assemble_words` splits words 2–3.7× finer than pdfium's own tokens (glyph-gap rule); harmless
+      for refine (it matches normalised text) but not reusable for reports — coverage has its own 20-line tokenizer.
+- [x] 2. Picture detection (f0f6332): every `p:pic` is a picture (Picture, PlaceholderPicture, Movie). TapHole +3: s10 placeholder
+      picture (alt text), s12 movie (poster-frame OCR), s17 movie (needs_vision). b9d3c29: PowerPoint's auto-generated
+      alt text ("A close-up of a graph … AI-generated content may be incorrect.") counts as no alt text → OCR /
+      needs_vision path (TapHole: 11 such pictures; they now carry tesseract text of their axis labels). Review: the
+      2018–2023 marker "Description automatically generated" was missing (two holdout decks have it) — 9685c71; 5649ff2:
+      a picture cropped to a non-rect shape no longer occludes by its AABB; eb6d220: palette PNG + tRNS is transparent,
+      a trailing br and empty spacer paragraphs advance the bullet cursor (boxes repositioned: AI 2, TapHole 11, MIT 20,
+      Open-Q 1; ids unchanged). Occlusion counts unchanged.
+- [x] 3. Embedded video: covered by 2 (Movie is a `p:pic`; `_ocr_picture` reads `poster_frame.blob`).
+- [x] 4. `refine_text` dropped lines that are in the PDF (TapHole s8 e13–e15). Cause (2a77f6a): `align_words` treated
+      `ALIGN_MAX_GAP` (2.0 in from the parser's GUESSED box) as a hard gate; with font sizes inherited from the master the
+      parser guesses 16-pt lines (0.22 in/para) against a 0.32 in/para render, so the guess drifts past 2 in by the 13th
+      paragraph. Rule now: page-unique word-aligned text (≥ 4 alnum) is placed where the stream has it; the gap only
+      ranks among several occurrences. TapHole: exactly e13–e15 changed; AI_Handout, test_deck: 0 changes. Review found
+      word stealing (a text absent from the PDF taking an identical word inside another element, verified); fixed in
+      67d585e: proximity pass first, then the page-unique rescue, which never takes words inside another unplaced
+      element's box. Two pinning tests. Approved on re-review.
+      Known, not now: `line_texts` miscounts a "•" glyph on wrapped bullets (s8_e14 line 2 = "사용"); geometry is right.
 - [ ] 4b. From the MIT pilot (general causes, all from map/talk agents + XML checks):
-      - `mc:AlternateContent` shapes dropped: every text box holding an equation vanishes whole (MIT: 47 shapes,
-        slides 6–13; slides 8 and 13 keep only the title). Read the `mc:Choice` shape; math text from `a14:m` `m:t`, NFKC
-        (math-italic 𝐿 → L).
-      - soffice leaves the math blank in the render (PNG/PDF): render those shapes from the `mc:Fallback` picture.
-      - "arrow" = any empty shape under 0.15 in (`ARROW_DIM_THRESHOLD_IN`): 0.14-in state circles and an empty zero-width
-        text box become arrows. Arrows should come from line/connector geometry only.
-      - pair merge takes the first text whose centre is inside any empty shape ≥ 0.5 in: a full-slide cover rectangle
+      - [x] `mc:AlternateContent` shapes dropped (64cc204): every text box holding an equation vanished whole (MIT: 47
+        shapes, slides 6–13). `_iter_flat` now walks the raw spTree/grpSp children and takes the first alternative with a
+        shape; math text from `a14:m` `m:t`, NFKC (math-italic 𝐿 → L). MIT 146 → 256 elements (s8: 2 → 13). Review:
+        one must — a `p:contentPart` (PowerPoint INK) inside a Choice has no python-pptx class, the factory raises and
+        the slide parses EMPTY (fix in flight: filter contentPart out of the shape tags → ink falls to its Fallback
+        picture; 16b7da1, corpus deck `ink_annotation`). 2275ffd: table cells read equations via `_frame_text` (MIT s7
+        δ table: 9 of 12 cells were empty, now q1/q2/q3). a50a5e8: a br paragraph is metered as N lines (repositions 8
+        TapHole / 34 MIT bullet boxes under such paragraphs). Noted: AC in layouts/masters ignored; `a:fld` now reaches `_paragraphs` (no dev deck affected).
+        a:br is a line boundary ("\n"), not a space — a space killed per-line trigger phrases (TapHole s1_e0 5 → 1).
+      - [x] Equation boxes had no PDF text layer (their render is the Fallback picture). 58becba: `deck_pdf(text_layer=True)`
+        renders the ORIGINAL pptx a second time for refine (`<stem>.text.pdf`; plain decks reuse the one PDF). MIT
+        refined: pdf_text 96 → 136, shape 99 → 67, none 61 → 20 (of 223); slide 8's plain lines now sit on their glyphs
+        (e11 guess 5.04 → 6.12 in). Still guessed: lines with math MID-sentence — `select_text_words` wants one block
+        ≥ 80 % and the blank splits it ("belanguages" = 79 %). fc7f514: gap-tolerant match (sum of in-order blocks ≥ 80 %
+        for selection; in `align_words` a text with no exact occurrence is located by a free span of abutting segments
+        spelling ≥ 50 %) → MIT 173 / 30 / 20; left guessed: lines that are entirely an equation (no glyphs at all).
+        Three dev decks byte-identical. Review: one must in flight — `_gap_runs` aligned the whole page once, so a
+        repeated anchor was never enumerated and a short fragment could bind to the earliest line (a probe turned a
+        correct neighbour box wrong); fix = enumerate every anchor occurrence, extend by abutting blocks, let proximity
+        choose — c317cb7, four regression tests; byte-identical on the dev decks, MIT 173/30/20 unchanged.
+      - [ ] Table-with-math fallback renders tiled (MIT s7): PowerPoint's Fallback is the same table with each math cell
+        blip-filled by ONE picture of the whole table, so the substitution draws it per cell. Rule in flight: such a
+        graphicFrame fallback becomes one `p:pic` at the frame.
+      - Cache ceiling: `deck_pdf`/`render_deck` are keyed on pptx mtime only, so PDFs/PNGs cached before 126fe38 stay
+        stale for equation decks until deleted (MIT's `out/bench/mit_theory_computation/*/` must be cleared before rebuild).
+      - [x] soffice leaves the math blank in the render: 126fe38 renders a temp copy with each AlternateContent replaced by
+        its `mc:Fallback` picture (deterministic zip; plain decks take the original path). 0cb7f2c gives every soffice run
+        a private profile (`-env:UserInstallation`), so parallel builds no longer collide.
+      - [x] arrows from geometry (a48cbdb): connector | LINE | line/arrow preset | empty thin FILLED bar (min < 0.15,
+        max ≥ 0.5 in) | zero-dim custGeom; other empty shapes skipped whatever their size. AI_Handout: 37 dividers stay,
+        +3 empty rightArrow presets become arrows (6 ids shift). TapHole −3 dots +2 line presets. MIT −19 state circles,
+        −3 zero-area boxes. test_deck byte-identical (hand fixture ids hold).
+      - [x] pair merge (87802a5): a container pairs only with 1..2 text centres inside (label + sub-label — test_deck's
+        stat box holds two, so "exactly one" was wrong); > 2 → background/panel. AI_Handout: 12 background pairs gone,
+        11 titles typed `title`, s1 kicker → body, the three stage cards re-pair with their header bands (tighter box).
+        Was: the first text whose centre is inside any empty shape ≥ 0.5 in: a full-slide cover rectangle
         grabbed the slide number (MIT s11_e1), and slide numbers come out as `diagram_label` (s12_e0). Same defect on
         AI_Handout: every slide's background rectangle pairs with the title, so all 12 titles are `diagram_label` in the
         raw parse (masked: refine_text shrinks the box onto the glyphs). The fix re-types them to `title`, which has its
         own pointer rules — expect AI_Handout `default` rows to move; measure, don't assume neutral.
-      - shapes fully covered by an opaque shape above them in z-order are not visible in the rendered slide (what the
-        viewer shows) yet stay pointable: all 8 slide-11 false ids on MIT (e0/e4/e10, a diagram under a cover box).
-        Rule: occluded → `pointable: false` in the final state. Animation builds (where they ARE visible) are out of
-        scope; note it as a product gap.
-      - line breaks (`a:br`) joined with no space ("TAs:- Fadi", "ComputationSipser").
+      - [x] occlusion (47bf0b6): a leaf fully under a LATER opaque leaf is dropped before pairing/typing (opaque = pic |
+        solid/grad/blip/patt fill without alpha | theme fillRef; groups/lines never occlude; AABB, rotation ignored).
+        MIT s11: 37 shapes dropped (the diagram under the cover, 13 of them former arrows); "11" (last in z-order) kept.
+        Open-Q s2: 2 background images under a third + a strip under a banner. Review (predicate run over 13 decks: 93
+        drops, 58 legit, 35 under an ANIMATED or ROTATED shape, 11 with text — all in holdout decks): in flight —
+        animated shapes (`p:spTgt` targets) never occlude (what the audience sees at any point stays pointable),
+        rotated covers never occlude (AABB ≠ footprint), only rect-like presets occlude, RGBA/alphaModFix pictures are
+        not opaque (reverts 2 of Open-Q's 3), huge ≤2-text panels don't pair, `lineInv` preset — landed as 82859bc,
+        3f16fac, b428567, 1f40226, 01da09b. // DECISION 2026-10-20: index = the rendered slide. Our viewer shows the
+        static soffice render (no animation playback exists in the product), so a cover hides what is under it whatever
+        its animation; the "animated shapes never occlude" exemption (82859bc) is reverted in c8af1ad (corpus slide kept,
+        expectation flipped: text under a click-to-appear cover is dropped). MIT s11's cover is in a
+        click-to-appear group — its 37 drops stay. Animation builds remain a product gap (per-step renders).
+      - [x] hidden="1" (55c5aad): none in the dev decks. Off-canvas (434ab06): Open-Q −2.
+      - [x] line breaks (`a:br`): python-pptx emitted "\x0b" (fine for matching — Python treats it as whitespace — but
+        invisible in JSON viewers, which is what the agents saw); now "\n". Cosmetic for the pointer.
+      - [x] shapes entirely outside the slide canvas (Open-Q s1_e7 y 9.54 in, s8_e28 y 8.92 in on a 7.5-in slide) → dropped (434ab06).
       - not now: auto-numbers missing from text, bullet type on headings (maps assign roles), animation states.
-- [ ] 5. Fix the other classes step 1 surfaces (general causes only), each with a small synthetic-pptx test.
-- [ ] 6. Ids are positional (`next_id` = slide + emission order, pairs first), so ANY element added, dropped or
+- [x] 5. Other classes surfaced along the way, each with a corpus deck/test: ink, table math, br metrics, auto alt text
+      (two marker generations), occlusion guards (rotation, shape, RGBA/palette transparency, cropped pictures), huge
+      panels, off-canvas, `lineInv`, table-math fallback render, text-layer PDF, gap-tolerant refine. 36 commits.
+- [x] 6. Ids are positional (`next_id` = slide + emission order, pairs first), so ANY element added, dropped or
       re-paired shifts every later id on that slide — on every deck, not just TapHole. Blast radius (XML scan, 2026-10-20):
       AI_Handout 37 tiny empty shapes (today `arrow`, slides 2–9) + 12 background-rectangle pairs (all slides);
       TapHole 3 tiny (s4) + 2 covers (s12, s17) + placeholder picture s10 + MEDIA s12/s17; test_deck 3 tiny (s6);
       MIT 47 AlternateContent boxes + tiny + covers; Open-Q none. So: `tools/remap_ids.py` — old→new id map per deck
       from (slide, text, bbox ≈) between the old and new `index.json`, applied to maps (items / units / order),
       `presenter_script*.json` `refers_to`, `expected.json`, `adjudication.json`; it lists unmatched old ids and brand-new
-      ids. New elements join the maps via the deterministic fix-up (singleton units), never regeneration. Talk steps
-      that referred to a formerly missing element (TapHole picture/videos, MIT equation boxes) get re-annotated by an
-      agent, else a correct light scores as a false id.
-- [ ] 7. Regression: pytest; deck_bench default + clause_replay map on the 4 bench decks — unchanged except where new
-      elements appear; coverage re-run shows the gaps closed.
+      ids. New elements join the maps via the deterministic fix-up (singleton units) on AI_Handout, TapHole,
+      test_deck, Open-Q (a handful of new ids each). EXCEPTION — MIT: 47 equation boxes are ~80% of its content, so
+      fix-up singletons would score placeholder units over most of the deck; its maps are REGENERATED with the same
+      blind two-agent protocol once the parser lands, and an agent re-annotates the ~25 `refers_to: []` sentences per
+      talk script (the scripts themselves are kept). `apply_slide_maps` validates every map against the new packet, so
+      the order per rebuild is: build `default` → `remap_ids --apply` (maps, scripts, expected, adjudication) → build
+      `map` → replay.
+      `tools/remap_ids.py` landed (78245dc, 0daba6e, 38a0cdb; 11 tests; reuses `local_slide_map.fixup`). Review: 3 musts in
+      flight — a text-changed element was dropped instead of matched by position; a dropped id alone in an expected step
+      left an empty step that lowers recall silently; no run-once guard. Maps/scripts/presenter dirs snapshotted to
+      `out/pre_remap_backup_124840/` before any remap mutated them.
+      Attribution protocol (per parser commit, not per branch): rebuild AI_Handout + TapHole, remap, replay the map
+      variant (~40 s each, STT cached), record the row. Step 7 is then a table of deltas with one cause each; a single
+      before/after of the whole branch would be unreadable (≤3 lit is noise; AI_Handout gets title retyping, the pair
+      change and the refine fix at once).
+- [x] 6b. MIT rebuild at c8af1ad: 223 elements (was 146 / 256 before occlusion); both PDFs + fallback render; old maps
+      archived to `out/maps/mit_theory_computation/old_146/`; scripts remapped 146 → 223 (111 kept, 35 dropped = hidden s11
+      diagram + s12 state circles, 112 new; 7 sentences lost ids). In flight: fresh maps (2 blind agents), script
+      re-annotation (blind to maps; done: 28/25/33 sentences now point at the new text; the 3 check-in sentences had
+      followed the "11" text to the real page number — re-pointed at the check-in box by hand). Expected steps regenerated:
+      78 / 73 / 82 (was 52 / 50 / 52) — the honest denominators. Final at 0a53cb8 (fresh maps, 223 elements):
+      | MIT | lit | false ids | false s | late med / p90 |
+      | pilot (old truth 52/50/52; ~25 unscorable sentences per talk ≈ 44/77 honest) | 44/52 · 38/50 · 41/52 | 5 · 8 · 2 | 43.0 · 30.3 · 14.8 | 2.49/5.3 · 4.05/11.1 · 3.07/5.6 |
+      | final (truth 78/73/82) | 64/78 · 59/73 · 65/82 | 11 · 10 · 3 | 55.7 · 44.4 · 9.3 | 2.66/6.2 · 4.00/8.2 · 3.06/5.6 |
+      Recall on the honest ruler ≈ 57 % → 82 / 81 / 79 %; more pointable content also means more wrong switches on the
+      two reading-order talks (false s +13 / +14), fewer on the meaning talk.
+      Where the 45 misses are: slide TITLES 15 (s3/s4/s5/s8/s10/s13/s14 e0 — titles get no map talk and little text; the
+      known title/kicker lever), the automata diagram slides 6/7/9/12 21 (units made of "0"/"1" transition labels and
+      state labels collide; 10 of the 24 false ids are on s9/s12), the rest scattered singles. Clean text slides are at
+      or near 100 %. Next lever is the pointer (titles, tiny-label diagram units), not the parser.
+- [x] 7-pre. pytest at 0a53cb8: 515 passed / 2 skipped (baseline 459 / 2). Coverage after the fixes: AI_Handout 0/1202 unclaimed
+      words, TapHole 0/984 (was 37), test_deck 0/190; empty text elements 0 on all three. MIT (coverage now reads the
+      text-layer PDF, 6fb17c7): 2/813 unclaimed (was 340), 18 empty text elements = 9 equation-only bullets + the 9 math
+      cells of the s7 table — no glyphs in either layer, expected. Open-Q after its rebuild.
+- [x] 7-verbatim (read-every-box auto narration, reported, non-blocking; `deck_bench --reuse-index` at HEAD):
+      AI_Handout default 129/168 (2026-10-02 report: 123/168 = 0.732), map 88/168; TapHole default 100/164 (= 2026-10-12),
+      precision 0.990, images 0 alt / 26 no-alt (the 11 auto captions now count as no alt → OCR); MIT default 120/183 (pilot
+      61/88 — 95 more narratable elements), map 86/183; TapHole map 62/164; test_deck 40/47 default and map (= 2026-10-02
+      0.851); filler false per deck 0–2 (gate ≤ 5); hand fixture 38/40, false 1, flicker 1 (= gate). Open-Q default
+      313/524 (2026-10-02: 0.591 = 310/524), map 229/524; Open-Q coverage 0/2541 unclaimed, 3 empty text elements (the
+      "};" code bullets, known).
+- [x] 7. Regression at HEAD (c317cb7): pytest 526 passed / 2 skipped (baseline 459); clause_replay rows per commit above
+      (AI_Handout identical throughout; TapHole changed only by truth and by the alt-text commit, for the better);
+      verbatim bench level or better on all five decks; hand fixture 38/40 · 1 · 1; filler ≤ 2 per deck; coverage: 0
+      unclaimed words on AI_Handout, TapHole, test_deck, Open-Q; MIT 2/813.
+- [x] 7a. Attribution table (`out/bench/attribution.md`, script `tools/rebuild_replay.sh <commit> <label> [deck …]`: clean
+      worktree → build default → remap → build map → clause_replay, AI_Handout + TapHole):
+      | commit | AI orig/jumpy/meaning lit · false ids · false s | TapHole same |
+      | baseline 7fe4c79 | 46/48·3·4.5, 59/61·3·10.5, 57/59·8·22.7 | 63/65·12·46.8, 59/70·7·27.2, 68/72·5·13.7 |
+      | refine 2a77f6a | identical | identical (s8 e13–e15 boxes now on the glyphs; sw/step 1.38→1.37) |
+      | text content 03fceab (equation boxes, math, br, fallback render) | identical | identical (s1_e0 / s14_e1 phrases restored; ids unchanged) |
+      | hidden 55c5aad, off-canvas 434ab06, occlusion 47bf0b6 | identical | identical (no such shapes on these decks; AI drops 4 empty frames under pictures, no element change) |
+      | pictures f0f6332 | identical | identical; +3 new ids (s10 picture, s12/s17 movies) as fix-up singletons — talk steps about them still `[]`, re-annotation pending |
+      | arrows a48cbdb | identical (+3 rightArrow presets, fix-up decoration) | jumpy 59/70 → 58/70, false 7 → 8, false s 27.2 → 33.3: REMAP ARTIFACT — the 3 dropped dots (s4 e43/e44/e130) left one expected step empty (unhittable) and the lit it used to score now counts as false; fix = prune empty steps (remap fix #3) + re-annotate that sentence |
+      | pairs 87802a5 | identical; 13 retyped (11 titles → title, s1 kicker + s2 panel → body) | identical |
+      | re-annotation (truth change, no code) | — | TapHole maps: real units for s10_e2 (own unit), s12_e2 / s17_e3 (merged with their "Video demo" captions); scripts: 26 sentences now point at the videos (8/9/9), the burr sentence at the 29 sketch segments; denominators change from here on |
+      | replay at 87802a5 with the new truth | identical | orig 65/67 · 13 · 47.7, jumpy 61/72 · 8 · 34.6, meaning 70/74 · 5 · 13.7 — the video steps light (2 new steps each after same-unit collapse), the burr sentence hits again |
+      | alt text b9d3c29 | identical | lit same; orig false s 47.7 → 44.2, jumpy false 8 → 7 / 34.6 → 27.2 s — the auto-caption noise phrases ("a close-up of a graph") were firing; 11 pictures re-matched by position (remap fix #1) |
+      | ink 16b7da1 · table math 2275ffd · br metrics a50a5e8 | identical | identical (bbox-only / no such shapes) |
+      | occlusion guards 3f16fac…c8af1ad · text-layer PDF 58becba · gap-tolerant refine fc7f514 | identical | identical (no equation boxes on these decks; refine byte-identical) |
+      | final HEAD c317cb7 (alt-text markers, cropped-picture occlusion, palette PNG, spacer metrics, table render, refine anchors) | identical | identical |
+      | Open-Q at HEAD (one row, remap: −3 ids = 2 off-canvas texts + 1 occluded strip, 0 retyped, no script step touched) | — | orig 94/117 · 28 · 129.5 s, jumpy 92/124 · 29 · 159.6, meaning 116/146 · 18 · 60.9 (strict). Last recorded rows 89–91/117 (2026-10-02, adjudicated false s 46.2). [UNCERTAIN: no pre-branch strict clause-pointer row for Open-Q was recorded; the removed elements were invisible and unreferenced, so they could only have lit falsely] |
+- [ ] 7b. Housekeeping before merge: `out/pre_remap_backup_124840/` (165 MB, pre-remap maps/scripts/presenter dirs) and
+      `out/maps/mit_theory_computation/old_146/` are rollback copies, not live artefacts — delete once the branch is merged.
+      Re-review of c317cb7 (refine anchors) requested from its reviewer; parser fixes 9685c71/5649ff2/eb6d220 followed
+      reviewer-specified fixes red-first.
 - [ ] 8. Holdout run on the 7 unseen decks (not MIT): maps + 3 blind talk scripts each, shipped params, report against
       the bench rows. MIT is re-scored with them but reported as a dev deck.
 
