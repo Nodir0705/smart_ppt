@@ -9,6 +9,7 @@ and the count matches the deck, it skips re-rendering.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import subprocess
@@ -19,14 +20,52 @@ from pathlib import Path
 from lxml import etree
 from pptx import Presentation
 
+_log = logging.getLogger(__name__)
+
 _MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
-_A_BLIP = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+_A_BLIP = _A_NS + "blip"
 _SLIDE_RE = re.compile(r"ppt/slides/slide\d+\.xml")
+
+# a picture shape at a frame: id/name/embed/xfrm filled in by _table_picture
+_PIC_XML = (
+    '<p:pic xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+    ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+    '<p:nvPicPr><p:cNvPr id="" name=""/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+    '<p:blipFill><a:blip/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+    '<p:spPr><a:xfrm/><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+)
+
+
+def _table_picture(frame):
+    """For a table Fallback whose cells are filled with ONE picture (PowerPoint
+    fills each math cell with a crop of a picture of the whole table), a `p:pic`
+    of that picture at the frame — soffice ignores the crops and stretches the
+    picture into every cell, tiling the table with miniatures of itself. None
+    when the cells reference no picture, or several (rendered as is)."""
+    rids = {b.get(_R_EMBED) for b in frame.iterfind(
+        f".//{_A_NS}tc/{_A_NS}tcPr/{_A_NS}blipFill/{_A_BLIP}")}
+    if not rids:
+        return None
+    cnvpr = frame.find(f"{_P_NS}nvGraphicFramePr/{_P_NS}cNvPr")
+    if len(rids) > 1:
+        _log.warning("table %r: fallback cells reference %d pictures; rendered as is",
+                     cnvpr.get("name"), len(rids))
+        return None
+    pic = etree.fromstring(_PIC_XML)
+    pic.find(f"{_P_NS}nvPicPr/{_P_NS}cNvPr").attrib.update(cnvpr.attrib)
+    pic.find(f"{_P_NS}blipFill/{_A_BLIP}").set(_R_EMBED, rids.pop())
+    pic.find(f"{_P_NS}spPr/{_A_NS}xfrm").extend(list(frame.find(_P_NS + "xfrm")))
+    return pic
 
 
 def _inline_fallbacks(slide_xml: bytes) -> bytes | None:
     """Replace each `mc:AlternateContent` whose Fallback holds a picture by that
-    Fallback's children, in place. None when the slide has none."""
+    Fallback's children, in place (a table by the one picture of it, see
+    `_table_picture`). None when the slide has none."""
     root = etree.fromstring(slide_xml)
     acs = [ac for ac in root.iter(_MC_NS + "AlternateContent")
            if ac.find(_MC_NS + "Fallback/.//" + _A_BLIP) is not None]
@@ -36,6 +75,9 @@ def _inline_fallbacks(slide_xml: bytes) -> bytes | None:
         parent = ac.getparent()
         i = parent.index(ac)
         for child in list(ac.find(_MC_NS + "Fallback")):
+            if child.tag == _P_NS + "graphicFrame":
+                pic = _table_picture(child)
+                child = child if pic is None else pic
             parent.insert(i, child)
             i += 1
         parent.remove(ac)

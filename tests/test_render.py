@@ -80,6 +80,33 @@ def test_text_layer_pdf_keeps_the_equation_box_text(tmp_path):
     assert "Regular languages" in page_text(visual)  # ordinary boxes keep their text
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="soffice required")
+def test_table_math_fallback_renders_as_one_picture(tmp_path):
+    # A table's math Fallback fills each cell with ONE picture of the whole
+    # table; soffice stretches a cell fill into every cell, tiling the table
+    # with miniatures of itself. The renderer must draw the picture once, at the
+    # frame: the picture's red quadrant is then a single block half the frame
+    # wide, not four quarter-wide blocks.
+    from PIL import Image
+    from tools.make_corpus import build_corpus
+    deck = {d.name: d for d in build_corpus(tmp_path / "corpus")}["table_math_fallback"]
+    png = render_deck(deck.path, tmp_path / "slides")[0]
+    img = Image.open(png).convert("RGB")
+    ppi = img.width / 10.0  # default template is 10 in wide; frame = (1, 2) 4x2 in
+    frame = img.crop((round(1 * ppi), round(2 * ppi), round(5 * ppi), round(4 * ppi)))
+    w, h = frame.size
+    red = [(i % w, i // w) for i, (r, g, b) in enumerate(frame.getdata())
+           if r > 180 and g < 90 and b < 90]
+    assert red, "no red pixels: fallback picture not drawn at all"
+    xs, ys = [p[0] for p in red], [p[1] for p in red]
+    bw, bh = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+    fill = len(red) / (bw * bh)
+    assert abs(bw / w - 0.5) < 0.1 and fill > 0.85, (
+        f"red quadrant spans {bw / w:.2f} of the frame width with fill {fill:.2f} "
+        f"(one block at the frame = 0.50 / ~1.0; tiled per cell = 0.75 / ~0.44)")
+
+
 def test_build_index_refines_from_the_text_layer_pdf(tmp_path, monkeypatch):
     # The refine stage must read the text-layer PDF (the visual one has no
     # glyphs where equation boxes are). Wiring only: soffice stubbed, refine

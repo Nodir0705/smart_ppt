@@ -795,6 +795,60 @@ def _build_ink_annotation(out_dir: Path) -> CorpusDeck:
                       note="ink AC (p14 contentPart Choice) -> Fallback picture; slide must not go empty")
 
 
+def _build_table_math_fallback(out_dir: Path) -> CorpusDeck:
+    """A table holding equations, saved the way PowerPoint saves it: the
+    `p:graphicFrame` wrapped in `mc:AlternateContent` whose Fallback is a copy
+    of the table in which each math cell is filled (`a:tcPr/a:blipFill`) with
+    ONE picture of the whole table. The parser must still emit the Choice's
+    cells; the renderer must draw that picture once, at the frame — soffice
+    stretches a cell fill into every cell, tiling the table with itself. The
+    picture here is four colour quadrants, so a tiled render is detectable."""
+    import copy
+    import io
+
+    from lxml import etree
+    from PIL import Image
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    texts = [["Alpha", "Beta"], ["Gamma", "Delta"]]
+    gf = s.shapes.add_table(2, 2, Inches(1), Inches(2), Inches(4), Inches(2))
+    for r, row in enumerate(texts):
+        for c, val in enumerate(row):
+            gf.table.cell(r, c).text = val
+
+    img = Image.new("RGB", (200, 200), (255, 0, 0))          # red / green
+    img.paste((0, 200, 0), (100, 0, 200, 100))              # blue / yellow
+    img.paste((0, 0, 255), (0, 100, 100, 200))
+    img.paste((255, 255, 0), (100, 100, 200, 200))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    pic = s.shapes.add_picture(buf, Inches(1), Inches(2), Inches(4), Inches(2))
+    rid = pic._element.blip_rId
+    pic._element.getparent().remove(pic._element)
+
+    fallback_gf = copy.deepcopy(gf._element)
+    for tc in fallback_gf.iter(f"{{{_A_NS}}}tc"):
+        tc.get_or_add_tcPr().append(etree.fromstring(
+            f'<a:blipFill xmlns:a="{_A_NS}" xmlns:r="{_R_NS}"><a:blip r:embed="{rid}"/>'
+            '<a:stretch><a:fillRect/></a:stretch></a:blipFill>'))
+
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "a14": _A14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="a14")
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    gf._element.addprevious(ac)
+    choice.append(gf._element)
+    fallback.append(fallback_gf)
+
+    path = out_dir / "table_math_fallback.pptx"
+    prs.save(str(path))
+    flat = [v for row in texts for v in row]
+    return CorpusDeck("table_math_fallback", str(path), expected_texts=flat,
+                      expected_types=["table_cell"] * 4,
+                      note="mc:AlternateContent table -> Choice cells parsed; fallback picture drawn once")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -836,6 +890,7 @@ _BUILDERS = [
     _build_arrow_shapes,
     _build_background_panel,
     _build_ink_annotation,
+    _build_table_math_fallback,
     _build_empty_slide,
 ]
 
