@@ -416,3 +416,42 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
 - **Positional ids make every parser change a deck-wide blast radius.** The id-shift audit covered only the shapes the
   TapHole fixes touch; the arrow-rule and pairing fixes also change AI_Handout (37 arrows, 12 title pairs). Before
   changing what the parser emits, scan every dev deck for every rule being changed, and plan the remap tool first.
+
+## 2026-10-20 — Parser coverage branch: what real decks taught the parser (feat/parser-coverage)
+
+- **python-pptx is not the slide.** `slide.shapes` silently skips `mc:AlternateContent` (every text box or table that
+  holds an equation; 47 boxes on a 14-slide lecture, two slides left with only a title), has no class for pen ink
+  (`p:contentPart` → the whole slide failed to parse), and `paragraph.runs` drops `a14:m` math and `a:fld`. Walk the
+  raw `spTree`, take the Choice, read `m:t` with NFKC (math italics → letters). Any "missing text" report on a deck now
+  starts with an XML scan, not with the model.
+- **soffice draws the Choice and blanks the math; PowerPoint's Fallback is a picture of the box.** Render a temp copy
+  with the Fallback pictures (what the audience must see) AND render the original once more for the text layer refine
+  needs. A table's Fallback is the same table with ONE whole-table picture in every math cell — substitute one `p:pic`,
+  not the frame, or you get a grid of miniatures.
+- **A guess that drifts linearly defeats any fixed radius.** Paragraph positions guessed from inherited (unknown) font
+  sizes were 2 in off by the 13th paragraph, and `align_words` used a 2-in gap as a gate. Page-unique text is located
+  by the stream; the radius only disambiguates. Then the review found the rescue could steal an identical word from
+  another element anywhere on the page — proximity first, uniqueness second, and never take words inside another
+  unplaced element's box. Two pinning tests.
+- **Positional ids turn every parser change into a deck-wide blast radius.** Adding, dropping or re-pairing one shape
+  shifts every later id on the slide, and the hand-made maps, talk scripts, expected steps and adjudications all hold
+  ids. `tools/remap_ids` (text match → same-type IoU → drop) rewrites them; its own review caught three defects before
+  first real use (edited text was dropped instead of matched; a drop could leave an empty expected step that silently
+  lowers recall; no run-once guard). Snapshot the artefacts before the first apply.
+- **Attribute per commit, from a clean worktree.** Rebuild → remap → rebuild map → replay for every parser commit, with
+  `src/` from a detached worktree of that commit (uncommitted edits by other agents never leak in) and `out/` symlinked
+  (recorded STT streams hold cwd-relative wav paths). Fourteen rows, each with one cause: every code commit was
+  score-neutral on AI_Handout and TapHole except the alt-text one, which cut TapHole's false time 47.7 → 44.2 s and
+  34.6 → 27.2 s; every lit change came from truth changes (new pointable elements, re-annotation).
+- **The occlusion rule follows the product's display, not PowerPoint's playback.** Our viewer shows the static soffice
+  render, so a cover hides what is under it whatever its animation; "animated covers don't occlude" was argued from
+  the wrong model and reverted. Guards that did survive review: rotated or non-rectangular occluders (AABB ≠ footprint),
+  RGBA / alphaModFix pictures, and ≤ 2-text panels larger than half the slide. Animation builds are a product gap.
+- **Pick the "obvious" rule by measuring the decks, not by reasoning.** "Exactly one text inside a label box" broke the
+  stat callout (number + caption = two texts); "arrows from connectors only" would have dropped AI_Handout's 37 thin
+  filled divider bars; a 0.05-in dot is decoration but the burr dots in a sketch were what one sentence pointed at.
+  Scan all dev decks for the shapes a rule touches before writing it, and re-annotate the sentences that lose ids.
+- **MIT on the honest ruler:** the pilot's 44/52 was ~44/77 once the sentences about dropped text were counted; after
+  the branch, 64/78 · 59/73 · 65/82 (82 / 81 / 79 %) with 173 of 223 elements on glyph-accurate boxes (was 96). More
+  pointable content means more wrong switches on the two reading-order talks (+13 / +14 false s); the meaning talk
+  improved on every column.
