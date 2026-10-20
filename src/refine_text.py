@@ -130,11 +130,12 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     page's word stream — independent of where the parser thinks the box is
     (overflowing text, boxes offset from the render, full-slide label boxes).
     A match must start and end on word boundaries. A text with no exact occurrence
-    is located by the free run that spells it with parts missing (the PDF leaves
-    equation-box math and symbol-font runs blank; see `_spelled_blocks`), the
-    survivors in order and covering at least MIN_COVER of the text. Placement
-    runs in two passes over the elements, longest text first so short ones can't
-    steal words:
+    is located among the free runs that spell it with parts missing (the PDF
+    leaves equation-box math and symbol-font runs blank; see `_gap_runs` and
+    `_spelled_blocks`): each run anchored on the text's longest surviving segment
+    — in-order survivors covering at least MIN_COVER of the text — is a candidate
+    like an exact occurrence, and proximity chooses. Placement runs in two passes
+    over the elements, longest text first so short ones can't steal words:
     1. proximity — among the free occurrences the one most inside the element's
        box wins; one wholly outside it must lie within ALIGN_MAX_GAP, and 1-3
        char texts must land inside their box;
@@ -163,10 +164,11 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
 
     def owned_elsewhere(eid: str, spelled: str, span: list[dict]) -> bool:
         """A word of `span` lies in the box of another unplaced element whose text
-        contains what the span spells."""
+        spells what the span spells (by the same gap-tolerant rule the span was
+        accepted with — containment would hand that element the words)."""
         return any(_contains(obox, *_center(w))
                    for oid, obox, otext in order
-                   if oid != eid and oid not in spans and spelled in _norm(otext)
+                   if oid != eid and oid not in spans and _spelled_blocks(spelled, _norm(otext))
                    for w in span)
 
     for rescue in (False, True):
@@ -188,16 +190,20 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
                 at = stream.find(target, at + 1)
             if not found and long and stream.find(target) == -1:
                 # no exact occurrence anywhere: the PDF may have left parts of the
-                # text blank (equation boxes, symbol fonts) — locate the free run
-                # that spells the rest of it in order
+                # text blank (equation boxes, symbol fonts) — the free runs that
+                # spell the rest of it in order are the candidates
                 masked = "".join("\0" * len(n) if taken[k] else n for k, n in enumerate(norms))
                 for s, e in _gap_runs(masked, target):
                     if s not in starts or e not in ends:
                         continue
                     a, b = owner[s], owner[e - 1]
-                    blocks = _spelled_blocks(stream[s:e], target)
+                    spelled = stream[s:e]
+                    blocks = _spelled_blocks(spelled, target)
                     if (blocks and sum(m.size for m in blocks) >= MIN_COVER * len(target)
-                            and not any(taken[a:b + 1])):
+                            and not any(taken[a:b + 1])
+                            # a run that IS another unplaced element's text is that element's
+                            and not any(spelled == _norm(otext) for oid, _, otext in order
+                                        if oid != eid and oid not in spans)):
                         span = words[a:b + 1]
                         inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
                         found.append((inside, _gap(bbox, span), a, b))
@@ -261,19 +267,45 @@ def _spelled_blocks(run: str, target: str) -> list:
     return blocks
 
 
+def _chain(run: str, text: str) -> int:
+    """How far from its start `run` is spelled by `text`'s in-order matching
+    blocks while they abut (a stray glyph may leave GAP_SLACK chars; blocks under
+    MIN_BLOCK don't count) — the glyphs continuing a run past its anchor."""
+    end = 0
+    for m in SequenceMatcher(None, run, text, autojunk=False).get_matching_blocks():
+        if m.size < MIN_BLOCK:
+            continue
+        if m.a - end > GAP_SLACK:
+            break
+        end = m.a + m.size
+    return end
+
+
 def _gap_runs(stream: str, target: str) -> list[tuple[int, int]]:
     """Stream spans (start, end) that may spell `target` with parts missing: a
     shape's glyphs are contiguous and blank math leaves none, so the surviving
-    segments abut in the stream (GAP_SLACK chars for a stray glyph between)."""
-    groups: list[list] = []
-    for b in SequenceMatcher(None, stream, target, autojunk=False).get_matching_blocks():
-        if b.size < MIN_BLOCK:
-            continue
-        if groups and b.a - (groups[-1][-1].a + groups[-1][-1].size) <= GAP_SLACK:
-            groups[-1].append(b)
-        else:
-            groups.append([b])
-    return [(g[0].a, g[-1].a + g[-1].size) for g in groups]
+    segments abut in the stream (GAP_SLACK chars for a stray glyph between).
+    The anchor is the longest block of `target` found in `stream`; EVERY
+    occurrence of it is a candidate (proximity chooses among them), grown on
+    each side by the segments that abut it, nearest first — so a copy of a short
+    segment elsewhere on the page cannot claim it (the left side is matched
+    reversed)."""
+    m = SequenceMatcher(None, stream, target, autojunk=False).find_longest_match(
+        0, len(stream), 0, len(target))
+    if m.size < ANCHOR:
+        return []
+    anchor, n = stream[m.a:m.a + m.size], len(target)
+    before, after = target[:m.b][::-1], target[m.b + m.size:]
+    out: list[tuple[int, int]] = []
+    p = stream.find(anchor)
+    while p != -1:
+        e = p + m.size
+        e += _chain(stream[e:e + n], after)
+        s = p - _chain(stream[max(0, p - n):p][::-1], before)
+        if (s, e) not in out:
+            out.append((s, e))
+        p = stream.find(anchor, p + 1)
+    return out
 
 
 def _runs(words: list[dict]) -> list[list[dict]]:
@@ -319,7 +351,7 @@ def select_text_words(text: str, words: list[dict]) -> tuple[list[dict], float]:
                 span = (pos, len(r))
                 break
             pos = target.find(r, pos + 1)
-        spans = [span] if span else []
+        spans = [span] if span is not None else []
         if not spans and len(r) >= ANCHOR:
             m = SequenceMatcher(None, r, target, autojunk=False).find_longest_match(
                 0, len(r), 0, len(target))

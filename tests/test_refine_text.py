@@ -296,19 +296,25 @@ def test_text_whose_math_is_blank_in_the_pdf_still_refines(monkeypatch):
     """Equation boxes: soffice draws the words but leaves the math blank — the
     glyph run reads "Let be languages" for "Let A, B be languages". Its in-order
     matching blocks (let + belanguages) cover every glyph, so the run is the
-    element's text with a gap, not a stray; an unrelated line in the same box
-    (another shape's overflow, its own stream run) is still dropped."""
+    element's text with a gap, not a stray."""
+    from src.refine_text import select_text_words
+
     els = [_el("eq", "Let A, B be languages", 1.0, 2.0, 8.0, 1.0)]
     words = [_pt_word("Let", 1.1, 2.1, 0.3), _pt_word("be", 2.0, 2.1, 0.2),
-             _pt_word("languages", 2.3, 2.1, 0.9),
-             _pt_word("Title", 4.0, 0.5),  # another shape, outside the box: splits the stream
-             _pt_word("Quarterly", 1.1, 2.6, 0.8), _pt_word("revenue", 2.0, 2.6, 0.6),
-             _pt_word("grew", 2.7, 2.6, 0.4)]
+             _pt_word("languages", 2.3, 2.1, 0.9)]
     e = _refine_one_slide(monkeypatch, els, words)["eq"]
     assert e["bbox_source"] == "pdf_text"
     assert len(e["line_bboxes"]) == 1, e["line_bboxes"]
     assert e["bbox"]["x"] == pytest.approx(1.1) and e["bbox"]["x"] + e["bbox"]["w"] == pytest.approx(3.2)
     assert e["bbox"]["y"] == pytest.approx(2.1)
+    # the blocks rule itself: the gap run is kept, an unrelated run (another
+    # shape's overflow into the box, its own stream run) is still a stray
+    w = lambda i, t: {"i": i, "text": t, "x0": i, "y0": 0, "x1": i + 0.5, "y1": 0.2}
+    kept, cover = select_text_words("Let A, B be languages",
+                                    [w(0, "Let"), w(1, "be"), w(2, "languages"),
+                                     w(4, "Quarterly"), w(5, "revenue"), w(6, "grew")])
+    assert [x["text"] for x in kept] == ["Let", "be", "languages"]
+    assert cover == pytest.approx(14 / 16)
 
 
 def test_text_with_blank_math_is_located_by_the_stream_when_its_box_drifted(monkeypatch):
@@ -330,6 +336,60 @@ def test_text_with_blank_math_is_located_by_the_stream_when_its_box_drifted(monk
     assert out["math"]["bbox"]["y"] == pytest.approx(3.94)
     assert out["math"]["bbox"]["x"] == pytest.approx(1.0) and out["math"]["bbox"]["w"] == pytest.approx(4.8)
     assert out["plain"]["bbox"]["y"] == pytest.approx(3.75)
+
+
+def test_gap_span_with_repeated_anchor_takes_the_occurrence_at_its_own_box(monkeypatch):
+    """'is regular' is drawn twice: in B's line above and in A's own line (A's
+    math blank: "Then  is regular"). Every occurrence of the anchor is a
+    candidate and proximity chooses, so A takes its own line and B keeps hers."""
+    els = [_el("b", "This is regular.", 1.0, 2.0, 5.0, 0.3),
+           _el("a", "Then L(A) ∪ L(B) is regular", 1.0, 2.5, 5.0, 0.3)]
+    words = [_pt_word("This", 1.0, 2.05, 0.4), _pt_word("is", 1.5, 2.05, 0.2),
+             _pt_word("regular.", 1.8, 2.05, 0.7),
+             _pt_word("Then", 1.0, 2.55, 0.4), _pt_word("is", 2.6, 2.55, 0.2),
+             _pt_word("regular", 2.9, 2.55, 0.7)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "pdf_text" and out["a"]["bbox"]["y"] == pytest.approx(2.55)
+    assert out["a"]["bbox"]["x"] == pytest.approx(1.0) and out["a"]["bbox"]["w"] == pytest.approx(2.6)
+    assert out["b"]["bbox_source"] == "pdf_text" and out["b"]["bbox"]["y"] == pytest.approx(2.05)
+
+
+def test_gap_span_keeps_its_first_word_despite_an_earlier_copy_of_it(monkeypatch):
+    """The title "Let's begin" above the equation line also starts with 'let'. A
+    run grows from its anchor by the segments that ABUT it, so the equation line
+    keeps its own 'Let' rather than losing it to the earlier copy."""
+    els = [_el("t", "Let's begin", 1.0, 0.5, 3.0, 0.4),
+           _el("eq", "Let A, B be languages", 1.0, 2.0, 8.0, 1.0)]
+    words = [_pt_word("Let's", 1.0, 0.55, 0.5), _pt_word("begin", 1.6, 0.55, 0.5),
+             _pt_word("Let", 1.1, 2.1, 0.3), _pt_word("be", 2.0, 2.1, 0.2),
+             _pt_word("languages", 2.3, 2.1, 0.9)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["eq"]["bbox_source"] == "pdf_text"
+    assert out["eq"]["bbox"]["x"] == pytest.approx(1.1) and out["eq"]["bbox"]["w"] == pytest.approx(2.1)
+    assert out["t"]["bbox_source"] == "pdf_text" and out["t"]["bbox"]["y"] == pytest.approx(0.55)
+
+
+def test_gap_span_that_is_another_elements_whole_text_is_left_to_it(monkeypatch):
+    """"Theorem 2.1" has no glyphs at all; the run "Theorem" 1 in below spells
+    most of it, but it IS the neighbour's text — hers, not a gap span."""
+    els = [_el("a", "Theorem 2.1", 1.0, 1.0, 1.5, 0.3), _el("b", "Theorem", 1.0, 2.0, 1.5, 0.3)]
+    out = _refine_one_slide(monkeypatch, els, [_pt_word("Theorem", 1.0, 2.05, 0.8)])
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+
+
+def test_rescue_leaves_a_gap_span_another_unplaced_element_spells(monkeypatch):
+    """Pass 2: A's math line is far from its box; the only run spelling it sits in
+    the box of B, a long paragraph whose text spells the run (its first line)
+    without containing it verbatim. The rescue judges ownership by the same
+    gap-tolerant rule, so A does not take B's line."""
+    els = [_el("a", "Then L(A) ∪ L(B) is regular", 1.0, 0.5, 5.0, 0.3),
+           _el("b", "Then L is regular and this remark about it runs on for a while",
+               1.0, 6.4, 5.0, 0.6)]
+    words = [_pt_word("Then", 1.0, 6.55, 0.4), _pt_word("is", 2.6, 6.55, 0.2),
+             _pt_word("regular", 2.9, 6.55, 0.7)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "shape"
 
 
 def test_page_unique_rescue_does_not_steal_an_equal_length_neighbours_glyphs(monkeypatch):
