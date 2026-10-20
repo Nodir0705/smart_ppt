@@ -362,8 +362,9 @@ _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
 def _picture_may_show_through(shape) -> bool:
-    """A faded picture (`a:alphaModFix` < 100 %) or a PNG with an alpha
-    channel (IHDR colour type 4 or 6) can reveal what lies under it."""
+    """A faded picture (`a:alphaModFix` < 100 %), a PNG with an alpha channel
+    (IHDR colour type 4 or 6) or a palette PNG (type 3) with a `tRNS` chunk
+    (transparent logos, GIF→PNG) can reveal what lies under it."""
     for fix in shape._element.iter(_A_NS + "alphaModFix"):
         if (fix.get("amt") or "").isdigit() and int(fix.get("amt")) < 100000:
             return True
@@ -371,7 +372,9 @@ def _picture_may_show_through(shape) -> bool:
         blob = (getattr(shape, "image", None) or shape.poster_frame).blob
     except Exception:
         return False  # linked picture: nothing to inspect, assume opaque
-    return blob[:8] == _PNG_SIG and len(blob) > 25 and blob[25] in (4, 6)
+    return blob[:8] == _PNG_SIG and len(blob) > 25 and (
+        blob[25] in (4, 6)
+        or blob[25] == 3 and b"tRNS" in blob[:blob.find(b"IDAT")])
 
 
 def _is_opaque(shape) -> bool:
@@ -476,20 +479,22 @@ _DEFAULT_LINE_SPACING = 1.2
 
 
 def _paragraph_metrics(shape) -> list[dict]:
-    """Per non-empty paragraph: text, line height (in), space-after (in).
+    """Per paragraph: text, line height (in), space-after (in). An empty
+    spacer paragraph is a row with text "" — it takes its line height on the
+    slide but becomes no element.
 
     Uses each paragraph's own font size when present; falls back to the
     first non-None run font size; finally to 16 pt. Line height = font * 1.2
     unless `line_spacing` overrides (float multiplier or absolute Length),
-    times the paragraph's line count (each soft line break `a:br` adds one).
+    times the paragraph's line count (each soft line break `a:br` adds one,
+    a trailing one included).
     """
     if not shape.has_text_frame:
         return []
     out: list[dict] = []
     for p in shape.text_frame.paragraphs:
-        text = _paragraph_text(p._p).strip()
-        if not text:
-            continue
+        raw = _paragraph_text(p._p)
+        text = raw.strip()
         size = p.font.size
         if size is None:
             for r in p.runs:
@@ -507,7 +512,7 @@ def _paragraph_metrics(shape) -> list[dict]:
                 line_h = ls.inches
             except AttributeError:
                 line_h = size_in * _DEFAULT_LINE_SPACING
-        line_h *= 1 + text.count("\n")  # a soft line break (a:br) adds a line
+        line_h *= 1 + raw.count("\n")  # every soft line break (a:br) adds a line
         sa = p.space_after
         sa_in = sa.inches if sa is not None else 0.0
         out.append({"text": text, "line_h": line_h, "space_after": sa_in})
@@ -547,7 +552,8 @@ def _bullet_bboxes(shape) -> list[tuple[str, BBox]]:
     out: list[tuple[str, BBox]] = []
     y = y0
     for m in metrics:
-        out.append((m["text"], BBox(x=frame.x, y=y, w=frame.w, h=m["line_h"])))
+        if m["text"]:  # a spacer paragraph only moves the cursor
+            out.append((m["text"], BBox(x=frame.x, y=y, w=frame.w, h=m["line_h"])))
         y += m["line_h"] + m["space_after"]
     return out
 

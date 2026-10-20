@@ -643,14 +643,15 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
     # an ellipse: the AABB's corner is unpainted
     corner("In an ellipse's corner", MSO_SHAPE.OVAL)
 
-    def picture_cover(text, color, *, fade=None, crop=None, tb=(1.0, 2.0, 4.0, 1.0)):
-        # a picture over the text box: RGBA (alpha channel) or faded
-        # (`a:alphaModFix`) may show what is under it; one cropped to a shape
-        # (Crop ▸ Crop to Shape = `p:pic/p:spPr/a:prstGeom`) paints less than
-        # its AABB; a plain RGB rectangle hides it
+    def picture_cover(text, color, *, fade=None, crop=None, palette=False,
+                      tb=(1.0, 2.0, 4.0, 1.0)):
+        # a picture over the text box: RGBA (alpha channel), palette + tRNS, or
+        # faded (`a:alphaModFix`) may show what is under it; one cropped to a
+        # shape (Crop ▸ Crop to Shape = `p:pic/p:spPr/a:prstGeom`) paints less
+        # than its AABB; a plain RGB rectangle hides it
         s = _blank_slide(prs)
         _textbox(s.shapes, text, x=tb[0], y=tb[1], w=tb[2], h=tb[3])
-        pic = s.shapes.add_picture(_png((60, 20), color), Inches(0.5), Inches(1.5),
+        pic = s.shapes.add_picture(_png((60, 20), color, palette), Inches(0.5), Inches(1.5),
                                    Inches(6), Inches(2))
         if fade is not None:
             pic._element.blipFill.blip.append(etree.fromstring(
@@ -663,6 +664,7 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
     picture_cover("Under an opaque picture", (0, 0, 0))
     picture_cover("In a cropped picture's corner", (0, 0, 0), crop="ellipse",
                   tb=(0.6, 1.6, 1.0, 0.3))
+    picture_cover("Under a palette picture", (0, 0, 0, 128), palette=True)
     path = out_dir / "occluded_text.pptx"
     prs.save(str(path))
     return CorpusDeck("occluded_text", str(path),
@@ -670,18 +672,24 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
                                       "Rect is underneath", "Only partly covered",
                                       "Beside a rotated bar", "In an ellipse's corner",
                                       "Under an RGBA picture", "Under a faded picture",
-                                      "In a cropped picture's corner"],
-                      note="text under a later opaque shape (animated or not) -> not indexed; 9 controls stay")
+                                      "In a cropped picture's corner", "Under a palette picture"],
+                      note="text under a later opaque shape (animated or not) -> not indexed; 10 controls stay")
 
 
-def _png(size=(320, 240), color=(90, 130, 180)):
-    """A solid PNG; a 4-tuple colour makes it RGBA (alpha channel)."""
+def _png(size=(320, 240), color=(90, 130, 180), palette=False):
+    """A solid PNG; a 4-tuple colour makes it RGBA (alpha channel), and
+    `palette` a palette PNG (colour type 3) whose transparency is a `tRNS`
+    chunk — how PIL (and GIF→PNG converters) write transparent logos."""
     import io
 
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGBA" if len(color) == 4 else "RGB", size, color).save(buf, "PNG")
+    img = Image.new("RGBA" if len(color) == 4 else "RGB", size, color)
+    if palette:
+        img.convert("P").save(buf, "PNG", transparency=0)
+    else:
+        img.save(buf, "PNG")
     buf.seek(0)
     return buf
 

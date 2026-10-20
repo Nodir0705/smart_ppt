@@ -91,6 +91,43 @@ def test_soft_line_break_paragraph_spans_two_lines():
     assert abs(b2.y - (b1.y + 2 * one_line)) < 1e-6, (b1, b2)
 
 
+def _box_with_paragraphs(*paras, size=20):
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(3))
+    tf = tb.text_frame
+    for i, lines in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        for j, line in enumerate(lines):
+            if j:
+                p.add_line_break()
+            if line:
+                p.add_run().text = line
+        p.font.size = Pt(size)
+    return tb
+
+
+def test_blank_paragraph_and_trailing_break_keep_their_line():
+    # An empty spacer paragraph is no element, but it still takes a line, so
+    # the bullet after it starts two line heights down — not one (it drifted
+    # upward onto the spacer). A TRAILING soft line break ("a" + br) is a
+    # second line of its paragraph as well.
+    from pptx.util import Pt
+    from src.parser import _bullet_bboxes
+    one_line = Pt(20).inches * 1.2
+
+    (ta, ba), (tb_, bb) = _bullet_bboxes(_box_with_paragraphs(["a"], [""], ["b"]))
+    assert (ta, tb_) == ("a", "b")
+    assert abs(bb.y - (ba.y + 2 * one_line)) < 1e-6, (ba, bb)
+
+    (ta, ba), (tb_, bb) = _bullet_bboxes(_box_with_paragraphs(["a", ""], ["b"]))
+    assert (ta, tb_) == ("a", "b")
+    assert abs(ba.h - 2 * one_line) < 1e-6, ba
+    assert abs(bb.y - (ba.y + 2 * one_line)) < 1e-6, (ba, bb)
+
+
 def _a_p(inner: str):
     from lxml import etree
     return etree.fromstring(
@@ -445,6 +482,7 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
         ["Under a faded picture", None],
         [None],
         ["In a cropped picture's corner", None],
+        ["Under a palette picture", None],
     ], per_slide
 
 
