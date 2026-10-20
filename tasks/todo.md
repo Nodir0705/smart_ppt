@@ -826,13 +826,82 @@ Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_
         kcl misses (map): the five section-divider slides (s6/s19/s24/s31/s33, title-only: 0/1 each in every talk = 15
         of 83 misses), multi-part figure units (s27 formula pieces, s18 six panels, s35 funder list, s5 timeline), the
         circuit's arrow pile on s8; false ids 1–4 per talk.
+      | fhwa (16 sl, truth 71/75/72) | no maps: 61/71·9·14.0·2.62, 60/75·12·22.6·2.82, 39/72·13·19.0·3.79 | maps: 56/71·0·0.0·2.76, 58/75·3·10.2·2.80, 36/72·0·0.0·3.56 (sw/step 1.03/1.11/0.64) |
+        fhwa misses (map): the meaning talk collapses (50 %) on list/table slides (s9/s10/s11/s13: "the second module",
+        "the third row" — position words against 12 near-identical module rows) and under-switches (0.64); picture-only
+        slides (s7 pathway chart, s12 budget table, s14 Gantt, s16 photo — all images with no text) miss in every talk;
+        SmartArt slides 2–3 have no elements at all (known parser gap).
+      kuleuven agents: text hidden under a drawing or a solid box is still indexed on s5/s21/s22 (occlusion kept it —
+      check whether the cover is an RGBA picture, a group, or a non-rect preset); an OCR'd release-notes screenshot carries
+      1.6 k chars of topic words that may out-compete the real units (OCR text on screenshots: cap or demote?).
+      cessda agents: chart_geom bar boxes sit ~half a slot right of the rendered bars on a clustered bar chart (s24) —
+      joins the zbw horizontal-bar transposition as the chart-geometry follow-up (map agent measured: stacked-bar segment
+      boxes are a whole 0.96-in category slot vs a 0.4-in drawn bar, offset right, vertical scale ~10 % compressed; line
+      chart W-boxes drift right onto the legend; column chart s26 accurate — so `chart_detect` only measures plain column
+      charts and the heuristic fallback is what mis-places stacked/clustered/line charts); text bboxes ~0.6 in above the glyphs
+      for logo-name labels on s1 (refine matched elsewhere?); a logo strip under another (RGBA) logo strip stays indexed.
+      nasa agents: (1) engineering diagrams are drawn from FILLED text-less shapes (laminate bars, zoom circles, hatched
+      plies, component blocks) — all skipped as decoration, so a presenter pointing at "the laminate" has only the label;
+      the decorative-skip rule (any empty non-line shape) is too broad for diagrams: candidate rule — keep an empty filled
+      rect-like/ellipse shape ≥ 0.3 in that sits inside a group with labelled siblings, as a text-less `shape` element;
+      (2) some group children land at GROUP-LOCAL coordinates (s22 HR/ER) — a group whose xfrm lacks chOff/chExt (or a
+      nested-group compose bug); (3) rotated-group children unrotated (s14) and FLIPPED groups unflipped (s24 flipV);
+      (4) absolute line spacing ×EMU (s20, above). `_compose` handles offset/scale only — group rot/flipH/flipV are one
+      general fix.
+      | kuleuven (23 sl, truth 97/103/107) | no maps: 76/97·12·29.3·2.92, 70/103·20·35.5·3.28, 75/107·15·31.3·3.20 | maps: 82/97·4·10.3·2.45, 79/103·1·3.4·3.70, 84/107·2·6.3·2.93 (sw/step 1.10/0.92/0.94) |
+        kuleuven misses (map): screenshot slides (s8 three paper screenshots, s12 release strip, s19 paper headers — images
+        with OCR noise or no text), the logo/acknowledgment slide s23, section slide s6, titles s1/s2.
+      | cessda (37 sl, truth 130/139/146) | no maps: 107/130·24·44.5·2.04, 106/139·41·67.4·3.60, 92/146·15·23.8·4.01 | maps: 112/130·4·29.8·2.40, 117/139·5·17.3·3.62, 94/146·3·8.3·3.11 (sw/step 1.14/1.03/0.85) |
+        cessda misses (map): the meaning talk (64 %) on table/column slides 15–19 (wave columns referred to by position)
+        and slides 1–3/37 (logo walls); titles (e0) on 4/8/30/34–36; original/jumpy at 86/84 %.
+      | nasa (29 sl, truth 126/126/126) | no maps: 107/126·12·27.5·2.47, 99/126·22·47.2·2.98, 88/126·23·53.4·3.11 | maps: 112/126·3·5.3·2.58, 114/126·5·23.5·2.95, 101/126·6·31.0·2.42 (sw/step 1.37/1.20/1.18) |
+        nasa's map replay first CRASHED: slide 1 is an image-only splash card with zero pointable units, and the clause
+        pointer handed the cross decider an empty batch (IndexError in the tokenizer) — the live app would crash on any
+        mapped slide with nothing pointable. Fixed f2f580d (`ClausePointer.update` returns noop when there are no units;
+        test first); other decks unaffected (they had no such slide, else they would have crashed too).
+      ALL SEVEN (2026-10-20/21, master 96ce5c5 + crash fix f2f580d; 21 talks, 2078 pointing steps):
+      | deck | maps lit % (orig/jumpy/meaning) | maps false ids | no-maps lit · false ids |
+      | cdc | 74/72/64 (158/226) | 0 | 170 · 8 |
+      | zbw | 82/80/68 (158/206) | 7 | 158 · 27 |
+      | kcl | 74/72/79 (246/328) | 8 | 199 · 67 |
+      | fhwa | 79/77/50 (150/218) | 3 | 160 · 34 |
+      | kuleuven | 85/77/79 (245/307) | 7 | 221 · 47 |
+      | cessda | 86/84/64 (323/415) | 12 | 305 · 80 |
+      | nasa | 89/90/80 (327/378) | 14 | 294 · 57 |
+      | TOTAL | 77.3 % (1607/2078); by style 82.1 / 79.8 / 70.4 % | 51 (2.4 per talk) | 72.5 % · 320 |
+      Maps: +100 lit and −84 % false ids. Miss classes (map variant, 471 misses): slide titles / section labels 141
+      (30 %; cdc 62 %, cessda 34 %, kcl 30 %), pictures with no usable text 73 (15 %; kuleuven 37 %, kcl 35 %), other 257
+      (55 %: position references into lists/tables — "the second row", "the third module" — and multi-element groups).
+      The meaning style is the weakest everywhere it has lists/tables (fhwa 50 %, cessda 64 %).
       SUBSET SUMMARY (maps; lit %): zbw 82/80/68, cdc 74/72/64, kcl 74/72/79 vs bench AI 96/97/97, TapHole 97/85/95, MIT
       82/81/79. Precision on the unseen decks is BETTER than on the bench decks (false ids ≤ 4 per talk vs 3–13) and the
       no-map runs show why maps matter (false ids 7–24 without them); recall is lower, and one cause dominates: slide
       titles and section-title slides (cdc 34 of 68 misses, kcl 15 of 83, zbw s1/s7). Coverage: 0 unclaimed words on
       cdc and kcl, zbw's 65 are the occluded quote carousel. Verdict: the parser generalizes (every agent's "missing"
       list is a picture-internal mark, a layout picture, a chart-geometry gap or a stacked-build quirk); the next lever
-      is the pointer's handling of titles, then tiny-label and multi-part figure units. Remaining 4 holdout decks unrun.
+      is the pointer's handling of titles, then tiny-label and multi-part figure units. Remaining 4 (fhwa_workforce 16 sl,
+      kuleuven_microscopy 23 sl + 3 videos, cessda_demography 37 sl, nasa_composites 29 sl) started 2026-10-20, same
+      protocol, master 96ce5c5.
+      fhwa build: 272 elements; coverage 75/1939 unclaimed in 32 lines, ALL on slides 2–3, which hold SmartArt
+      (`graphicFrame` with `graphicData uri=…/diagram`): SmartArt text lives in the diagram's drawing part
+      (`ppt/diagrams/drawing*.xml`, `dsp:sp` shapes with xfrm relative to the frame) and the parser never reads it —
+      a NEW general gap (the parser.py:92 comment covers SmartArt that was converted to groups, not live SmartArt).
+      Not fixed during the run; follow-up: read `dsp:drawing` shapes as elements at frame offset + xfrm.
+      kuleuven build: 283 elements, coverage 0/1392 unclaimed, 0 empty. nasa build: 541 elements, 2/1719 unclaimed, 6 empty.
+      cessda build: 668 elements, 0/2263 unclaimed, 30 empty text elements concentrated on build-up slides 15–19 (to be
+      explained by the agents — stacked duplicates or hidden text).
+      fhwa agents: a hand-drawn red loop (empty outline-only FREEFORM, an annotation mark) is dropped as decoration —
+      candidate: an empty custGeom with a line and no fill is an annotation, keep it; linked text frames (text flowing
+      across two boxes) keep a 6.5×6 in frame bbox where the glyphs sit elsewhere; master logo absent by design.
+      fhwa s8: merged table cells (`gridSpan` / `hMerge` / `vMerge`) come through as 1 text cell + N empty cells with
+      nominal row boxes — follow-up: a merged cell is one element spanning its merged box, merge-continuation cells are
+      not emitted (also explains the "empty text elements" counts on cdc/kcl/cessda tables).
+      nasa s20: four bullets with bboxes ~24 000–94 000 in tall. Cause (pre-existing, verified): `_paragraph_metrics`
+      tests `isinstance(ls, (int, float))` before the absolute branch, but python-pptx `Length` IS an int subclass, so an
+      absolute line spacing (`a:spcPts`) is multiplied as if it were a factor (font size × EMU count). The absolute branch
+      is dead code. Usually masked by refine; here the text is rotated axis labels refine cannot match. Fix: test
+      `isinstance(ls, Length)` first. Also nasa s14: children of a ROTATED group keep unrotated boxes (`_compose` ignores
+      group `rot`/`flipH`/`flipV`) — the epoxy-cross diagram comes out with duplicated bars and labels.
       Figure-internal marks inside pictures (diamonds, circles, highlight boxes)
       have no ids — pictures are atoms by design. BUT kcl s32's 5×5 dot grid is drawn as tiny empty ellipses (shapes, not
       a picture) and is now dropped entirely by the arrow rule (was: 25 `arrow` elements, pointable via maps) — the same

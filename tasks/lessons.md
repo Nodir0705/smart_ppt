@@ -475,3 +475,20 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
   weakest column everywhere except kcl.
 - **Agent-built truth is cheap enough to run per deck**: ~5 agents and ~25 min of compute per deck end to end, so the
   remaining four holdout decks are an afternoon, not a project. Keep one or two unopened for the next parser change.
+
+## 2026-10-21 — Holdout run complete: all 7 unseen decks (21 talks, 2078 pointing steps)
+
+- **Out of the box on 7 decks nobody tuned for: 77.3 % lit with maps, 2.4 wrong highlights per talk.** By deck 69–87 %
+  (nasa best, fhwa/cdc lowest); by style original 82 %, jumpy 80 %, meaning 70 %. The dev decks score 82–97 %, so the gap
+  between tuned and unseen decks is ~10–15 points — honest, not catastrophic.
+- **Maps are worth it on unseen decks:** +100 lit (72.5 → 77.3 %) and false ids 320 → 51. The agent-written maps are the
+  single biggest generalization lever measured so far.
+- **Where the rest goes, measured:** titles / section labels 30 % of misses, pictures without usable text 15 %, position
+  references into lists and tables ("the second row") most of the remaining 55 %. Each is a pointer/map lever, not a
+  parser one; the parser's remaining gaps (live SmartArt, merged cells, chart geometry for stacked/horizontal/line charts,
+  group rotation/flip, absolute line spacing, text-less diagram shapes) cost specific slides, not the averages.
+- **A usage limit killed 13 agents mid-run.** Writes are atomic per agent, so the inventory step (which maps/scripts exist
+  and validate) made the restart cheap: re-dispatch only what is missing, and give every agent its own scratchpad
+  subfolder (two agents had overwritten each other's builder scripts at the scratchpad top level).
+- **An unseen deck found a live-app crash:** an image-only splash slide with zero pointable units made the clause pointer
+  call the decider with an empty batch. Guard at the shared entry point (`ClausePointer.update`), test first.
