@@ -292,6 +292,30 @@ def test_text_rendered_below_its_parsed_box_is_found_by_stream_alignment(monkeyp
     assert out["b"]["bbox"]["y"] == pytest.approx(2.3)
 
 
+def test_page_unique_rescue_does_not_steal_an_equal_length_neighbours_glyphs(monkeypatch):
+    """A="Proof" whose glyphs are not in the PDF must not take B="Proof." (same
+    normalised length, so A sorts first) from 4.5 in away: B's proximity match
+    is placed first, then A has no free occurrence left and keeps its shape box."""
+    els = [_el("a", "Proof", 1.0, 0.5, 1.0, 0.3), _el("b", "Proof.", 2.5, 4.5, 1.0, 0.4)]
+    out = _refine_one_slide(monkeypatch, els, [_pt_word("Proof.", 2.8, 5.0)])
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+
+
+def test_page_unique_rescue_leaves_words_inside_an_unplaced_owners_box(monkeypatch):
+    """B's own stream match fails (its last word was never drawn) while the word
+    A spells sits inside B's box: the rescue must not take it from B, which then
+    claims its whole run by containment."""
+    els = [_el("a", "Proof", 1.0, 0.5, 1.0, 0.3),
+           _el("b", "Proof of revenue 2024 results", 1.0, 4.9, 3.0, 0.4)]
+    words = [_pt_word("Proof", 1.0, 5.0), _pt_word("of", 1.6, 5.0),
+             _pt_word("revenue", 2.2, 5.0), _pt_word("2024", 2.8, 5.0)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["a"]["bbox_source"] == "shape"
+    assert out["b"]["bbox_source"] == "pdf_text"
+    assert out["b"]["bbox"]["x"] == pytest.approx(1.0)
+
+
 @pytest.mark.skipif(SOFFICE_MISSING, reason="soffice not installed")
 def test_paragraphs_drifted_far_below_parsed_boxes_still_align(tmp_path):
     """Body-placeholder paragraphs inherit their font size from the master

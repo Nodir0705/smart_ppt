@@ -107,11 +107,11 @@ def _gap(b: dict, words: list[dict]) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
-# inches: among SEVERAL free occurrences of a text, one wholly outside the parser's
-# box still competes within this radius (render line spacing drifts ~1.4 in from
-# the parser's estimate down a long code listing). Not a proximity requirement: a
-# text that occurs once on the page is taken wherever it is (see align_words), and
-# 1-3 char texts ("2", "F4") must land inside their box.
+# inches: a free occurrence wholly outside the parser's box still competes within
+# this radius (render line spacing drifts ~1.4 in from the parser's estimate down a
+# long code listing); 1-3 char texts ("2", "F4") must land inside their box. Not a
+# hard limit: a text left unplaced with exactly one FREE occurrence on the page is
+# rescued wherever it is (see align_words).
 ALIGN_MAX_GAP = 2.0
 BESIDE_GAP = 0.5  # inches: bullet indent / punctuation spacing on one line
 
@@ -129,15 +129,19 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     so an element's glyphs are found by locating its (normalised) text in the
     page's word stream — independent of where the parser thinks the box is
     (overflowing text, boxes offset from the render, full-slide label boxes).
-    A match must start and end on word boundaries. A text that occurs once on the
-    page is taken wherever the stream puts it: the parser's box is a guess that
-    drifts without bound down a long placeholder (font sizes inherited from the
-    master, autofit shrink) — TapHole slide 8 lost its last three paragraphs at
-    2.1-2.7 in. Among several occurrences the one most inside the element's box
-    wins, and one wholly outside it must lie within ALIGN_MAX_GAP; 1-3 char texts
-    must land inside their box. Longer texts claim first so short ones can't
-    steal their words. Elements whose text isn't found (autonumbering, glyph
-    drift) are left to geometric `assign_words`.
+    A match must start and end on word boundaries. Placement runs in two passes
+    over the elements, longest text first so short ones can't steal words:
+    1. proximity — among the free occurrences the one most inside the element's
+       box wins; one wholly outside it must lie within ALIGN_MAX_GAP, and 1-3
+       char texts must land inside their box;
+    2. page-unique rescue — a long (>= 4 char) text still unplaced with exactly
+       one FREE occurrence is taken wherever the stream puts it (the parser's
+       box is a guess that drifts without bound down a long placeholder:
+       inherited font sizes, autofit shrink), unless a word of it sits inside
+       the box of another unplaced element whose text contains it — that
+       element claims it by containment.
+    Elements whose text isn't found (autonumbering, glyph drift) are left to
+    geometric `assign_words`.
     """
     norms = [_norm(w["text"]) for w in words]
     stream = "".join(norms)
@@ -151,28 +155,46 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
             owner += [k] * len(n)
     taken = [False] * len(words)
     spans: dict[str, list] = {}
-    for eid, bbox, text in sorted(elements, key=lambda e: -len(_norm(e[2]))):
-        target = _norm(text)
-        found = []  # free word-aligned occurrences: (inside fraction, gap, a, b)
-        at = stream.find(target) if target else -1
-        while at != -1:
-            end = at + len(target)
-            if at in starts and end in ends:
-                a, b = owner[at], owner[end - 1]
-                if not any(taken[a:b + 1]):
-                    span = words[a:b + 1]
-                    inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
-                    found.append((inside, _gap(bbox, span), a, b))
-            at = stream.find(target, at + 1)
-        if len(target) >= 4 and len(found) == 1:
-            near = found  # unique on the page: the stream alone locates it
-        else:
-            near = [f for f in found
-                    if f[0] > 0 or (len(target) >= 4 and f[1] <= ALIGN_MAX_GAP)]
-        if near:
-            _, _, a, b = min(near, key=lambda f: (-f[0], f[1]))
-            taken[a:b + 1] = [True] * (b + 1 - a)
-            spans[eid] = [a, b, text]
+    order = sorted(elements, key=lambda e: -len(_norm(e[2])))
+
+    def owned_elsewhere(eid: str, target: str, span: list[dict]) -> bool:
+        """A word of `span` lies in the box of another unplaced element spelling `target`."""
+        return any(_contains(obox, *_center(w))
+                   for oid, obox, otext in order
+                   if oid != eid and oid not in spans and target in _norm(otext)
+                   for w in span)
+
+    for rescue in (False, True):
+        for eid, bbox, text in order:
+            if eid in spans:
+                continue
+            target = _norm(text)
+            long = len(target) >= 4
+            found = []  # FREE word-aligned occurrences: (inside fraction, gap, a, b)
+            at = stream.find(target) if target else -1
+            while at != -1:
+                end = at + len(target)
+                if at in starts and end in ends:
+                    a, b = owner[at], owner[end - 1]
+                    if not any(taken[a:b + 1]):
+                        span = words[a:b + 1]
+                        inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
+                        found.append((inside, _gap(bbox, span), a, b))
+                at = stream.find(target, at + 1)
+            if rescue:
+                # exactly one FREE occurrence on the page: the stream alone locates
+                # it — unless another unplaced element's box holds a word of it
+                near = []
+                if long and len(found) == 1:
+                    _, _, a, b = found[0]
+                    if not owned_elsewhere(eid, target, words[a:b + 1]):
+                        near = found
+            else:
+                near = [f for f in found if f[0] > 0 or (long and f[1] <= ALIGN_MAX_GAP)]
+            if near:
+                _, _, a, b = min(near, key=lambda f: (-f[0], f[1]))
+                taken[a:b + 1] = [True] * (b + 1 - a)
+                spans[eid] = [a, b, text]
     # Grow spans over punctuation-only words beside them on the same line:
     # trailing ones only if the text has those chars ("!", ";"), so the next
     # shape keeps its bullet; then leading ones (bullets, "<").
