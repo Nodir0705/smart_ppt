@@ -242,10 +242,13 @@ def _shape_text(shape) -> str:
 
 _IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
 _GENERIC_NAME_RE = re.compile(r"^(picture|image|graphic|object|content placeholder)\s*\d*$", re.I)
-# PowerPoint tags every description it generates itself with this sentence.
+# PowerPoint tags every description it generates itself with a marker sentence:
+# "AI-generated content may be incorrect" (2023+), "Description automatically
+# generated" / "Description generated with (very) high confidence" (2018–2023).
 # ponytail: English UI only; a localised PowerPoint writes the marker in its
 # own language — add those strings here when a deck shows one.
-_AUTO_ALT_MARKER_RE = re.compile(r"ai-generated content may be incorrect", re.I)
+_AUTO_ALT_MARKER_RE = re.compile(
+    r"ai-generated content may be incorrect|description (automatically )?generated", re.I)
 
 
 def _clean_alt_text(raw: str) -> str:

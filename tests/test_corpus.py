@@ -29,10 +29,14 @@ from tools.make_corpus import build_corpus
     ("image", ""),
     ("  ", ""),
     # PowerPoint's auto-generated description: a generic caption whose words
-    # the slide never contains, always tagged with the marker sentence
+    # the slide never contains, always tagged with a marker sentence — the
+    # 2023+ one, or the 2018–2023 (PowerPoint 2019 / M365) ones
     ("A close-up of a graph\n\nAI-generated content may be incorrect.", ""),
     ("A diagram of a machine\n\nai-generated content may be incorrect", ""),
     ("AI-Generated Content May Be Incorrect.", ""),
+    ("A screenshot of text\n\nDescription automatically generated", ""),
+    ("A picture containing table\n\nDescription generated with very high confidence", ""),
+    ("Diagram of the AI pipeline", "Diagram of the AI pipeline"),  # merely mentions AI: kept
 ])
 def test_clean_alt_text_rejects_junk(raw, expected):
     assert _clean_alt_text(raw) == expected
