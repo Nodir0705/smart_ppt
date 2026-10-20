@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field, asdict
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
+from pptx.oxml.shapes.groupshape import CT_GroupShape
 
 _log = logging.getLogger(__name__)
 
@@ -109,10 +111,33 @@ def _compose(parent, group_shape):
     return (g_x - choff[0] * sx, g_y - choff[1] * sy, sx, sy)
 
 
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+
+
+def _shape_elms(sp_tree):
+    """Shape elements of a `p:spTree`/`p:grpSp` in document (= z-) order.
+
+    python-pptx's own walk skips `mc:AlternateContent`, which PowerPoint wraps
+    around every text box holding an equation (Choice = the live box, Fallback =
+    a picture of it), so those boxes vanished whole. Resolve each to the shapes
+    of its first alternative that holds any — the Choices first, then Fallback.
+    """
+    for elm in sp_tree.iterchildren():
+        if elm.tag in CT_GroupShape._shape_tags:
+            yield elm
+        elif elm.tag == _MC_NS + "AlternateContent":
+            for alt in elm.iterchildren():
+                inner = [c for c in alt.iterchildren() if c.tag in CT_GroupShape._shape_tags]
+                if inner:
+                    yield from inner
+                    break
+
+
 def _iter_flat(shapes, transform=_IDENTITY):
     """Yield (leaf_shape, transform) for every shape, recursing into groups so
     nested shapes surface with a transform that maps them to slide coordinates."""
-    for shape in shapes:
+    for elm in _shape_elms(shapes._spTree):
+        shape = shapes._shape_factory(elm)
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             yield from _iter_flat(shape.shapes, _compose(transform, shape))
         else:
@@ -144,10 +169,40 @@ def _transformed_bbox(shape, transform) -> BBox:
     return _rotated_aabb(x, y, w, h, rot)
 
 
+# ---------- paragraph text ----------
+#
+# PowerPoint stores an equation as <a14:m><m:oMath>…<m:t>𝐿</m:t>…</m:oMath></a14:m>
+# between a paragraph's ordinary runs. python-pptx's `paragraph.text` skips it
+# ("Let  be languages") and `paragraph.runs` also skips <a:br/>, gluing a soft
+# line break's two lines ("TAs:Fadi"). One reader over the raw `a:p` children,
+# in document order, so every text consumer agrees.
+
+_A14_M = "{http://schemas.microsoft.com/office/drawing/2010/main}m"
+_M_T = "{http://schemas.openxmlformats.org/officeDocument/2006/math}t"
+_BR_RE = re.compile(r"\s*\x0b\s*")  # a soft line break (+ spacing around it)
+
+
+def _paragraph_text(p) -> str:
+    """Text of an `a:p` element: `a:r`/`a:fld` verbatim, each `a:br` as exactly
+    one space (whatever spacing the author left around it), and `a14:m` math as
+    its `m:t` texts NFKC-normalised — math-italic letters (𝐿, U+1D43F…) to plain
+    ones, U+00A0 to a space — so it is speakable."""
+    parts: list[str] = []
+    for child in p:
+        if child.tag in (_A_NS + "r", _A_NS + "fld"):
+            parts.append(child.findtext(_A_NS + "t") or "")
+        elif child.tag == _A_NS + "br":
+            parts.append("\x0b")
+        elif child.tag == _A14_M:
+            parts.append(unicodedata.normalize(
+                "NFKC", "".join(t.text or "" for t in child.iter(_M_T))))
+    return _BR_RE.sub(" ", "".join(parts))
+
+
 def _shape_text(shape) -> str:
     if not shape.has_text_frame:
         return ""
-    return (shape.text_frame.text or "").strip()
+    return "\n".join(_paragraph_text(p._p) for p in shape.text_frame.paragraphs).strip()
 
 
 _IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
@@ -251,7 +306,7 @@ def _paragraphs(shape) -> list[str]:
         return []
     paras: list[str] = []
     for p in shape.text_frame.paragraphs:
-        txt = "".join(run.text for run in p.runs).strip()
+        txt = _paragraph_text(p._p).strip()
         if txt:
             paras.append(txt)
     return paras
@@ -273,7 +328,7 @@ def _paragraph_metrics(shape) -> list[dict]:
         return []
     out: list[dict] = []
     for p in shape.text_frame.paragraphs:
-        text = "".join(r.text for r in p.runs).strip()
+        text = _paragraph_text(p._p).strip()
         if not text:
             continue
         size = p.font.size

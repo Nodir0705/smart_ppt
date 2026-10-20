@@ -447,6 +447,77 @@ def _build_image_no_text(out_dir: Path) -> CorpusDeck:
                       note="shapes, no text -> OCR must NOT hallucinate a pointable")
 
 
+_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_A14_NS = "http://schemas.microsoft.com/office/drawing/2010/main"
+_M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _build_math_textbox(out_dir: Path) -> CorpusDeck:
+    """A text box holding an equation, saved the way PowerPoint saves it: wrapped
+    in `mc:AlternateContent` whose Choice is the live box (the math in `a14:m`
+    between ordinary runs) and whose Fallback is a picture of the whole box.
+    python-pptx iterates neither branch, so the parser must resolve the Choice
+    itself and read the math runs ("Let A, B be languages", math italics
+    normalised). Plus an ordinary box with a soft line break (`a:br`), which
+    must read as a space, not glue "TAs:" to "Fadi". Hand-built with lxml —
+    python-pptx cannot author any of it."""
+    import copy
+    import io
+
+    from lxml import etree
+    from PIL import Image
+    from pptx.oxml.ns import qn
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Regular languages", y=0.3, w=8.0, h=0.8)
+
+    # Choice: "Let " + <a14:m>𝐴,␣𝐵</a14:m> + " be languages" (␣ = U+00A0)
+    choice_sp = s.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(1))
+    p = choice_sp.text_frame.paragraphs[0]
+    p.add_run().text = "Let "
+    p.add_run().text = " be languages"
+    p.runs[0]._r.addnext(etree.fromstring(
+        f'<a14:m xmlns:a14="{_A14_NS}"><m:oMath xmlns:m="{_M_NS}">'
+        '<m:r><m:t>\U0001D434</m:t></m:r><m:r><m:t>, </m:t></m:r>'
+        '<m:r><m:t>\U0001D435</m:t></m:r></m:oMath></a14:m>'))
+
+    # Fallback: the same box filled with a picture (what PowerPoint drew). The
+    # image part + relationship come from a throwaway python-pptx picture.
+    buf = io.BytesIO()
+    Image.new("RGB", (160, 20), (20, 40, 120)).save(buf, "PNG")
+    buf.seek(0)
+    pic = s.shapes.add_picture(buf, Inches(1), Inches(2), Inches(8), Inches(1))
+    fallback_sp = copy.deepcopy(choice_sp._element)
+    fallback_sp.remove(fallback_sp.txBody)
+    fallback_sp.spPr.replace(fallback_sp.spPr.find(qn("a:noFill")), etree.fromstring(
+        f'<a:blipFill xmlns:a="{_A_NS}" xmlns:r="{_R_NS}">'
+        f'<a:blip r:embed="{pic._element.blip_rId}"/><a:stretch><a:fillRect/></a:stretch>'
+        '</a:blipFill>'))
+    pic._element.getparent().remove(pic._element)
+
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "a14": _A14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="a14")
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    choice_sp._element.addprevious(ac)
+    choice.append(choice_sp._element)
+    fallback.append(fallback_sp)
+
+    tb = s.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1))
+    p = tb.text_frame.paragraphs[0]
+    p.add_run().text = "TAs:"
+    p.add_line_break()
+    p.add_run().text = "Fadi"
+
+    path = out_dir / "math_textbox.pptx"
+    prs.save(str(path))
+    return CorpusDeck("math_textbox", str(path),
+                      expected_texts=["Regular languages", "Let A, B be languages", "TAs: Fadi"],
+                      note="mc:AlternateContent equation box -> Choice text incl. math; a:br -> space")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -478,6 +549,7 @@ _BUILDERS = [
     _build_unicode_text,
     _build_image_baked_text,
     _build_image_no_text,
+    _build_math_textbox,
     _build_empty_slide,
 ]
 

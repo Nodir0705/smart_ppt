@@ -33,6 +33,53 @@ def test_clean_alt_text_rejects_junk(raw, expected):
     assert _clean_alt_text(raw) == expected
 
 
+def _two_paragraph_box():
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1))
+    tf = tb.text_frame
+    tf.text = "Instructor:  Mike Sipser"
+    tf.add_paragraph().text = "Second paragraph"
+    return tb
+
+
+def test_plain_paragraph_text_unchanged():
+    # Characterisation: ordinary runs stay verbatim (internal double space
+    # included) and paragraphs join with "\n" — pinned so the math/br-aware
+    # paragraph reader cannot drift for the shapes that have neither.
+    from src.parser import _paragraph_metrics, _paragraphs, _shape_text
+    tb = _two_paragraph_box()
+    assert _shape_text(tb) == "Instructor:  Mike Sipser\nSecond paragraph"
+    assert _paragraphs(tb) == ["Instructor:  Mike Sipser", "Second paragraph"]
+    assert [m["text"] for m in _paragraph_metrics(tb)] == _paragraphs(tb)
+
+
+def _a_p(inner: str):
+    from lxml import etree
+    return etree.fromstring(
+        '<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        ' xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"'
+        f' xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">{inner}</a:p>')
+
+
+def test_paragraph_text_reads_math_runs_and_line_breaks():
+    # Equation runs sit in <a14:m> between ordinary runs (python-pptx skips them);
+    # their math-italic letters normalise to plain ones and U+00A0 to a space.
+    # A soft line break (<a:br/>) reads as a space.
+    from src.parser import _paragraph_text
+    math = ("<a14:m><m:oMath><m:r><m:t>\U0001D434</m:t></m:r><m:r><m:t>, </m:t></m:r>"
+            "<m:r><m:t>\U0001D435</m:t></m:r></m:oMath></a14:m>")
+    p = _a_p(f"<a:r><a:t>Let </a:t></a:r>{math}<a:r><a:t> be languages</a:t></a:r>")
+    assert _paragraph_text(p) == "Let A, B be languages"
+    p = _a_p("<a:r><a:t>TAs:</a:t></a:r><a:br/><a:r><a:t>Fadi</a:t></a:r>")
+    assert _paragraph_text(p) == "TAs: Fadi"
+    # exactly one space, whatever spacing the author left around the break
+    p = _a_p("<a:r><a:t>Examples: </a:t></a:r><a:br/><a:br/><a:r><a:t> program</a:t></a:r>")
+    assert _paragraph_text(p) == "Examples: program"
+
+
 def _element_texts(index: dict) -> list[str]:
     return [
         (e.get("text") or "").strip()
