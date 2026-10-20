@@ -129,8 +129,12 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     so an element's glyphs are found by locating its (normalised) text in the
     page's word stream — independent of where the parser thinks the box is
     (overflowing text, boxes offset from the render, full-slide label boxes).
-    A match must start and end on word boundaries. Placement runs in two passes
-    over the elements, longest text first so short ones can't steal words:
+    A match must start and end on word boundaries. A text with no exact occurrence
+    is located by the free run that spells it with parts missing (the PDF leaves
+    equation-box math and symbol-font runs blank; see `_spelled_blocks`), the
+    survivors in order and covering at least MIN_COVER of the text. Placement
+    runs in two passes over the elements, longest text first so short ones can't
+    steal words:
     1. proximity — among the free occurrences the one most inside the element's
        box wins; one wholly outside it must lie within ALIGN_MAX_GAP, and 1-3
        char texts must land inside their box;
@@ -157,11 +161,12 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
     spans: dict[str, list] = {}
     order = sorted(elements, key=lambda e: -len(_norm(e[2])))
 
-    def owned_elsewhere(eid: str, target: str, span: list[dict]) -> bool:
-        """A word of `span` lies in the box of another unplaced element spelling `target`."""
+    def owned_elsewhere(eid: str, spelled: str, span: list[dict]) -> bool:
+        """A word of `span` lies in the box of another unplaced element whose text
+        contains what the span spells."""
         return any(_contains(obox, *_center(w))
                    for oid, obox, otext in order
-                   if oid != eid and oid not in spans and target in _norm(otext)
+                   if oid != eid and oid not in spans and spelled in _norm(otext)
                    for w in span)
 
     for rescue in (False, True):
@@ -181,13 +186,28 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
                         inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
                         found.append((inside, _gap(bbox, span), a, b))
                 at = stream.find(target, at + 1)
+            if not found and long and stream.find(target) == -1:
+                # no exact occurrence anywhere: the PDF may have left parts of the
+                # text blank (equation boxes, symbol fonts) — locate the free run
+                # that spells the rest of it in order
+                masked = "".join("\0" * len(n) if taken[k] else n for k, n in enumerate(norms))
+                for s, e in _gap_runs(masked, target):
+                    if s not in starts or e not in ends:
+                        continue
+                    a, b = owner[s], owner[e - 1]
+                    blocks = _spelled_blocks(stream[s:e], target)
+                    if (blocks and sum(m.size for m in blocks) >= MIN_COVER * len(target)
+                            and not any(taken[a:b + 1])):
+                        span = words[a:b + 1]
+                        inside = sum(_contains(bbox, *_center(w)) for w in span) / len(span)
+                        found.append((inside, _gap(bbox, span), a, b))
             if rescue:
                 # exactly one FREE occurrence on the page: the stream alone locates
                 # it — unless another unplaced element's box holds a word of it
                 near = []
                 if long and len(found) == 1:
                     _, _, a, b = found[0]
-                    if not owned_elsewhere(eid, target, words[a:b + 1]):
+                    if not owned_elsewhere(eid, "".join(norms[a:b + 1]), words[a:b + 1]):
                         near = found
             else:
                 near = [f for f in found if f[0] > 0 or (long and f[1] <= ALIGN_MAX_GAP)]
@@ -219,6 +239,41 @@ def align_words(elements: list[tuple[str, dict, str]], words: list[dict]) -> dic
 # overflow, a lone full stop) and the shape box is the honest answer.
 MIN_COVER = 0.5
 MIN_LINE_H = 0.03  # inches (~2 pt): no real text line is shorter
+# A glyph run is the element's when it spells at least this fraction of itself
+# from the element's text, in order (the rest: autonumber/ligature drift).
+MATCH_FRAC = 0.8
+MIN_BLOCK = 2   # matching blocks shorter than this are coincidence
+ANCHOR = 4      # and one block must be at least this long
+GAP_SLACK = 2   # stream chars a stray glyph may leave between a run's surviving segments
+
+
+def _spelled_blocks(run: str, target: str) -> list:
+    """In-order matching blocks (run offset, target offset, size) by which `run`
+    spells `target`: one block, or several when the PDF left parts of the text
+    blank (equation boxes — soffice draws the words, not the math; symbol fonts;
+    fields). Blocks under MIN_BLOCK chars are noise, one must reach ANCHOR, and
+    together they must cover MATCH_FRAC of the run; otherwise [] — a stray."""
+    blocks = [b for b in SequenceMatcher(None, run, target, autojunk=False).get_matching_blocks()
+              if b.size >= MIN_BLOCK]
+    if (not blocks or max(b.size for b in blocks) < ANCHOR
+            or sum(b.size for b in blocks) < MATCH_FRAC * len(run)):
+        return []
+    return blocks
+
+
+def _gap_runs(stream: str, target: str) -> list[tuple[int, int]]:
+    """Stream spans (start, end) that may spell `target` with parts missing: a
+    shape's glyphs are contiguous and blank math leaves none, so the surviving
+    segments abut in the stream (GAP_SLACK chars for a stray glyph between)."""
+    groups: list[list] = []
+    for b in SequenceMatcher(None, stream, target, autojunk=False).get_matching_blocks():
+        if b.size < MIN_BLOCK:
+            continue
+        if groups and b.a - (groups[-1][-1].a + groups[-1][-1].size) <= GAP_SLACK:
+            groups[-1].append(b)
+        else:
+            groups.append([b])
+    return [(g[0].a, g[-1].a + g[-1].size) for g in groups]
 
 
 def _runs(words: list[dict]) -> list[list[dict]]:
@@ -241,10 +296,12 @@ def select_text_words(text: str, words: list[dict]) -> tuple[list[dict], float]:
     Containment alone lets an element absorb any glyph inside its box — a
     full-slide label swallows every other shape's overflow. A shape's glyphs are a
     contiguous run of the PDF content stream, so each run of assigned words must
-    match a not-yet-covered span of the element's text (exactly, or >=80% via the
-    longest common block for autonumber/ligature drift); runs that don't — or that
-    only repeat text already covered — are strays. `coverage` is the fraction of
-    the text's alphanumerics matched. Text with no alphanumerics keeps everything.
+    match a not-yet-covered span of the element's text (exactly; or >= MATCH_FRAC
+    of the run via the longest common block for autonumber/ligature drift; or via
+    its in-order matching blocks when the PDF left parts of the text blank — see
+    `_spelled_blocks`); runs that don't — or that only repeat text already
+    covered — are strays. `coverage` is the fraction of the text's alphanumerics
+    matched. Text with no alphanumerics keeps everything.
     """
     target = _norm(text)
     if not target:
@@ -262,14 +319,20 @@ def select_text_words(text: str, words: list[dict]) -> tuple[list[dict], float]:
                 span = (pos, len(r))
                 break
             pos = target.find(r, pos + 1)
-        if span is None and len(r) >= 4:
+        spans = [span] if span else []
+        if not spans and len(r) >= ANCHOR:
             m = SequenceMatcher(None, r, target, autojunk=False).find_longest_match(
                 0, len(r), 0, len(target))
-            if m.size >= 0.8 * len(r) and not any(covered[m.b:m.b + m.size]):
-                span = (m.b, m.size)
-        if span is None:
+            if m.size >= MATCH_FRAC * len(r) and not any(covered[m.b:m.b + m.size]):
+                spans = [(m.b, m.size)]
+            else:  # the run may be the text with parts the PDF left blank
+                blocks = _spelled_blocks(r, target)
+                if blocks and not any(any(covered[b.b:b.b + b.size]) for b in blocks):
+                    spans = [(b.b, b.size) for b in blocks]
+        if not spans:
             continue
-        covered[span[0]:span[0] + span[1]] = [True] * span[1]
+        for pos, n in spans:
+            covered[pos:pos + n] = [True] * n
         kept.extend(run)
     order = {id(w): n for n, w in enumerate(words)}
     kept.sort(key=lambda w: order[id(w)])

@@ -96,10 +96,6 @@ def test_build_index_refines_from_the_text_layer_pdf(tmp_path, monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.skipif(shutil.which("soffice") is None, reason="soffice required")
-@pytest.mark.xfail(strict=True, reason=(
-    "refine_text.select_text_words: the glyph run 'Let be languages' (equation blank) "
-    "shares only 11/14 alphanumerics with 'Let A, B be languages' as ONE block, under "
-    "its 80% rule, so the box stays bbox_source='shape'; needs a gap-tolerant match"))
 def test_build_index_gives_equation_box_glyph_lines(tmp_path):
     # End to end: with the text-layer PDF an equation box should get glyph-
     # derived line boxes instead of the parser's guessed lines.

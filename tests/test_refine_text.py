@@ -292,6 +292,46 @@ def test_text_rendered_below_its_parsed_box_is_found_by_stream_alignment(monkeyp
     assert out["b"]["bbox"]["y"] == pytest.approx(2.3)
 
 
+def test_text_whose_math_is_blank_in_the_pdf_still_refines(monkeypatch):
+    """Equation boxes: soffice draws the words but leaves the math blank — the
+    glyph run reads "Let be languages" for "Let A, B be languages". Its in-order
+    matching blocks (let + belanguages) cover every glyph, so the run is the
+    element's text with a gap, not a stray; an unrelated line in the same box
+    (another shape's overflow, its own stream run) is still dropped."""
+    els = [_el("eq", "Let A, B be languages", 1.0, 2.0, 8.0, 1.0)]
+    words = [_pt_word("Let", 1.1, 2.1, 0.3), _pt_word("be", 2.0, 2.1, 0.2),
+             _pt_word("languages", 2.3, 2.1, 0.9),
+             _pt_word("Title", 4.0, 0.5),  # another shape, outside the box: splits the stream
+             _pt_word("Quarterly", 1.1, 2.6, 0.8), _pt_word("revenue", 2.0, 2.6, 0.6),
+             _pt_word("grew", 2.7, 2.6, 0.4)]
+    e = _refine_one_slide(monkeypatch, els, words)["eq"]
+    assert e["bbox_source"] == "pdf_text"
+    assert len(e["line_bboxes"]) == 1, e["line_bboxes"]
+    assert e["bbox"]["x"] == pytest.approx(1.1) and e["bbox"]["x"] + e["bbox"]["w"] == pytest.approx(3.2)
+    assert e["bbox"]["y"] == pytest.approx(2.1)
+
+
+def test_text_with_blank_math_is_located_by_the_stream_when_its_box_drifted(monkeypatch):
+    """MIT slide 8: the parser's guessed line sits 0.5 in above the glyphs AND the
+    math is blank in the PDF, so neither the exact stream search nor containment
+    finds the line. The surviving segments abut in the stream (blank math leaves
+    no glyphs), so the run is located by its in-order matching blocks; the
+    neighbouring plain line, found exactly, is untouched."""
+    els = [_el("math", "The empty language ø is the set with no strings", 0.5, 3.135, 9.0, 0.333),
+           _el("plain", "Recognizing languages", 0.5, 3.636, 9.0, 0.4)]
+    words = [_pt_word("The", 1.0, 3.94, 0.3), _pt_word("empty", 1.4, 3.94, 0.5),
+             _pt_word("language", 2.0, 3.94, 0.8), _pt_word("is", 3.3, 3.94, 0.2),
+             _pt_word("the", 3.6, 3.94, 0.3), _pt_word("set", 4.0, 3.94, 0.3),
+             _pt_word("with", 4.4, 3.94, 0.4), _pt_word("no", 4.9, 3.94, 0.2),
+             _pt_word("strings", 5.2, 3.94, 0.6),
+             _pt_word("Recognizing", 1.0, 3.75, 1.0), _pt_word("languages", 2.1, 3.75, 0.9)]
+    out = _refine_one_slide(monkeypatch, els, words)
+    assert out["math"]["bbox_source"] == "pdf_text"
+    assert out["math"]["bbox"]["y"] == pytest.approx(3.94)
+    assert out["math"]["bbox"]["x"] == pytest.approx(1.0) and out["math"]["bbox"]["w"] == pytest.approx(4.8)
+    assert out["plain"]["bbox"]["y"] == pytest.approx(3.75)
+
+
 def test_page_unique_rescue_does_not_steal_an_equal_length_neighbours_glyphs(monkeypatch):
     """A="Proof" whose glyphs are not in the PDF must not take B="Proof." (same
     normalised length, so A sorts first) from 4.5 in away: B's proximity match
