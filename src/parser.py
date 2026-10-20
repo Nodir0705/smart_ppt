@@ -179,12 +179,12 @@ def _transformed_bbox(shape, transform) -> BBox:
 
 _A14_M = "{http://schemas.microsoft.com/office/drawing/2010/main}m"
 _M_T = "{http://schemas.openxmlformats.org/officeDocument/2006/math}t"
-_BR_RE = re.compile(r"\s*\x0b\s*")  # a soft line break (+ spacing around it)
 
 
 def _paragraph_text(p) -> str:
-    """Text of an `a:p` element: `a:r`/`a:fld` verbatim, each `a:br` as exactly
-    one space (whatever spacing the author left around it), and `a14:m` math as
+    """Text of an `a:p` element: `a:r`/`a:fld` verbatim, `a:br` as a newline (a
+    soft line break is a line boundary — its lines are the chunks a presenter
+    says, and `_phrases_for_text` keeps each as a phrase), and `a14:m` math as
     its `m:t` texts NFKC-normalised — math-italic letters (𝐿, U+1D43F…) to plain
     ones, U+00A0 to a space — so it is speakable."""
     parts: list[str] = []
@@ -192,11 +192,11 @@ def _paragraph_text(p) -> str:
         if child.tag in (_A_NS + "r", _A_NS + "fld"):
             parts.append(child.findtext(_A_NS + "t") or "")
         elif child.tag == _A_NS + "br":
-            parts.append("\x0b")
+            parts.append("\n")
         elif child.tag == _A14_M:
             parts.append(unicodedata.normalize(
                 "NFKC", "".join(t.text or "" for t in child.iter(_M_T))))
-    return _BR_RE.sub(" ", "".join(parts))
+    return "".join(parts)
 
 
 def _shape_text(shape) -> str:

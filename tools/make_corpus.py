@@ -461,8 +461,8 @@ def _build_math_textbox(out_dir: Path) -> CorpusDeck:
     python-pptx iterates neither branch, so the parser must resolve the Choice
     itself and read the math runs ("Let A, B be languages", math italics
     normalised). Plus an ordinary box with a soft line break (`a:br`), which
-    must read as a space, not glue "TAs:" to "Fadi". Hand-built with lxml —
-    python-pptx cannot author any of it."""
+    must stay a line boundary ("TAs:\\nFadi"), not glue "TAs:" to "Fadi".
+    Hand-built with lxml — python-pptx cannot author any of it."""
     import copy
     import io
 
@@ -514,8 +514,8 @@ def _build_math_textbox(out_dir: Path) -> CorpusDeck:
     path = out_dir / "math_textbox.pptx"
     prs.save(str(path))
     return CorpusDeck("math_textbox", str(path),
-                      expected_texts=["Regular languages", "Let A, B be languages", "TAs: Fadi"],
-                      note="mc:AlternateContent equation box -> Choice text incl. math; a:br -> space")
+                      expected_texts=["Regular languages", "Let A, B be languages", "TAs:\nFadi"],
+                      note="mc:AlternateContent equation box -> Choice text incl. math; a:br -> newline")
 
 
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
