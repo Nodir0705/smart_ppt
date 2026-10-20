@@ -591,7 +591,7 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
 
     prs = Presentation()
 
-    def slide(text, *, rect_first=False, rect_w=6.0, fill="solid"):
+    def slide(text, *, rect_first=False, rect_w=6.0, fill="solid", animated=False):
         s = _blank_slide(prs)
         if not rect_first:
             _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
@@ -608,18 +608,29 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
                     f'<a:alpha xmlns:a="{_A_NS}" val="50000"/>'))
         if rect_first:
             _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+        if animated:
+            # a stripped <p:timing> whose one effect targets the cover (python-
+            # pptx cannot author timing; the parser reads only the p:spTgt ids)
+            s._element.append(etree.fromstring(
+                f'<p:timing xmlns:p="{_P_NS}"><p:tnLst><p:par><p:cTn><p:childTnLst>'
+                '<p:set><p:cBhvr><p:tgtEl>'
+                f'<p:spTgt spid="{rect.shape_id}"/>'
+                '</p:tgtEl></p:cBhvr></p:set>'
+                '</p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>'))
 
     slide("Covered by an opaque rect")
     slide("Cover has no fill", fill="none")
     slide("Cover is half transparent", fill="alpha")
     slide("Rect is underneath", rect_first=True)
     slide("Only partly covered", rect_w=3.0)
+    slide("Cover enters on click", animated=True)
     path = out_dir / "occluded_text.pptx"
     prs.save(str(path))
     return CorpusDeck("occluded_text", str(path),
                       expected_texts=["Cover has no fill", "Cover is half transparent",
-                                      "Rect is underneath", "Only partly covered"],
-                      note="text under a later opaque shape -> not indexed; 4 controls stay")
+                                      "Rect is underneath", "Only partly covered",
+                                      "Cover enters on click"],
+                      note="text under a later opaque shape -> not indexed; 5 controls stay")
 
 
 def _png(size=(320, 240), color=(90, 130, 180)):

@@ -362,11 +362,21 @@ def _is_opaque(shape) -> bool:
         for a in f.iter(_A_NS + "alpha"))
 
 
-def _drop_occluded(shapes_meta: list[dict], slide_no: int) -> list[dict]:
+def _animated_ids(slide) -> set[int]:
+    """Shape ids targeted by the slide's animations (`p:spTgt` occurs only
+    under `p:timing`). An animated cover enters or leaves, so what lies under
+    it is shown to the audience at some point and stays pointable."""
+    return {int(t.get("spid")) for t in slide._element.iter(_P_NS + "spTgt")
+            if (t.get("spid") or "").isdigit()}
+
+
+def _drop_occluded(shapes_meta: list[dict], slide_no: int,
+                   animated: set[int] = frozenset()) -> list[dict]:
     """Keep only leaves not wholly covered by a LATER (= above, z-order is
-    document order) opaque leaf — what the viewer shows, so a diagram under a
-    reveal cover is neither text nor a container."""
-    opaque = [_is_opaque(m["shape"]) for m in shapes_meta]
+    document order) opaque, static leaf — what the viewer shows, so a diagram
+    under a reveal cover is neither text nor a container."""
+    opaque = [_is_opaque(m["shape"]) and m["shape"].shape_id not in animated
+              for m in shapes_meta]
     kept: list[dict] = []
     for i, m in enumerate(shapes_meta):
         # ponytail: O(n^2) per slide; slides hold tens of shapes
@@ -785,7 +795,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
             "is_chart": getattr(shape, "has_chart", False),
         })
 
-    shapes_meta = _drop_occluded(shapes_meta, slide_no)
+    shapes_meta = _drop_occluded(shapes_meta, slide_no, _animated_ids(slide))
 
     # 2) merge container+text pairs (diagram labels or stat callouts)
     pairs = _find_container_text_pairs(shapes_meta)
