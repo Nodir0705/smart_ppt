@@ -28,6 +28,11 @@ from tools.make_corpus import build_corpus
     ("Picture 1", ""),                                   # auto-name rejected
     ("image", ""),
     ("  ", ""),
+    # PowerPoint's auto-generated description: a generic caption whose words
+    # the slide never contains, always tagged with the marker sentence
+    ("A close-up of a graph\n\nAI-generated content may be incorrect.", ""),
+    ("A diagram of a machine\n\nai-generated content may be incorrect", ""),
+    ("AI-Generated Content May Be Incorrect.", ""),
 ])
 def test_clean_alt_text_rejects_junk(raw, expected):
     assert _clean_alt_text(raw) == expected

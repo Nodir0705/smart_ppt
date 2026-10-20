@@ -232,14 +232,22 @@ def _shape_text(shape) -> str:
 
 _IMG_EXT_RE = re.compile(r"\.(png|jpe?g|gif|bmp|svg|tiff?|webp|emf|wmf)$", re.I)
 _GENERIC_NAME_RE = re.compile(r"^(picture|image|graphic|object|content placeholder)\s*\d*$", re.I)
+# PowerPoint tags every description it generates itself with this sentence.
+# ponytail: English UI only; a localised PowerPoint writes the marker in its
+# own language — add those strings here when a deck shows one.
+_AUTO_ALT_MARKER_RE = re.compile(r"ai-generated content may be incorrect", re.I)
 
 
 def _clean_alt_text(raw: str) -> str:
     """Keep author-meaningful alt text; drop junk that PowerPoint/exporters put
-    in `descr`/`title` — file paths, bare image filenames, and generic
-    auto-names like 'Picture 1' — which would only add noise triggers."""
+    in `descr`/`title` — file paths, bare image filenames, generic auto-names
+    like 'Picture 1', and PowerPoint's own generated captions ("A close-up of
+    a graph", words the slide never contains) — which would only add noise
+    triggers. The picture then takes the OCR / needs_vision path."""
     s = (raw or "").strip()
     if not s:
+        return ""
+    if _AUTO_ALT_MARKER_RE.search(s):  # PowerPoint-generated description
         return ""
     if "/" in s or "\\" in s:          # a file path, not a description
         return ""
