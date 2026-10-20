@@ -381,6 +381,22 @@ def test_off_canvas_shapes_are_not_indexed(tmp_path):
     assert texts == ["On the slide", "Overhanging the edge"], texts
 
 
+def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
+    # z-order = document order: a later opaque rect fully covering a text box
+    # hides it on the rendered slide. Controls (one slide each) stay indexed:
+    # noFill cover, 50 % alpha cover, rect drawn before the text, partial cover.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    index = parse_deck(decks["occluded_text"].path)
+    per_slide = [[e["text"] for e in s["elements"]] for s in index["slides"]]
+    assert per_slide == [
+        [],
+        ["Cover has no fill"],
+        ["Cover is half transparent"],
+        ["Rect is underneath"],
+        ["Only partly covered"],
+    ], per_slide
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

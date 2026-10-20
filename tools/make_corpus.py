@@ -553,6 +553,48 @@ def _build_off_canvas(out_dir: Path) -> CorpusDeck:
                       note="shape wholly outside the slide -> not indexed; partial overlap stays")
 
 
+def _build_occluded_text(out_dir: Path) -> CorpusDeck:
+    """A text box fully under a LATER opaque rectangle is not on the rendered
+    slide (reveal covers, patches) → not indexed. One slide per control that
+    must stay: the cover with `noFill`; 50 % alpha; the rect drawn BEFORE the
+    text (under it); a rect covering the text only partially."""
+    from lxml import etree
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+
+    prs = Presentation()
+
+    def slide(text, *, rect_first=False, rect_w=6.0, fill="solid"):
+        s = _blank_slide(prs)
+        if not rect_first:
+            _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+        rect = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(1.5),
+                                  Inches(rect_w), Inches(2.0))
+        rect.text_frame.clear()
+        if fill == "none":
+            rect.fill.background()
+        else:
+            rect.fill.solid()
+            rect.fill.fore_color.rgb = RGBColor(0, 0, 0)
+            if fill == "alpha":
+                rect._element.spPr.solidFill.srgbClr.append(etree.fromstring(
+                    f'<a:alpha xmlns:a="{_A_NS}" val="50000"/>'))
+        if rect_first:
+            _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+
+    slide("Covered by an opaque rect")
+    slide("Cover has no fill", fill="none")
+    slide("Cover is half transparent", fill="alpha")
+    slide("Rect is underneath", rect_first=True)
+    slide("Only partly covered", rect_w=3.0)
+    path = out_dir / "occluded_text.pptx"
+    prs.save(str(path))
+    return CorpusDeck("occluded_text", str(path),
+                      expected_texts=["Cover has no fill", "Cover is half transparent",
+                                      "Rect is underneath", "Only partly covered"],
+                      note="text under a later opaque shape -> not indexed; 4 controls stay")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -587,6 +629,7 @@ _BUILDERS = [
     _build_math_textbox,
     _build_hidden_shapes,
     _build_off_canvas,
+    _build_occluded_text,
     _build_empty_slide,
 ]
 

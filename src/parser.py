@@ -20,6 +20,7 @@ _log = logging.getLogger(__name__)
 EMU_PER_INCH = 914400
 ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
 OFF_CANVAS_TOL_IN = 0.05       # a shape this far outside the slide is wholly off-canvas
+OCCLUSION_TOL_IN = 0.02        # a later opaque shape reaching this close to a leaf's edges covers it
 
 
 # ---------- data classes ----------
@@ -42,6 +43,12 @@ class BBox:
         """Wholly outside the [0, w] x [0, h] canvas (beyond `tol`)."""
         return (self.x + self.w < -tol or self.y + self.h < -tol
                 or self.x > w + tol or self.y > h + tol)
+
+    def covers(self, other: "BBox", tol: float) -> bool:
+        """`other` lies wholly inside this box (to within `tol`)."""
+        return (self.x - tol <= other.x and self.y - tol <= other.y
+                and other.x + other.w <= self.x + self.w + tol
+                and other.y + other.h <= self.y + self.h + tol)
 
 
 @dataclass
@@ -270,6 +277,58 @@ def _ocr_picture(shape) -> str:
 
 def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
+
+
+# ---------- visibility (what the rendered slide shows) ----------
+
+def _fill(shape):
+    """The element painting a `p:sp`'s interior: its own `spPr` fill
+    (solid/gradient/picture/pattern), else its theme `fillRef` when idx >= 1.
+    None for `noFill`, or no fill and no style (transparent)."""
+    sp_pr = shape._element.find(_P_NS + "spPr")
+    if sp_pr is None:
+        return None
+    for tag in ("solidFill", "gradFill", "blipFill", "pattFill"):
+        f = sp_pr.find(_A_NS + tag)
+        if f is not None:
+            return f
+    if sp_pr.find(_A_NS + "noFill") is not None:
+        return None
+    ref = shape._element.find(_P_NS + "style/" + _A_NS + "fillRef")
+    idx = ref.get("idx", "0") if ref is not None else "0"
+    return ref if idx.isdigit() and int(idx) >= 1 else None
+
+
+def _is_opaque(shape) -> bool:
+    """A leaf that hides whatever lies wholly under it: a picture (ponytail:
+    PNG alpha not inspected), or a `p:sp` filled with no `a:alpha` < 100 %.
+    Connectors, graphic frames, transparent shapes never occlude."""
+    tag = shape._element.tag
+    if tag == _P_NS + "pic":
+        return True
+    if tag != _P_NS + "sp":
+        return False
+    f = _fill(shape)
+    return f is not None and not any(
+        (a.get("val") or "").isdigit() and int(a.get("val")) < 100000
+        for a in f.iter(_A_NS + "alpha"))
+
+
+def _drop_occluded(shapes_meta: list[dict], slide_no: int) -> list[dict]:
+    """Keep only leaves not wholly covered by a LATER (= above, z-order is
+    document order) opaque leaf — what the viewer shows, so a diagram under a
+    reveal cover is neither text nor a container."""
+    opaque = [_is_opaque(m["shape"]) for m in shapes_meta]
+    kept: list[dict] = []
+    for i, m in enumerate(shapes_meta):
+        # ponytail: O(n^2) per slide; slides hold tens of shapes
+        if any(opaque[j] and shapes_meta[j]["bbox"].covers(m["bbox"], OCCLUSION_TOL_IN)
+               for j in range(i + 1, len(shapes_meta))):
+            _log.debug("slide %d: %r %r hidden under a later opaque shape; dropped",
+                       slide_no, m["shape"].name, m["text"])
+            continue
+        kept.append(m)
+    return kept
 
 
 def _norm(s: str) -> str:
@@ -673,6 +732,8 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
             "is_table": getattr(shape, "has_table", False),
             "is_chart": getattr(shape, "has_chart", False),
         })
+
+    shapes_meta = _drop_occluded(shapes_meta, slide_no)
 
     # 2) merge container+text pairs (diagram labels or stat callouts)
     pairs = _find_container_text_pairs(shapes_meta)
