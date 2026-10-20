@@ -748,13 +748,19 @@ def _build_background_panel(out_dir: Path) -> CorpusDeck:
     _textbox(s.shapes, "Panel Title", x=0.5, y=0.4, w=8.0, h=0.8)
     _textbox(s.shapes, "First point on the panel", x=0.5, y=2.0, w=8.0, h=0.8, size=18)
     _textbox(s.shapes, "Second point on the panel", x=0.5, y=3.0, w=8.0, h=0.8, size=18)
+    # slide 2: a panel covering ~87 % of the slide with ONE text inside is still
+    # a panel (more than half the slide), not a label box
+    s = _blank_slide(prs)
+    panel = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0.3), Inches(0.3), Inches(9.4), Inches(6.9))
+    panel.text_frame.clear()
+    _textbox(s.shapes, "Lone title on a panel", x=0.5, y=0.4, w=8.0, h=0.8)
     path = out_dir / "background_panel.pptx"
     prs.save(str(path))
     return CorpusDeck("background_panel", str(path),
                       expected_texts=["Panel Title", "First point on the panel",
-                                      "Second point on the panel"],
-                      expected_types=["title", "body", "body"],
-                      note="full-slide rect holding 3 texts -> no pair; title typed by geometry")
+                                      "Second point on the panel", "Lone title on a panel"],
+                      expected_types=["title", "body", "body", "title"],
+                      note="rect holding 3 texts, or covering > half the slide -> no pair; title by geometry")
 
 
 def _build_ink_annotation(out_dir: Path) -> CorpusDeck:

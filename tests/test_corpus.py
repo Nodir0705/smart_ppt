@@ -472,14 +472,18 @@ def test_box_holding_several_texts_is_not_a_label_box(tmp_path):
     # A full-slide empty rect behind a title + two body boxes is a background:
     # it pairs with nothing (no diagram_label/stat with its bbox); the title is
     # typed by `_classify_text_shape` (y < 1.2 in, wide) with its own bbox.
+    # Slide 2: a rect covering more than half the slide is a panel even with a
+    # single text inside — that title keeps its own type and bbox too.
     decks = {d.name: d for d in build_corpus(tmp_path)}
     els = [e for s in parse_deck(decks["background_panel"].path)["slides"] for e in s["elements"]]
     assert [(e["type"], e["text"]) for e in els] == [
         ("title", "Panel Title"),
         ("body", "First point on the panel"),
         ("body", "Second point on the panel"),
+        ("title", "Lone title on a panel"),
     ], els
-    assert round(els[0]["bbox"]["w"], 2) == 8.0 and round(els[0]["bbox"]["y"], 2) == 0.4
+    for title in (els[0], els[3]):
+        assert round(title["bbox"]["w"], 2) == 8.0 and round(title["bbox"]["y"], 2) == 0.4
 
 
 def test_ink_annotation_resolves_to_its_fallback_picture(tmp_path):

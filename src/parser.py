@@ -559,14 +559,15 @@ def _bullet_bboxes(shape) -> list[tuple[str, BBox]]:
 
 # ---------- pair-merging (empty container + text inside) ----------
 
-def _find_container_text_pairs(shapes_meta: list[dict]) -> list[tuple[int, int]]:
+def _find_container_text_pairs(shapes_meta: list[dict], slide_w: float,
+                               slide_h: float) -> list[tuple[int, int]]:
     """Pair an empty-text shape with a text shape whose centre lies inside it.
 
     Returns list of (container_idx, text_idx). Each index appears at most
     once. Containers must have non-trivial area; text shapes must have text.
-    A box holding more than MAX_TEXTS_IN_LABEL_BOX text centres is a
-    background/cover/panel, not a label box — it pairs with nothing (a
-    full-slide rectangle used to pair with the slide title).
+    A box holding more than MAX_TEXTS_IN_LABEL_BOX text centres, or covering
+    more than half the slide, is a background/cover/panel, not a label box —
+    it pairs with nothing (a full-slide rectangle used to pair with the title).
     """
     pairs: list[tuple[int, int]] = []
     used: set[int] = set()
@@ -577,6 +578,8 @@ def _find_container_text_pairs(shapes_meta: list[dict]) -> list[tuple[int, int]]
             continue
         if c["bbox"].w < 0.5 or c["bbox"].h < 0.5:
             continue  # arrows / tiny stuff
+        if c["bbox"].w * c["bbox"].h > 0.5 * slide_w * slide_h:
+            continue  # a panel, whatever it holds
         inside = [ti for ti, t in enumerate(shapes_meta)
                   if t["text"] and not (t["is_picture"] or t["is_table"] or t["is_chart"])
                   and c["bbox"].contains_point(*t["bbox"].center())]
@@ -828,7 +831,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
     shapes_meta = _drop_occluded(shapes_meta, slide_no, _animated_ids(slide))
 
     # 2) merge container+text pairs (diagram labels or stat callouts)
-    pairs = _find_container_text_pairs(shapes_meta)
+    pairs = _find_container_text_pairs(shapes_meta, slide_w, slide_h)
     paired_idx: dict[int, tuple[int, int]] = {}  # any-idx → (container_idx, text_idx)
     for ci, ti in pairs:
         paired_idx[ci] = (ci, ti)
