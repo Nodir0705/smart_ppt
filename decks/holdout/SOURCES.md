@@ -1,7 +1,7 @@
 # Holdout deck sources
 
 Frozen blind test set, collected 2026-10-15. The decks are git-ignored. Only this file is tracked.
-Talk titles are left out on purpose so the set stays blind.
+Most talk titles are visible in the download file names. Slide content was not read, which is what keeps the test blind.
 
 | File | Source page | Direct download | Author / organization | Date | Licence / terms |
 |---|---|---|---|---|---|

@@ -620,8 +620,9 @@ render deterministic. Parser drops embedded videos + one picture, wrong bbox on 
 ## 2026-10-15 — Parser coverage: general fixes, then an unseen English holdout
 
 Rule: one global config, no per-deck settings (user, 2026-10-15). Every fix targets a PowerPoint feature, scored on all decks.
-Holdout: public English decks → `decks/holdout/` (frozen, not opened until the final run).
-Dev decks for parser work: 4 bench decks + 5 local (Wheel-Rail GUI, Wheel_rail_Edge 설계문서, 휠레일 컨택, Amaliyot ×2).
+Holdout: 8 public English decks → `decks/holdout/` (frozen, not opened until the final run). `mit_theory_computation`
+was opened for the pilot below and its failures drive 4b, so it is a DEV deck from 2026-10-15 on; 7 remain unseen.
+Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_rail_Edge 설계문서, 휠레일 컨택, Amaliyot ×2).
 
 - [ ] 0. Commit `script/TapHole/` (TapHole video narration)
 - [ ] 1. Coverage report, text first: `refine_text` already finds each element's words in the PDF text layer;
@@ -644,18 +645,31 @@ Dev decks for parser work: 4 bench decks + 5 local (Wheel-Rail GUI, Wheel_rail_E
       - "arrow" = any empty shape under 0.15 in (`ARROW_DIM_THRESHOLD_IN`): 0.14-in state circles and an empty zero-width
         text box become arrows. Arrows should come from line/connector geometry only.
       - pair merge takes the first text whose centre is inside any empty shape ≥ 0.5 in: a full-slide cover rectangle
-        grabbed the slide number (MIT s11_e1), and slide numbers come out as `diagram_label` (s12_e0).
+        grabbed the slide number (MIT s11_e1), and slide numbers come out as `diagram_label` (s12_e0). Same defect on
+        AI_Handout: every slide's background rectangle pairs with the title, so all 12 titles are `diagram_label` in the
+        raw parse (masked: refine_text shrinks the box onto the glyphs). The fix re-types them to `title`, which has its
+        own pointer rules — expect AI_Handout `default` rows to move; measure, don't assume neutral.
+      - shapes fully covered by an opaque shape above them in z-order are not visible in the rendered slide (what the
+        viewer shows) yet stay pointable: all 8 slide-11 false ids on MIT (e0/e4/e10, a diagram under a cover box).
+        Rule: occluded → `pointable: false` in the final state. Animation builds (where they ARE visible) are out of
+        scope; note it as a product gap.
       - line breaks (`a:br`) joined with no space ("TAs:- Fadi", "ComputationSipser").
-      - not now: auto-numbers missing from text, shapes hidden under an opaque cover (animation state), bullet type on
-        headings (maps assign roles).
+      - not now: auto-numbers missing from text, bullet type on headings (maps assign roles), animation states.
 - [ ] 5. Fix the other classes step 1 surfaces (general causes only), each with a small synthetic-pptx test.
-- [ ] 6. New elements change ids and maps. Blast radius checked: placeholder pictures / MEDIA only on TapHole
-      (s10, s12, s17); the 3 other bench decks have none. For TapHole: remap ids old→new (text + bbox); add the new
-      items to the maps via the deterministic fix-up (singleton units), never regenerate; re-annotate the talk steps
-      that point at the picture/videos (their `refers_to` was None, so a correct light would score as a false id).
+- [ ] 6. Ids are positional (`next_id` = slide + emission order, pairs first), so ANY element added, dropped or
+      re-paired shifts every later id on that slide — on every deck, not just TapHole. Blast radius (XML scan, 2026-10-20):
+      AI_Handout 37 tiny empty shapes (today `arrow`, slides 2–9) + 12 background-rectangle pairs (all slides);
+      TapHole 3 tiny (s4) + 2 covers (s12, s17) + placeholder picture s10 + MEDIA s12/s17; test_deck 3 tiny (s6);
+      MIT 47 AlternateContent boxes + tiny + covers; Open-Q none. So: `tools/remap_ids.py` — old→new id map per deck
+      from (slide, text, bbox ≈) between the old and new `index.json`, applied to maps (items / units / order),
+      `presenter_script*.json` `refers_to`, `expected.json`, `adjudication.json`; it lists unmatched old ids and brand-new
+      ids. New elements join the maps via the deterministic fix-up (singleton units), never regeneration. Talk steps
+      that referred to a formerly missing element (TapHole picture/videos, MIT equation boxes) get re-annotated by an
+      agent, else a correct light scores as a false id.
 - [ ] 7. Regression: pytest; deck_bench default + clause_replay map on the 4 bench decks — unchanged except where new
       elements appear; coverage re-run shows the gaps closed.
-- [ ] 8. Holdout run: maps + 3 blind talk scripts per holdout deck, shipped params, report against the bench rows.
+- [ ] 8. Holdout run on the 7 unseen decks (not MIT): maps + 3 blind talk scripts each, shipped params, report against
+      the bench rows. MIT is re-scored with them but reported as a dev deck.
 
 ### Pilot first (user, 2026-10-15: "try with smaller one"): unseen-deck run on `holdout/mit_theory_computation` (14 slides), shipped code
 - [x] default index + verbatim bench: recall 61/88, precision 1.000, false 0, flicker 8, filler false 1
@@ -669,5 +683,6 @@ Result (shipped params, cross decider, cpu): lit 44/52 · 38/50 · 41/52 (orig/j
   they are scored "stay quiet". Counting them, the original talk lights 44 of ~77 pointing sentences (~57%).
 - Clean slides (1–5, 14): 26/30 · 23/28 · 25/30. Misses there are mostly slide titles (s3/s4/s5 e0) — the known
   title/kicker gap, not a parser gap.
-- 8 of 15 false ids are on slide 11: shapes hidden under an opaque cover and the slide number paired into a cover
-  rectangle — parser defects (4b).
+- 8 of 15 false ids are on slide 11, all three talks, and all of them are the diagram hidden under the cover box
+  (s11_e0/e4/e10; measured 2026-10-20). The slide number paired into the cover (s11_e1) is NOT among them: the talk agents
+  annotated it as the check-in heading, so the pointer lighting it scored as a hit — a parser defect scored as correct.

@@ -403,3 +403,16 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
   on the clean TTS as truth). It matches sherpa's 320 ms decode chunk (chunk-16 zipformer). It is ~20% of the
   ~2.4 s lateness; the presenter naming the item ~1.4–2.0 s into the sentence is ~70%; the decision after hearing
   the naming word adds ~0.3 s. Waiting for fewer words (min_words 5 → 2) saved ≤0.27 s and added wrong ids.
+
+## 2026-10-20 — Cloud review of the parser plan: two plan errors a reader caught before any code
+
+- **Opening a holdout deck moves it to the dev set in the same edit.** The plan said the holdout was "frozen" while the
+  pilot below it opened MIT and 4b derived fixes from its failures; step 8 then scored MIT as unseen again. Write the
+  reclassification where the deck is listed, the moment it is opened.
+- **Attribute false ids from the trace, not from the agents' descriptions.** I wrote "slide 11: hidden shapes and the
+  paired slide number" from the map agents' reports. The lit sequence shows all 8 are hidden shapes; the paired slide
+  number scored as a hit because the talk agents annotated it as the heading it landed on. List the ids before naming
+  the cause.
+- **Positional ids make every parser change a deck-wide blast radius.** The id-shift audit covered only the shapes the
+  TapHole fixes touch; the arrow-rule and pairing fixes also change AI_Handout (37 arrows, 12 title pairs). Before
+  changing what the parser emits, scan every dev deck for every rule being changed, and plan the remap tool first.
