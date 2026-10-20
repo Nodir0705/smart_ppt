@@ -300,9 +300,27 @@ def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
 
 
+def _fill(shape):
+    """The element painting a `p:sp`'s interior: its own `spPr` fill
+    (solid/gradient/picture/pattern), else its theme `fillRef` when idx >= 1.
+    None for `noFill`, or no fill and no style (transparent)."""
+    sp_pr = shape._element.find(_P_NS + "spPr")
+    if sp_pr is None:
+        return None
+    for tag in ("solidFill", "gradFill", "blipFill", "pattFill"):
+        f = sp_pr.find(_A_NS + tag)
+        if f is not None:
+            return f
+    if sp_pr.find(_A_NS + "noFill") is not None:
+        return None
+    ref = shape._element.find(_P_NS + "style/" + _A_NS + "fillRef")
+    idx = ref.get("idx", "0") if ref is not None else "0"
+    return ref if idx.isdigit() and int(idx) >= 1 else None
+
+
 # `a:prstGeom/@prst` values that draw a line or an arrow.
 _LINE_PRESETS = frozenset(
-    "line straightConnector1 bentConnector2 bentConnector3 bentConnector4 bentConnector5 "
+    "line lineInv straightConnector1 bentConnector2 bentConnector3 bentConnector4 bentConnector5 "
     "curvedConnector2 curvedConnector3 curvedConnector4 curvedConnector5 "
     "rightArrow leftArrow upArrow downArrow leftRightArrow upDownArrow bentArrow uturnArrow "
     "curvedRightArrow curvedLeftArrow curvedUpArrow curvedDownArrow notchedRightArrow "
@@ -328,23 +346,6 @@ def _is_line_like(shape, bbox: BBox) -> bool:
 
 
 # ---------- visibility (what the rendered slide shows) ----------
-
-def _fill(shape):
-    """The element painting a `p:sp`'s interior: its own `spPr` fill
-    (solid/gradient/picture/pattern), else its theme `fillRef` when idx >= 1.
-    None for `noFill`, or no fill and no style (transparent)."""
-    sp_pr = shape._element.find(_P_NS + "spPr")
-    if sp_pr is None:
-        return None
-    for tag in ("solidFill", "gradFill", "blipFill", "pattFill"):
-        f = sp_pr.find(_A_NS + tag)
-        if f is not None:
-            return f
-    if sp_pr.find(_A_NS + "noFill") is not None:
-        return None
-    ref = shape._element.find(_P_NS + "style/" + _A_NS + "fillRef")
-    idx = ref.get("idx", "0") if ref is not None else "0"
-    return ref if idx.isdigit() and int(idx) >= 1 else None
 
 
 # Presets that paint their whole bounding box (an ellipse, a diamond, a block

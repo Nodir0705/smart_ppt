@@ -459,13 +459,14 @@ def test_every_p_pic_is_an_image(tmp_path, deck, bbox):
 
 
 def test_arrows_come_from_geometry_not_from_being_small(tmp_path):
-    # connector, RIGHT_ARROW preset and a thin filled 3x0.05 bar are arrows;
-    # the 0.1-in dot and the empty zero-width text box are decorative — absent.
+    # connector, RIGHT_ARROW preset, a thin filled 3x0.05 bar and a 2x1
+    # LINE_INVERSE (`lineInv`, a drawn diagonal) are arrows; the 0.1-in dot and
+    # the empty zero-width text box are decorative — absent.
     decks = {d.name: d for d in build_corpus(tmp_path)}
     els = [e for s in parse_deck(decks["arrow_shapes"].path)["slides"] for e in s["elements"]]
-    assert [e["type"] for e in els] == ["arrow"] * 3, els
+    assert [e["type"] for e in els] == ["arrow"] * 4, els
     assert sorted((round(e["bbox"]["w"], 2), round(e["bbox"]["h"], 2)) for e in els) == [
-        (2.0, 0.5), (3.0, 0.05), (3.0, 0.5)]
+        (2.0, 0.5), (2.0, 1.0), (3.0, 0.05), (3.0, 0.5)]
 
 
 def test_box_holding_several_texts_is_not_a_label_box(tmp_path):
