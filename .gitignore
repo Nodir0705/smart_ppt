@@ -12,3 +12,6 @@ corpus/
 # user benchmark decks (may be private) — see decks/README.md
 decks/*
 !decks/README.md
+!decks/holdout/
+decks/holdout/*
+!decks/holdout/SOURCES.md

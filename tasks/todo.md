@@ -616,3 +616,58 @@ Review (2026-10-12): pointer frozen on TapHole lit 63/65, 59/70, 68/72 (wrong id
 both decks (~20% of lateness; presenter naming late ~70%). Video: 99 cues, audit 57/99 (AI_Handout 77/77); ~30
 failures = captions over slide content / titles on dense slides; 4 = brackets off-frame (fixed d58545e);
 render deterministic. Parser drops embedded videos + one picture, wrong bbox on slide 8. Open: caption band.
+
+## 2026-10-15 — Parser coverage: general fixes, then an unseen English holdout
+
+Rule: one global config, no per-deck settings (user, 2026-10-15). Every fix targets a PowerPoint feature, scored on all decks.
+Holdout: public English decks → `decks/holdout/` (frozen, not opened until the final run).
+Dev decks for parser work: 4 bench decks + 5 local (Wheel-Rail GUI, Wheel_rail_Edge 설계문서, 휠레일 컨택, Amaliyot ×2).
+
+- [ ] 0. Commit `script/TapHole/` (TapHole video narration)
+- [ ] 1. Coverage report, text first: `refine_text` already finds each element's words in the PDF text layer;
+      the page words no element claimed are the text gaps (dropped shapes, unmatched lines, overflow). Report per
+      slide on the 9 dev decks. Then non-text ink: rendered slide vs the slide with its shapes removed, min-area
+      gated, split into "uncovered ink with glyphs" (missed text, bug) vs "no glyphs" (picture/diagram). Expected noise:
+      decorative empty shapes (`parser.py:682`), diagonal connectors, icons < 0.5 in².
+- [ ] 2. Picture detection: every `p:pic` is a picture (Picture, PlaceholderPicture, MEDIA) — `parser.py:597` only checks
+      `shape_type == PICTURE`. Seen: TapHole s10 (picture in a content placeholder).
+- [ ] 3. Embedded video (MEDIA, TapHole s12/s17): emit an element at the poster-frame bbox; alt text, else needs_vision.
+      Guard `_alt_text` / `_ocr_picture` for Movie shapes (`poster_frame`, no `.image`).
+- [ ] 4. `refine_text` misses lines that are in the PDF (TapHole s8 e13–e15: PDF y 6.23/6.56/~6.9 in, kept parser
+      guess 3.92–4.29) — find why the match fails, fix in `refine_text`. Checked: PDF Hangul is NFC and refine
+      normalizes NFKC, so not that. Next suspect: lines below the placeholder frame (overflow) rejected by a geometry gate.
+- [ ] 4b. From the MIT pilot (general causes, all from map/talk agents + XML checks):
+      - `mc:AlternateContent` shapes dropped: every text box holding an equation vanishes whole (MIT: 47 shapes,
+        slides 6–13; slides 8 and 13 keep only the title). Read the `mc:Choice` shape; math text from `a14:m` `m:t`, NFKC
+        (math-italic 𝐿 → L).
+      - soffice leaves the math blank in the render (PNG/PDF): render those shapes from the `mc:Fallback` picture.
+      - "arrow" = any empty shape under 0.15 in (`ARROW_DIM_THRESHOLD_IN`): 0.14-in state circles and an empty zero-width
+        text box become arrows. Arrows should come from line/connector geometry only.
+      - pair merge takes the first text whose centre is inside any empty shape ≥ 0.5 in: a full-slide cover rectangle
+        grabbed the slide number (MIT s11_e1), and slide numbers come out as `diagram_label` (s12_e0).
+      - line breaks (`a:br`) joined with no space ("TAs:- Fadi", "ComputationSipser").
+      - not now: auto-numbers missing from text, shapes hidden under an opaque cover (animation state), bullet type on
+        headings (maps assign roles).
+- [ ] 5. Fix the other classes step 1 surfaces (general causes only), each with a small synthetic-pptx test.
+- [ ] 6. New elements change ids and maps. Blast radius checked: placeholder pictures / MEDIA only on TapHole
+      (s10, s12, s17); the 3 other bench decks have none. For TapHole: remap ids old→new (text + bbox); add the new
+      items to the maps via the deterministic fix-up (singleton units), never regenerate; re-annotate the talk steps
+      that point at the picture/videos (their `refers_to` was None, so a correct light would score as a false id).
+- [ ] 7. Regression: pytest; deck_bench default + clause_replay map on the 4 bench decks — unchanged except where new
+      elements appear; coverage re-run shows the gaps closed.
+- [ ] 8. Holdout run: maps + 3 blind talk scripts per holdout deck, shipped params, report against the bench rows.
+
+### Pilot first (user, 2026-10-15: "try with smaller one"): unseen-deck run on `holdout/mit_theory_computation` (14 slides), shipped code
+- [x] default index + verbatim bench: recall 61/88, precision 1.000, false 0, flicker 8, filler false 1
+- [x] maps (2 agents, blind to scripts) + 3 talk scripts (original / jumpy / meaning, blind to maps)
+- [x] map index, presenter audio, `clause_replay --record`, `clause_replay --deck mit_theory_computation --holdout`
+- [x] compare with AI_Handout / TapHole rows; failure modes per slide (parser vs pointer)
+
+Result (shipped params, cross decider, cpu): lit 44/52 · 38/50 · 41/52 (orig/jumpy/meaning), false ids 5/8/2, false s
+43.0/30.3/14.8, late med 2.49/4.05/3.07 s. AI_Handout 46/48 · 59/61 · 57/59; TapHole 63/65 · 59/70 · 68/72.
+- The lit ruler flatters MIT: ~25 sentences per script talk about text the parser dropped (`mc:AlternateContent`), so
+  they are scored "stay quiet". Counting them, the original talk lights 44 of ~77 pointing sentences (~57%).
+- Clean slides (1–5, 14): 26/30 · 23/28 · 25/30. Misses there are mostly slide titles (s3/s4/s5 e0) — the known
+  title/kicker gap, not a parser gap.
+- 8 of 15 false ids are on slide 11: shapes hidden under an opaque cover and the slide number paired into a cover
+  rectangle — parser defects (4b).
