@@ -4,7 +4,8 @@ does not number, and what the index numbers that the render does not back.
     python3 -m tools.coverage out/bench/<deck>/default [--out <dir>]
 
 Inputs (all already built, nothing is rendered here): ``index.scoped.json``,
-``slides/slide_NNN.png`` and the deck's soffice PDF in <deck_dir>. Output
+``slides/slide_NNN.png`` and the deck's soffice PDF in <deck_dir> — ``<stem>.text.pdf``
+when present (the text layer, equations blank), else the visual ``<stem>.pdf``. Output
 (default ``<deck_dir>/coverage/``):
 
 * ``slide_NNN.png`` — the render with every element's region drawn and labelled
@@ -189,12 +190,20 @@ def _md(deck: str, rows: list[dict], totals: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def run(deck_dir: Path, out_dir: Path) -> dict:
-    index = json.loads((deck_dir / "index.scoped.json").read_text())
-    pdfs = sorted(deck_dir.glob("*.pdf"))
+def _deck_pdf(deck_dir: Path) -> Path:
+    """The PDF whose text layer to read: ``<stem>.text.pdf`` (soffice's own layout,
+    the layer refine_text snapped to) when the render stage wrote one, else the
+    visual ``<stem>.pdf`` (there, equation boxes are pictures with no glyphs)."""
+    pdfs = sorted(deck_dir.glob("*.text.pdf")) or sorted(
+        p for p in deck_dir.glob("*.pdf") if not p.name.endswith(".text.pdf"))
     if not pdfs:
         raise FileNotFoundError(f"no PDF in {deck_dir}")
-    pages = _pdf_pages(pdfs[0])
+    return pdfs[0]
+
+
+def run(deck_dir: Path, out_dir: Path) -> dict:
+    index = json.loads((deck_dir / "index.scoped.json").read_text())
+    pages = _pdf_pages(_deck_pdf(deck_dir))
     if len(pages) != len(index["slides"]):
         raise RuntimeError(f"PDF has {len(pages)} pages but index has {len(index['slides'])} slides")
     size = index["slide_size"]

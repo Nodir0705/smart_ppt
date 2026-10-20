@@ -132,6 +132,29 @@ def test_overlay_keeps_size_and_draws_something():
     assert out.getcolors(maxcolors=400 * 225) != [(400 * 225, (255, 255, 255))]
 
 
+def test_words_come_from_text_pdf_when_present(tmp_path, monkeypatch):
+    import json
+    import tools.coverage as cov
+
+    deck = tmp_path / "deck"
+    (deck / "slides").mkdir(parents=True)
+    Image.new("RGB", (40, 22), "white").save(deck / "slides" / "slide_001.png")
+    (deck / "index.scoped.json").write_text(json.dumps({
+        "deck": "d.pptx", "slide_size": {"w": 13.333, "h": 7.5},
+        "slides": [{"slide_number": 1, "elements": [_el("s1_e0", "body", 1, 1, 2, 0.5)]}]}))
+    (deck / "d.pdf").write_bytes(b"")        # visual render: equations as pictures, no text
+    (deck / "d.text.pdf").write_bytes(b"")   # soffice's own layout: the text layer
+
+    def fake_pages(pdf_path):
+        words = [{"text": "hello", "x0": 80, "x1": 110, "top": 80, "bottom": 90}]
+        return [(960.0, 540.0, words if pdf_path.name.endswith(".text.pdf") else [])]
+    monkeypatch.setattr(cov, "_pdf_pages", fake_pages)
+
+    assert main([str(deck), "--out", str(tmp_path / "cov")]) == 0
+    report = json.loads((tmp_path / "cov" / "report.json").read_text())
+    assert report["totals"]["words"] == 1 and report["totals"]["claimed"] == 1
+
+
 @pytest.mark.skipif(not (DECK_DIR / "index.scoped.json").exists(),
                     reason="test_deck not built under out/bench")
 def test_main_writes_report_and_overlays(tmp_path):
