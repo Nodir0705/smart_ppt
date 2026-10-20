@@ -18,7 +18,8 @@ from pptx.oxml.shapes.groupshape import CT_GroupShape
 _log = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
-ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
+ARROW_DIM_THRESHOLD_IN = 0.15  # thinner than this in one dimension = line-thin
+ARROW_MIN_LEN_IN = 0.5         # ... and at least this long = a drawn line (not a dot)
 OFF_CANVAS_TOL_IN = 0.05       # a shape this far outside the slide is wholly off-canvas
 OCCLUSION_TOL_IN = 0.02        # a later opaque shape reaching this close to a leaf's edges covers it
 
@@ -278,6 +279,33 @@ def _ocr_picture(shape) -> str:
 
 def _is_zero_dim(bbox: BBox) -> bool:
     return bbox.w < ARROW_DIM_THRESHOLD_IN or bbox.h < ARROW_DIM_THRESHOLD_IN
+
+
+# `a:prstGeom/@prst` values that draw a line or an arrow.
+_LINE_PRESETS = frozenset(
+    "line straightConnector1 bentConnector2 bentConnector3 bentConnector4 bentConnector5 "
+    "curvedConnector2 curvedConnector3 curvedConnector4 curvedConnector5 "
+    "rightArrow leftArrow upArrow downArrow leftRightArrow upDownArrow bentArrow uturnArrow "
+    "curvedRightArrow curvedLeftArrow curvedUpArrow curvedDownArrow notchedRightArrow "
+    "stripedRightArrow swooshArrow quadArrow leftRightUpArrow leftUpArrow bentUpArrow "
+    "circularArrow leftCircularArrow leftRightCircularArrow".split())
+
+
+def _is_line_like(shape, bbox: BBox) -> bool:
+    """An empty shape that draws a line or arrow: a connector, a line/arrow
+    preset, a zero-dim freeform, or a thin (< 0.15 in) filled bar at least
+    0.5 in long (a divider line). Dots, small circles and zero-area boxes of
+    any size are decorative, not arrows."""
+    el = shape._element
+    if el.tag == _P_NS + "cxnSp":
+        return True
+    geom = el.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
+    if geom is not None and geom.get("prst") in _LINE_PRESETS:
+        return True
+    if el.find(_P_NS + "spPr/" + _A_NS + "custGeom") is not None:
+        return _is_zero_dim(bbox)
+    return (_is_zero_dim(bbox) and max(bbox.w, bbox.h) >= ARROW_MIN_LEN_IN
+            and _fill(shape) is not None)
 
 
 # ---------- visibility (what the rendered slide shows) ----------
@@ -809,7 +837,7 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
                 needs_vision=not label,
             ))
             continue
-        if not text and _is_zero_dim(bbox):
+        if not text and _is_line_like(shape, bbox):
             elements.append(Element(
                 id=next_id(),
                 type="arrow",

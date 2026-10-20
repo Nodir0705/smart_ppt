@@ -639,6 +639,29 @@ def _build_movie(out_dir: Path) -> CorpusDeck:
                       note="embedded video (p:pic + videoFile) -> one image element")
 
 
+def _build_arrow_shapes(out_dir: Path) -> CorpusDeck:
+    """What an `arrow` element is — and is not. Arrows: a connector, a block
+    RIGHT_ARROW (2 x 0.5 in), a thin solid-filled 3 x 0.05 in rectangle (a
+    drawn divider line). Not arrows (decorative, skipped): a 0.1-in dot OVAL
+    and an empty zero-width text box — the old "any dimension < 0.15 in" rule
+    made both arrows. Every shape is empty-text."""
+    from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    s.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(4), Inches(1.5))
+    s.shapes.add_shape(MSO_SHAPE.RIGHT_ARROW, Inches(1), Inches(2), Inches(2), Inches(0.5))
+    bar = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(3), Inches(3), Inches(0.05))
+    bar.fill.solid()
+    s.shapes.add_shape(MSO_SHAPE.OVAL, Inches(1), Inches(4), Inches(0.1), Inches(0.1))
+    s.shapes.add_textbox(Inches(5), Inches(1), Inches(0), Inches(1))
+    path = out_dir / "arrow_shapes.pptx"
+    prs.save(str(path))
+    return CorpusDeck("arrow_shapes", str(path), expected_texts=[],
+                      expected_types=["arrow"] * 3, expected_min_elements=3,
+                      note="connector/arrow preset/thin filled bar -> arrow; dot & zero-width box -> skipped")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -676,6 +699,7 @@ _BUILDERS = [
     _build_occluded_text,
     _build_placeholder_picture,
     _build_movie,
+    _build_arrow_shapes,
     _build_empty_slide,
 ]
 

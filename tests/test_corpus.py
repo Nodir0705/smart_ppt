@@ -415,6 +415,16 @@ def test_every_p_pic_is_an_image(tmp_path, deck, bbox):
             for e in s["elements"]] == ["image"]
 
 
+def test_arrows_come_from_geometry_not_from_being_small(tmp_path):
+    # connector, RIGHT_ARROW preset and a thin filled 3x0.05 bar are arrows;
+    # the 0.1-in dot and the empty zero-width text box are decorative — absent.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["arrow_shapes"].path)["slides"] for e in s["elements"]]
+    assert [e["type"] for e in els] == ["arrow"] * 3, els
+    assert sorted((round(e["bbox"]["w"], 2), round(e["bbox"]["h"], 2)) for e in els) == [
+        (2.0, 0.5), (3.0, 0.05), (3.0, 0.5)]
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")
