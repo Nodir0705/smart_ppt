@@ -595,6 +595,50 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
                       note="text under a later opaque shape -> not indexed; 4 controls stay")
 
 
+def _png(size=(320, 240), color=(90, 130, 180)):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "PNG")
+    buf.seek(0)
+    return buf
+
+
+def _build_placeholder_picture(out_dir: Path) -> CorpusDeck:
+    """A picture inserted into a layout's PICTURE placeholder ("Picture with
+    Caption"). python-pptx types it PLACEHOLDER, not PICTURE, so a shape_type
+    test dropped it as an empty decorative shape; it is a `p:pic` and must be
+    the slide's one `image` element (no alt text → needs_vision)."""
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[8])  # Picture with Caption
+    s.placeholders[1].insert_picture(_png())
+    path = out_dir / "placeholder_picture.pptx"
+    prs.save(str(path))
+    return CorpusDeck("placeholder_picture", str(path), expected_texts=[],
+                      expected_types=["image"],
+                      note="p:pic in a PICTURE placeholder -> one image element")
+
+
+def _build_movie(out_dir: Path) -> CorpusDeck:
+    """An embedded video: a `p:pic` with a poster frame, typed MEDIA by
+    python-pptx (no `.image`; the raster is `.poster_frame`). Must be the
+    slide's one `image` element and OCR must read the poster frame, not crash.
+    The video bytes are fake — python-pptx never inspects them."""
+    video = out_dir / "fake.mp4"
+    video.write_bytes(b"\0" * 400)
+    prs = Presentation()
+    s = _blank_slide(prs)
+    s.shapes.add_movie(str(video), Inches(2), Inches(1.5), Inches(6), Inches(4),
+                       poster_frame_image=_png(), mime_type="video/mp4")
+    path = out_dir / "movie.pptx"
+    prs.save(str(path))
+    return CorpusDeck("movie", str(path), expected_texts=[],
+                      expected_types=["image"],
+                      note="embedded video (p:pic + videoFile) -> one image element")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -630,6 +674,8 @@ _BUILDERS = [
     _build_hidden_shapes,
     _build_off_canvas,
     _build_occluded_text,
+    _build_placeholder_picture,
+    _build_movie,
     _build_empty_slide,
 ]
 

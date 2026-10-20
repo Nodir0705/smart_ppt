@@ -268,7 +268,8 @@ def _ocr_picture(shape) -> str:
     text — the caller then leaves the image needs_vision (no false pointable).
     """
     try:
-        blob = shape.image.blob
+        # a Movie has no `.image`; its raster is the poster frame
+        blob = (getattr(shape, "image", None) or shape.poster_frame).blob
     except Exception:
         return ""  # linked or unsupported picture exposes no blob
     from .ocr import ocr_image_text
@@ -728,7 +729,9 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
             "shape": shape,
             "bbox": bbox,
             "text": _shape_text(shape),
-            "is_picture": shape.shape_type == MSO_SHAPE_TYPE.PICTURE,
+            # every `p:pic` — python-pptx types one in a layout placeholder
+            # PLACEHOLDER and an embedded video MEDIA, not PICTURE
+            "is_picture": shape._element.tag == _P_NS + "pic",
             "is_table": getattr(shape, "has_table", False),
             "is_chart": getattr(shape, "has_chart", False),
         })

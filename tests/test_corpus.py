@@ -397,6 +397,24 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
     ], per_slide
 
 
+@pytest.mark.parametrize("deck,bbox", [
+    ("placeholder_picture", None),                 # the layout's placeholder geometry
+    ("movie", {"x": 2.0, "y": 1.5, "w": 6.0, "h": 4.0}),
+])
+def test_every_p_pic_is_an_image(tmp_path, deck, bbox):
+    # A picture in a layout placeholder (PLACEHOLDER) and an embedded video
+    # (MEDIA) are both `p:pic` elements → exactly one needs_vision image each.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks[deck].path)["slides"] for e in s["elements"]]
+    assert [e["type"] for e in els] == ["image"], els
+    assert els[0]["needs_vision"] is True and els[0]["text"] is None
+    if bbox:
+        assert {k: round(els[0]["bbox"][k], 2) for k in bbox} == bbox
+    # OCR reads a movie's poster frame (no `.image`) — must not raise either way
+    assert [e["type"] for s in parse_deck(decks[deck].path, ocr=True)["slides"]
+            for e in s["elements"]] == ["image"]
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")
