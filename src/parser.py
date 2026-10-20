@@ -376,20 +376,21 @@ def _picture_may_show_through(shape) -> bool:
 
 def _is_opaque(shape) -> bool:
     """A leaf that hides whatever lies wholly under its (axis-aligned) bbox: a
-    picture without transparency, or a rectangular `p:sp` filled with no
-    `a:alpha` < 100 %. A rotated shape's AABB exceeds its paint, so it never
-    occludes; nor do connectors, graphic frames, custom geometry or
-    transparent shapes."""
+    rectangular picture without transparency, or a rectangular `p:sp` filled
+    with no `a:alpha` < 100 %. A rotated shape's AABB exceeds its paint, so it
+    never occludes; nor does one drawn or cropped to a non-rectangular preset
+    (Crop ▸ Crop to Shape writes `p:pic/p:spPr/a:prstGeom` too), custom
+    geometry, a connector, a graphic frame or a transparent shape."""
     if (getattr(shape, "rotation", 0.0) or 0.0) % 90 != 0:
         return False
     tag = shape._element.tag
-    if tag == _P_NS + "pic":
-        return not _picture_may_show_through(shape)
-    if tag != _P_NS + "sp":
+    if tag not in (_P_NS + "pic", _P_NS + "sp"):
         return False
     geom = shape._element.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
     if geom is None or geom.get("prst") not in _RECT_PRESETS:
         return False
+    if tag == _P_NS + "pic":
+        return not _picture_may_show_through(shape)
     f = _fill(shape)
     return f is not None and not any(
         (a.get("val") or "").isdigit() and int(a.get("val")) < 100000

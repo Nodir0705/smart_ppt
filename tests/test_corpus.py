@@ -425,8 +425,10 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
     # through: an RGBA PNG, an `a:alphaModFix`-faded one. An opaque RGB
     # picture still hides its text (the control), and so does an ANIMATED
     # cover: the index is the rendered slide, animation builds are not
-    # modelled (slide 6). The picture itself is always an element (`None` =
-    # its text-less image).
+    # modelled (slide 6). A picture cropped to a shape (prstGeom ellipse)
+    # paints less than its AABB, like an ellipse — the text in its corner
+    # stays. The picture itself is always an element (`None` = its text-less
+    # image).
     decks = {d.name: d for d in build_corpus(tmp_path)}
     index = parse_deck(decks["occluded_text"].path)
     per_slide = [[e["text"] for e in s["elements"]] for s in index["slides"]]
@@ -442,6 +444,7 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
         ["Under an RGBA picture", None],
         ["Under a faded picture", None],
         [None],
+        ["In a cropped picture's corner", None],
     ], per_slide
 
 
