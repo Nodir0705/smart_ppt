@@ -518,6 +518,25 @@ def _build_math_textbox(out_dir: Path) -> CorpusDeck:
                       note="mc:AlternateContent equation box -> Choice text incl. math; a:br -> newline")
 
 
+def _build_hidden_shapes(out_dir: Path) -> CorpusDeck:
+    """Shapes PowerPoint hides (`p:cNvPr hidden="1"` — Selection Pane "eye off"):
+    a hidden text box and a hidden GROUP holding a text box, beside a visible
+    box. Hidden shapes are not on the rendered slide, so none may be indexed;
+    the visible sibling must survive. python-pptx cannot author `hidden`."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Visible sibling", y=1.0)
+    hidden = _textbox(s.shapes, "Hidden box", y=2.5)
+    hidden._element.nvSpPr.cNvPr.set("hidden", "1")
+    g = s.shapes.add_group_shape()
+    g.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)).text_frame.text = "Inside hidden group"
+    g._element.nvGrpSpPr.cNvPr.set("hidden", "1")
+    path = out_dir / "hidden_shapes.pptx"
+    prs.save(str(path))
+    return CorpusDeck("hidden_shapes", str(path), expected_texts=["Visible sibling"],
+                      note="hidden shape / hidden group subtree -> not indexed")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -550,6 +569,7 @@ _BUILDERS = [
     _build_image_baked_text,
     _build_image_no_text,
     _build_math_textbox,
+    _build_hidden_shapes,
     _build_empty_slide,
 ]
 

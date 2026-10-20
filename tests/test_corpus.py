@@ -361,6 +361,18 @@ def test_ocr_does_not_hallucinate_on_textless_image(tmp_path):
     assert imgs[0]["trigger_phrases"] == []
 
 
+def _texts(index: dict) -> list[str]:
+    return [e["text"] or "" for s in index["slides"] for e in s["elements"]]
+
+
+def test_hidden_shapes_are_not_indexed(tmp_path):
+    # `cNvPr hidden="1"` shapes are invisible on the rendered slide; a hidden
+    # group hides its whole subtree. The visible sibling is untouched.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    texts = _texts(parse_deck(decks["hidden_shapes"].path))
+    assert texts == ["Visible sibling"], texts
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

@@ -112,6 +112,14 @@ def _compose(parent, group_shape):
 
 
 _MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+
+
+def _is_hidden(elm) -> bool:
+    """`p:cNvPr/@hidden` (Selection Pane "eye off"): the shape — or, on a
+    group, its whole subtree — is not on the rendered slide."""
+    cnv = elm.find("./*/" + _P_NS + "cNvPr")
+    return cnv is not None and cnv.get("hidden") in ("1", "true")
 
 
 def _shape_elms(sp_tree):
@@ -137,6 +145,8 @@ def _iter_flat(shapes, transform=_IDENTITY):
     """Yield (leaf_shape, transform) for every shape, recursing into groups so
     nested shapes surface with a transform that maps them to slide coordinates."""
     for elm in _shape_elms(shapes._spTree):
+        if _is_hidden(elm):
+            continue
         shape = shapes._shape_factory(elm)
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             yield from _iter_flat(shape.shapes, _compose(transform, shape))
