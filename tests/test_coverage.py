@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from tools.coverage import draw_overlay, main, slide_coverage
+from tools.coverage import _page_words, draw_overlay, main, slide_coverage
 
 ROOT = Path(__file__).resolve().parents[1]
 DECK_DIR = ROOT / "out" / "bench" / "test_deck" / "default"
@@ -74,6 +74,31 @@ def test_line_bboxes_preferred_over_bbox():
     assert r["claimed"] == 1
     assert [ln["text"] for ln in r["unclaimed_lines"]] == ["below"]
     assert r["empty_text"] == []
+
+
+class _FakeTextPage:
+    """Stand-in for pypdfium2's PdfTextPage: chars with tight boxes (PDF points, bottom-up)."""
+
+    def __init__(self, chars):
+        self.chars = chars  # [(ch, left, bottom, right, top)]
+
+    def count_chars(self):
+        return len(self.chars)
+
+    def get_text_range(self, i, n):
+        return "".join(c[0] for c in self.chars[i:i + n])
+
+    def get_charbox(self, i, loose=False):
+        return self.chars[i][1:]
+
+
+def test_page_words_split_on_whitespace_and_hyphen_break_marker():
+    tp = _FakeTextPage([("a", 10, 90, 15, 100), ("b", 16, 90, 20, 100), (" ", 0, 0, 0, 0),
+                        ("c", 30, 90, 35, 100), ("\ufffe", 0, 0, 0, 0), ("d", 10, 70, 15, 80)])
+    words = _page_words(tp, 200.0)
+    assert [w["text"] for w in words] == ["ab", "c", "d"]
+    assert words[0] == {"text": "ab", "x0": 10, "x1": 20, "top": 100.0, "bottom": 110.0}
+    assert words[2]["top"] == 120.0  # the line after a hyphen break stays its own word
 
 
 def test_overlay_keeps_size_and_draws_something():

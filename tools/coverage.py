@@ -25,14 +25,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 
 import pypdfium2 as pdfium
 from PIL import Image, ImageDraw, ImageFont
 
-from src.refine_text import (PT_PER_INCH, _assemble_words, _norm, cluster_lines,
-                             union_bbox, words_to_inches)
+from src.refine_text import (_WHITESPACE, PT_PER_INCH, _norm, cluster_lines, union_bbox,
+                             words_to_inches)
 
 PAD_IN = 0.03
 FOOTER_FRAC = 0.92
@@ -41,6 +40,9 @@ NON_TEXT_TYPES = {"image", "arrow", "chart", "chart_category"}
 
 COLOURS = {"text": (30, 90, 255), "image": (200, 0, 180), "arrow": (140, 140, 140),
            "vision": (255, 140, 0)}
+# U+FFFE is pdfium's marker for a hyphenated line break ("per\ufffeexercise"): no
+# whitespace follows it, so without this the two halves fuse into a two-line token.
+_SEPARATORS = _WHITESPACE | {"\ufffe"}
 
 
 def regions(e: dict) -> list[dict]:
@@ -54,18 +56,41 @@ def _inside(b: dict, cx: float, cy: float) -> bool:
     return b["x"] <= cx <= b["x"] + b["w"] and b["y"] <= cy <= b["y"] + b["h"]
 
 
-def _pdf_pages(pdf_path: Path) -> list[tuple[float, float, list[dict]]]:
-    """(width_pt, height_pt, words) per page; words in points, y from the top.
+def _page_words(textpage, page_height: float) -> list[dict]:
+    """pdfium's whitespace tokens with their tight glyph-union box (points, y from top).
 
-    A word is one of pdfium's own whitespace tokens: refine_text's 2 pt / 3 pt
-    gap splits (right for snapping line boxes) cut large-font words into glyph
-    fragments, which is noise for a word-centre test and garbles the report.
+    refine_text._assemble_words also splits on 2 pt / 3 pt glyph gaps — right for
+    snapping line boxes, but it cuts large-font words into fragments, which is
+    noise for a word-centre test and garbles the report text.
     """
+    words: list[dict] = []
+    cur: dict | None = None
+    for i in range(textpage.count_chars()):
+        ch = textpage.get_text_range(i, 1)
+        if ch in _SEPARATORS:
+            if cur is not None:
+                words.append(cur)
+            cur = None
+            continue
+        left, bottom, right, top = textpage.get_charbox(i, loose=False)
+        box = {"text": ch, "x0": left, "x1": right,
+               "top": page_height - top, "bottom": page_height - bottom}
+        if cur is None:
+            cur = box
+        else:
+            cur["text"] += ch
+            cur["x0"], cur["x1"] = min(cur["x0"], left), max(cur["x1"], right)
+            cur["top"], cur["bottom"] = min(cur["top"], box["top"]), max(cur["bottom"], box["bottom"])
+    if cur is not None:
+        words.append(cur)
+    return words
+
+
+def _pdf_pages(pdf_path: Path) -> list[tuple[float, float, list[dict]]]:
+    """(width_pt, height_pt, words) per page."""
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
-        return [(*page.get_size(),
-                 _assemble_words(page.get_textpage(), page.get_size()[1],
-                                 x_tol=math.inf, y_tol=math.inf))
+        return [(*page.get_size(), _page_words(page.get_textpage(), page.get_size()[1]))
                 for page in pdf]
     finally:
         pdf.close()
