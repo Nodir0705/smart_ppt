@@ -458,3 +458,20 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
 - **"Push it to github" on finished work means master.** I pushed the reviewed branch as `feat/parser-coverage` and asked
   whether to merge; the user: "you should have pushed it to master". Finished + reviewed → `merge --no-ff` into master
   → push master. Ask only when the work is unfinished or unscored.
+
+## 2026-10-20 — Holdout run, 3 of 7 unseen decks (cdc training deck, zbw research talk, kcl picture-heavy talk)
+
+- **The parser held.** Fifteen blind agents reported "missing" items on 78 slides; every one was a picture-internal mark,
+  a layout/master picture, a chart-geometry gap (horizontal bars treated as columns, bars not rendered) or an authored
+  quirk (three stacked copies of a table, stale build-up arrows). Coverage: 0 PDF words outside an element on cdc and kcl;
+  zbw's 65 are the quote carousel under later quotes. No new text-dropping class appeared.
+- **Maps buy precision on unseen decks; titles are the recall gap.** With maps: zbw 82/80/68 %, cdc 74/72/64 %, kcl
+  74/72/79 % lit, false ids ≤ 4 per talk (without maps 7–24). The single biggest miss class on all three is the slide
+  title or a title-only section slide (cdc: 34 of 68 misses; kcl: all five divider slides in every talk). Title units get
+  no map talk by design (their talk was slide-intro speech said without pointing); on decks where the presenter talks
+  TO the title, that design costs 10–20 points of recall. This is the next pointer lever, measured on holdout data.
+- **The map variant under-switches on unseen decks** (sw/step 0.72–0.99, cdc zero false ids over 226 steps): it holds
+  the current unit when the presenter moves on by meaning ("that quote", "the second row"). The meaning talks are the
+  weakest column everywhere except kcl.
+- **Agent-built truth is cheap enough to run per deck**: ~5 agents and ~25 min of compute per deck end to end, so the
+  remaining four holdout decks are an afternoon, not a project. Keep one or two unopened for the next parser change.

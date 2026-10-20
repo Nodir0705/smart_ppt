@@ -786,7 +786,58 @@ Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_
 - [x] 7b. Merged to master (f8b93c2) and pushed 2026-10-20; rollback copies (`out/pre_remap_backup_124840/`,
       `out/maps/mit_theory_computation/old_146/`) deleted. c317cb7 approved on re-review (all probes, 0 changed elements).
 - [ ] 8. Holdout run on the 7 unseen decks (not MIT): maps + 3 blind talk scripts each, shipped params, report against
-      the bench rows. MIT is re-scored with them but reported as a dev deck.
+      the bench rows. Started 2026-10-20 with a 3-deck subset at master 899a0dc: cdc_infection_control (25 slides, training
+      deck), zbw_research_metrics (17, chart/table), kcl_biomed_signals (36, picture-heavy). Protocol per deck = the MIT
+      pilot: deck_bench default → packets + coverage → 2 blind map agents + 3 blind script agents → presenter audio →
+      map build → clause_replay --record --holdout → rows + coverage. Remaining 4 after reading these.
+      Build stage (parse-only facts, no content read): cdc 139 elements, coverage 0/815 unclaimed, 8 "empty text" = empty
+      table cells on s20 (coverage should skip text-less elements — report nit); zbw 214 elements, 65/1586 unclaimed in 7
+      lines = the quote carousel (quotes under later quotes: dropped as occluded per the display model, but their glyphs
+      are still in the PDF text layer — coverage cannot see visibility; not a parser gap), filler false 6 (gate ≤ 5 —
+      the only deck over it); kcl 390 elements, 0/1145 unclaimed, 3 empty = table cells on s26. Verbatim (reported):
+      cdc 0.552, zbw 0.658, kcl 0.745, precision 1.0 / 1.0 / 0.995.
+      Agent findings (parser follow-ups, NOT fixed during the run): zbw s4 — a horizontal bar chart renders with NO bars
+      in the soffice PNG and its `chart_category` boxes are transposed (chart_geom/chart_detect assume columns); logos
+      that live in the layout/master have no ids (by design: furniture); zbw s16 — four lines in one text box (br, one
+      paragraph) are one element — the map agent reports 4 PARAGRAPHS in one element: a multi-paragraph text box that
+      pairs with a panel is emitted as one `diagram_label`, so the per-paragraph split never happens; the quote carousel
+      renders as a collapsed stack; speech-bubble shapes carry text-only boxes (the bubble itself is not an element).
+      cdc: the person photos on the "Picture with Caption" slides live in the layout/master (not slide shapes) — furniture
+      by design, but presenters talk about them (product question: index layout pictures?); an EMPTY content placeholder
+      paired with the slide title (s8: title → `diagram_label`) — rule candidate: empty placeholders are layout slots,
+      never containers; s13's leftover title sits only partly under a thumbnail (kept by full-containment, correct per
+      rule, invisible in practice); white-on-white header text (s7) is indexed — no contrast rule exists.
+      cdc s20: table header cells carry text-tight boxes (refined glyph union) while empty body cells keep the full cell —
+      a header highlight is undersized (refine shrinks table cells to glyphs; a cell should keep its cell box). zbw: stale
+      arrows from earlier builds and page-number bodies all reading "7" on slides 8–12/14 (deck quirks, not parser).
+      kcl s26: the table appears THREE times (three identical graphicFrames "Table 11/12/13" at one offset — authored
+      stacked builds; graphicFrames never occlude, so all 36 cells are indexed; a "topmost of identical stacked tables"
+      rule would be general but is deferred).
+      RESULTS (shipped params, cross decider, cpu; lit · false ids · false s · late med):
+      | zbw (17 sl, truth 68/70/68) | no maps: 53/68·12·43.2·3.46, 57/70·8·21.0·3.68, 48/68·7·18.7·4.28 | maps: 56/68·2·11.9·2.95, 56/70·3·15.7·3.50, 46/68·2·12.2·3.54 (sw/step 0.95/0.91/0.77) |
+        zbw misses (map): spread, no dominant slide — the stacked-bar chart rows on s4 (boxes transposed, bars not
+        rendered), the table on s13 (column/row units), the speech-bubble slides s10/s11/s14, the contact block s17; the
+        meaning talk under-switches (sw/step 0.77) — it holds the current unit when the presenter says "that quote".
+      | cdc (25 sl, truth 72/76/78) | no maps: 58/72·3·4.8·2.76, 62/76·4·8.7·2.44, 50/78·1·3.2·4.20 | maps: 53/72·0·0.0·2.48, 55/76·0·0.0·2.99, 50/78·0·0.0·3.40 (sw/step 0.81/0.78/0.72) |
+        cdc misses (map): slide TITLES — of 19/21/28 misses, 12/9/13 are `sN_e0` titles (a training deck where many
+        slides are a title plus one body; the presenter talks to the title). Zero false ids over 226 steps: the map
+        variant under-switches (sw/step < 1), trading 5–7 lit for silence. The title/kicker lever is the whole gap here.
+      | kcl (36 sl, truth 101/119/108) | no maps: 65/101·24·51.0·2.42, 70/119·19·42.1·3.10, 64/108·24·60.6·3.12 | maps: 75/101·3·12.4·2.60, 86/119·1·4.5·3.20, 85/108·4·19.1·3.02 (sw/step 0.94/0.81/0.99) |
+        kcl misses (map): the five section-divider slides (s6/s19/s24/s31/s33, title-only: 0/1 each in every talk = 15
+        of 83 misses), multi-part figure units (s27 formula pieces, s18 six panels, s35 funder list, s5 timeline), the
+        circuit's arrow pile on s8; false ids 1–4 per talk.
+      SUBSET SUMMARY (maps; lit %): zbw 82/80/68, cdc 74/72/64, kcl 74/72/79 vs bench AI 96/97/97, TapHole 97/85/95, MIT
+      82/81/79. Precision on the unseen decks is BETTER than on the bench decks (false ids ≤ 4 per talk vs 3–13) and the
+      no-map runs show why maps matter (false ids 7–24 without them); recall is lower, and one cause dominates: slide
+      titles and section-title slides (cdc 34 of 68 misses, kcl 15 of 83, zbw s1/s7). Coverage: 0 unclaimed words on
+      cdc and kcl, zbw's 65 are the occluded quote carousel. Verdict: the parser generalizes (every agent's "missing"
+      list is a picture-internal mark, a layout picture, a chart-geometry gap or a stacked-build quirk); the next lever
+      is the pointer's handling of titles, then tiny-label and multi-part figure units. Remaining 4 holdout decks unrun.
+      Figure-internal marks inside pictures (diamonds, circles, highlight boxes)
+      have no ids — pictures are atoms by design. BUT kcl s32's 5×5 dot grid is drawn as tiny empty ellipses (shapes, not
+      a picture) and is now dropped entirely by the arrow rule (was: 25 `arrow` elements, pointable via maps) — the same
+      cost as TapHole's burr dots. Candidate general rule: keep a tiny filled shape when it sits in a cluster of ≥ N
+      same-geometry siblings (a drawn diagram), as a non-text `shape` element; a lone dot stays decoration.
 
 ### Pilot first (user, 2026-10-15: "try with smaller one"): unseen-deck run on `holdout/mit_theory_computation` (14 slides), shipped code
 - [x] default index + verbatim bench: recall 61/88, precision 1.000, false 0, flicker 8, filler false 1
