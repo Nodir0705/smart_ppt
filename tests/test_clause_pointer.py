@@ -33,6 +33,14 @@ def _ptr(**kw):
     return ClausePointer(d, UNITS, p, low_prior={"t"}), d
 
 
+def test_a_slide_with_no_pointable_units_never_calls_the_decider():
+    d = KeywordDecider({})
+    cp = ClausePointer(d, [], ClauseParams(min_words=2, commit=0.0))   # e.g. an image-only title card
+    dec = cp.update("welcome everyone to this talk about composite bonding".split())
+    assert (dec.active, dec.why) == (None, "noop")
+    assert d.calls == []
+
+
 def test_commits_mid_clause_and_holds_through_non_referential_clauses():
     cp, _ = _ptr()
     w = "so here alpha is".split()

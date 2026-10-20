@@ -212,6 +212,8 @@ class ClausePointer:
             clause, ctx = self.repair(clause), self.repair(ctx)
         if self.committed is None and len(_words(clause) - FILLER) < self.p.min_content:
             return Decision(self.active, "hold" if self.active else "noop", clause=clause)
+        if not self.units:   # nothing pointable on this slide (e.g. an image-only title card)
+            return Decision(None, "noop", clause=clause)
         scores = self.decider.decide(clause, ctx, self.units)
         return self._commit(scores, clause)
 
