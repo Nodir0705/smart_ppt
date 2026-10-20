@@ -143,6 +143,7 @@ def test_apply_rewrites_tree_in_place(tmp_path, capsys):
     packet = json.dumps({"slide": 1, "png": "x.png", "elements": [{"id": "s1_e1"}]})
     (maps / "packets" / "slide_001.json").write_text(packet)
     (maps / "notes.txt").write_text("s1_e1 stays")
+    (maps / "index.json").write_text(json.dumps(_index(OLD)))   # an index must never be rewritten
     script = tmp_path / "presenter_script.json"
     script.write_text(json.dumps({"deck": "d", "slides": [{"slide": 1, "segments": [
         {"text": "The arrow.", "refers_to": ["s1_e1", "s1_e3"]}]}]}, indent=2))
@@ -154,6 +155,7 @@ def test_apply_rewrites_tree_in_place(tmp_path, capsys):
     assert (maps / "slide_001.json").read_text().startswith('{\n "slide": 1,')      # indent=1 kept
     assert (maps / "packets" / "slide_001.json").read_text() == packet
     assert (maps / "notes.txt").read_text() == "s1_e1 stays"
+    assert json.loads((maps / "index.json").read_text()) == _index(OLD)
     raw = script.read_text()
     assert json.loads(raw)["slides"][0]["segments"][0]["refers_to"] == ["s1_e3"]
     assert raw.startswith('{\n  "deck"') and not raw.endswith("\n")             # indent=2, no newline kept
