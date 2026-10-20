@@ -9,12 +9,64 @@ and the count matches the deck, it skips re-rendering.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 
+from lxml import etree
 from pptx import Presentation
+
+_MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_A_BLIP = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
+_SLIDE_RE = re.compile(r"ppt/slides/slide\d+\.xml")
+
+
+def _inline_fallbacks(slide_xml: bytes) -> bytes | None:
+    """Replace each `mc:AlternateContent` whose Fallback holds a picture by that
+    Fallback's children, in place. None when the slide has none."""
+    root = etree.fromstring(slide_xml)
+    acs = [ac for ac in root.iter(_MC_NS + "AlternateContent")
+           if ac.find(_MC_NS + "Fallback/.//" + _A_BLIP) is not None]
+    if not acs:
+        return None
+    for ac in acs:
+        parent = ac.getparent()
+        i = parent.index(ac)
+        for child in list(ac.find(_MC_NS + "Fallback")):
+            parent.insert(i, child)
+            i += 1
+        parent.remove(ac)
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _render_input(pptx_path: Path, tmp_dir: Path) -> Path:
+    """The file soffice renders: the deck itself, or — when a slide wraps a text
+    box in `mc:AlternateContent` with a picture Fallback (PowerPoint's equation
+    boxes; soffice renders the Choice but drops the equations, leaving gaps) —
+    a copy in `tmp_dir` with each such box replaced by its Fallback picture, as
+    PowerPoint drew it. The copy is deterministic: original entry order and
+    compression, fixed timestamps."""
+    with zipfile.ZipFile(pptx_path) as zin:
+        infos = zin.infolist()
+        patched = {}
+        for info in infos:
+            if _SLIDE_RE.fullmatch(info.filename):
+                xml = _inline_fallbacks(zin.read(info))
+                if xml is not None:
+                    patched[info.filename] = xml
+        if not patched:
+            return pptx_path
+        copy = tmp_dir / pptx_path.name
+        with zipfile.ZipFile(copy, "w") as zout:
+            for info in infos:
+                zi = zipfile.ZipInfo(info.filename, date_time=(1980, 1, 1, 0, 0, 0))
+                zi.compress_type = info.compress_type
+                zout.writestr(zi, patched[info.filename] if info.filename in patched
+                              else zin.read(info))
+    return copy
 
 
 def _count_slides(pptx_path: Path) -> int:
@@ -51,11 +103,12 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
         # A private user profile per run: soffice serialises on its profile, so
         # two concurrent renders (another test run, another agent) would collide.
         profile = td_path / "profile"
+        src = _render_input(pptx_path, td_path)
         r = subprocess.run(
             [
                 "soffice", "--headless", "--nologo", "--nofirststartwizard",
                 f"-env:UserInstallation={profile.as_uri()}",
-                "--convert-to", "pdf", "--outdir", str(td_path), str(pptx_path),
+                "--convert-to", "pdf", "--outdir", str(td_path), str(src),
             ],
             check=False, capture_output=True, text=True, timeout=120,
         )

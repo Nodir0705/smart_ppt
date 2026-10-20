@@ -38,6 +38,32 @@ def test_deck_pdf_gives_soffice_a_private_profile(tmp_path, monkeypatch):
     assert any(a.startswith("-env:UserInstallation=file://") for a in args), args
 
 
+def test_render_input_is_the_deck_itself_without_equation_boxes(tmp_path):
+    # No mc:AlternateContent with a picture Fallback -> soffice gets the original
+    # file; no copy is written.
+    from src.render import _render_input
+    assert _render_input(DECK, tmp_path) == DECK
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="soffice required")
+def test_equation_box_renders_as_its_fallback_picture(tmp_path):
+    # soffice renders an equation box's mc:Choice WITHOUT the equations (gaps
+    # mid-sentence); the mc:Fallback is PowerPoint's own picture of the whole
+    # box. The box's region in the PNG must show that picture (solid dark blue
+    # in the corpus deck), not the near-white Choice rendering.
+    from PIL import Image
+    from tools.make_corpus import build_corpus
+    deck = {d.name: d for d in build_corpus(tmp_path / "corpus")}["math_textbox"]
+    png = render_deck(deck.path, tmp_path / "slides")[0]
+    img = Image.open(png).convert("L")
+    ppi = img.width / 10.0  # default template is 10 in wide
+    box = img.crop((round(1 * ppi), round(2 * ppi), round(9 * ppi), round(3 * ppi)))
+    mean = sum(box.getdata()) / (box.width * box.height)
+    assert mean < 128, f"equation box region is not the fallback picture (mean L={mean:.0f})"
+
+
 @pytest.mark.slow
 class TestRender:
     def test_renders_seven_pngs(self, tmp_path):
