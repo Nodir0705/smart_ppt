@@ -347,14 +347,28 @@ def _fill(shape):
     return ref if idx.isdigit() and int(idx) >= 1 else None
 
 
+# Presets that paint their whole bounding box (an ellipse, a diamond, a block
+# arrow or a callout leaves AABB corners unpainted — never an occluder).
+_RECT_PRESETS = frozenset(
+    "rect roundRect snip1Rect snip2SameRect snip2DiagRect snipRoundRect "
+    "round1Rect round2SameRect round2DiagRect flowChartProcess".split())
+
+
 def _is_opaque(shape) -> bool:
-    """A leaf that hides whatever lies wholly under it: a picture (ponytail:
-    PNG alpha not inspected), or a `p:sp` filled with no `a:alpha` < 100 %.
-    Connectors, graphic frames, transparent shapes never occlude."""
+    """A leaf that hides whatever lies wholly under its (axis-aligned) bbox: a
+    picture (ponytail: PNG alpha not inspected), or a rectangular `p:sp`
+    filled with no `a:alpha` < 100 %. A rotated shape's AABB exceeds its
+    paint, so it never occludes; nor do connectors, graphic frames, custom
+    geometry or transparent shapes."""
+    if (getattr(shape, "rotation", 0.0) or 0.0) % 90 != 0:
+        return False
     tag = shape._element.tag
     if tag == _P_NS + "pic":
         return True
     if tag != _P_NS + "sp":
+        return False
+    geom = shape._element.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
+    if geom is None or geom.get("prst") not in _RECT_PRESETS:
         return False
     f = _fill(shape)
     return f is not None and not any(

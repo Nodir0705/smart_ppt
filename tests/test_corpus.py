@@ -416,8 +416,9 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
     # z-order = document order: a later opaque rect fully covering a text box
     # hides it on the rendered slide. Controls (one slide each) stay indexed:
     # noFill cover, 50 % alpha cover, rect drawn before the text, partial cover,
-    # and an ANIMATED cover (entrance/exit effect: the audience sees what is
-    # under it at some point).
+    # an ANIMATED cover (entrance/exit effect: the audience sees what is under
+    # it at some point), and shapes whose AABB exceeds their paint — a rotated
+    # bar, an ellipse — with the text in the unpainted part of the AABB.
     decks = {d.name: d for d in build_corpus(tmp_path)}
     index = parse_deck(decks["occluded_text"].path)
     per_slide = [[e["text"] for e in s["elements"]] for s in index["slides"]]
@@ -428,6 +429,8 @@ def test_text_under_a_later_opaque_shape_is_not_indexed(tmp_path):
         ["Rect is underneath"],
         ["Only partly covered"],
         ["Cover enters on click"],
+        ["Beside a rotated bar"],
+        ["In an ellipse's corner"],
     ], per_slide
 
 

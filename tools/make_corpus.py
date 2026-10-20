@@ -624,13 +624,30 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
     slide("Rect is underneath", rect_first=True)
     slide("Only partly covered", rect_w=3.0)
     slide("Cover enters on click", animated=True)
+
+    def corner(text, preset, *, rotation=0, box=(0.5, 1.5, 6.0, 2.0), tb=(0.6, 1.6, 1.0, 0.3)):
+        # an opaque shape whose AABB holds the text box while its PAINT does not
+        s = _blank_slide(prs)
+        _textbox(s.shapes, text, x=tb[0], y=tb[1], w=tb[2], h=tb[3])
+        sh = s.shapes.add_shape(preset, *(Inches(v) for v in box))
+        sh.text_frame.clear()
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = RGBColor(0, 0, 0)
+        sh.rotation = rotation
+
+    # a 4 x 0.3 in bar at 45°: its ~3 x 3 in AABB holds a text box 0.9 in off the bar
+    corner("Beside a rotated bar", MSO_SHAPE.RECTANGLE, rotation=45,
+           box=(1.5, 3.35, 4.0, 0.3), tb=(3.2, 2.0, 0.6, 0.4))
+    # an ellipse: the AABB's corner is unpainted
+    corner("In an ellipse's corner", MSO_SHAPE.OVAL)
     path = out_dir / "occluded_text.pptx"
     prs.save(str(path))
     return CorpusDeck("occluded_text", str(path),
                       expected_texts=["Cover has no fill", "Cover is half transparent",
                                       "Rect is underneath", "Only partly covered",
-                                      "Cover enters on click"],
-                      note="text under a later opaque shape -> not indexed; 5 controls stay")
+                                      "Cover enters on click", "Beside a rotated bar",
+                                      "In an ellipse's corner"],
+                      note="text under a later opaque shape -> not indexed; 7 controls stay")
 
 
 def _png(size=(320, 240), color=(90, 130, 180)):
