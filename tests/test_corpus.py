@@ -444,6 +444,18 @@ def test_box_holding_several_texts_is_not_a_label_box(tmp_path):
     assert round(els[0]["bbox"]["w"], 2) == 8.0 and round(els[0]["bbox"]["y"], 2) == 0.4
 
 
+def test_ink_annotation_resolves_to_its_fallback_picture(tmp_path):
+    # PowerPoint ink: an mc:AlternateContent whose p14 Choice is a
+    # `p:contentPart` (python-pptx has no class for it — it used to crash the
+    # slide, which was then emitted EMPTY) and whose Fallback is a picture of
+    # the strokes. The title survives; the ink is one needs_vision image.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["ink_annotation"].path)["slides"] for e in s["elements"]]
+    assert [(e["type"], e["text"]) for e in els] == [
+        ("title", "Visible title text"), ("image", None)], els
+    assert els[1]["needs_vision"] is True
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

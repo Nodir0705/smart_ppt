@@ -452,6 +452,8 @@ _A14_NS = "http://schemas.microsoft.com/office/drawing/2010/main"
 _M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 _A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_P14_NS = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 
 
 def _build_math_textbox(out_dir: Path) -> CorpusDeck:
@@ -685,6 +687,35 @@ def _build_background_panel(out_dir: Path) -> CorpusDeck:
                       note="full-slide rect holding 3 texts -> no pair; title typed by geometry")
 
 
+def _build_ink_annotation(out_dir: Path) -> CorpusDeck:
+    """Pen ink, saved the way PowerPoint saves it: `mc:AlternateContent` whose
+    Choice (Requires="p14") is a `p:contentPart` — an element python-pptx has
+    no shape class for, so handing it to the shape factory raised and the
+    per-slide isolation emitted the whole slide EMPTY — and whose Fallback is
+    a picture of the strokes. The title must survive and the ink resolves to
+    its Fallback picture (one needs_vision image), as the renderer draws it.
+    The contentPart's r:id reuses the picture's relationship so the package
+    has no dangling reference; the parser must never dereference it."""
+    from lxml import etree
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "Visible title text", y=0.3, w=8.0, h=0.8)
+    pic = s.shapes.add_picture(_png((200, 100), (200, 30, 30)),
+                               Inches(2), Inches(2), Inches(4), Inches(2))
+    ac = etree.Element(f"{{{_MC_NS}}}AlternateContent", nsmap={"mc": _MC_NS, "p14": _P14_NS})
+    choice = etree.SubElement(ac, f"{{{_MC_NS}}}Choice", Requires="p14")
+    etree.SubElement(choice, f"{{{_P_NS}}}contentPart", {f"{{{_R_NS}}}id": pic._element.blip_rId})
+    fallback = etree.SubElement(ac, f"{{{_MC_NS}}}Fallback")
+    pic._element.addprevious(ac)
+    fallback.append(pic._element)
+    path = out_dir / "ink_annotation.pptx"
+    prs.save(str(path))
+    return CorpusDeck("ink_annotation", str(path), expected_texts=["Visible title text"],
+                      expected_types=["title", "image"],
+                      note="ink AC (p14 contentPart Choice) -> Fallback picture; slide must not go empty")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -724,6 +755,7 @@ _BUILDERS = [
     _build_movie,
     _build_arrow_shapes,
     _build_background_panel,
+    _build_ink_annotation,
     _build_empty_slide,
 ]
 

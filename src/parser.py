@@ -128,6 +128,11 @@ def _compose(parent, group_shape):
 
 _MC_NS = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 _P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+# python-pptx has no shape class for `p:contentPart` (pen ink): handing one to
+# the shape factory raises and the whole slide came back empty. Not a shape
+# here — an ink `mc:AlternateContent` resolves to its Fallback picture (what
+# the renderer draws) and a bare contentPart in the tree is skipped.
+_SHAPE_TAGS = tuple(t for t in CT_GroupShape._shape_tags if not t.endswith("}contentPart"))
 
 
 def _is_hidden(elm) -> bool:
@@ -146,11 +151,11 @@ def _shape_elms(sp_tree):
     of its first alternative that holds any — the Choices first, then Fallback.
     """
     for elm in sp_tree.iterchildren():
-        if elm.tag in CT_GroupShape._shape_tags:
+        if elm.tag in _SHAPE_TAGS:
             yield elm
         elif elm.tag == _MC_NS + "AlternateContent":
             for alt in elm.iterchildren():
-                inner = [c for c in alt.iterchildren() if c.tag in CT_GroupShape._shape_tags]
+                inner = [c for c in alt.iterchildren() if c.tag in _SHAPE_TAGS]
                 if inner:
                     yield from inner
                     break
