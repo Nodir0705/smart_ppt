@@ -455,3 +455,6 @@ ljspeech-high 27/99 (0.17). All were deterministic after the fix below. Default 
   the branch, 64/78 · 59/73 · 65/82 (82 / 81 / 79 %) with 173 of 223 elements on glyph-accurate boxes (was 96). More
   pointable content means more wrong switches on the two reading-order talks (+13 / +14 false s); the meaning talk
   improved on every column.
+- **"Push it to github" on finished work means master.** I pushed the reviewed branch as `feat/parser-coverage` and asked
+  whether to merge; the user: "you should have pushed it to master". Finished + reviewed → `merge --no-ff` into master
+  → push master. Ask only when the work is unfinished or unscored.

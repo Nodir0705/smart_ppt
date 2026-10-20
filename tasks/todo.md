@@ -783,10 +783,8 @@ Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_
       | occlusion guards 3f16fac…c8af1ad · text-layer PDF 58becba · gap-tolerant refine fc7f514 | identical | identical (no equation boxes on these decks; refine byte-identical) |
       | final HEAD c317cb7 (alt-text markers, cropped-picture occlusion, palette PNG, spacer metrics, table render, refine anchors) | identical | identical |
       | Open-Q at HEAD (one row, remap: −3 ids = 2 off-canvas texts + 1 occluded strip, 0 retyped, no script step touched) | — | orig 94/117 · 28 · 129.5 s, jumpy 92/124 · 29 · 159.6, meaning 116/146 · 18 · 60.9 (strict). Last recorded rows 89–91/117 (2026-10-02, adjudicated false s 46.2). [UNCERTAIN: no pre-branch strict clause-pointer row for Open-Q was recorded; the removed elements were invisible and unreferenced, so they could only have lit falsely] |
-- [ ] 7b. Housekeeping before merge: `out/pre_remap_backup_124840/` (165 MB, pre-remap maps/scripts/presenter dirs) and
-      `out/maps/mit_theory_computation/old_146/` are rollback copies, not live artefacts — delete once the branch is merged.
-      Re-review of c317cb7 (refine anchors) requested from its reviewer; parser fixes 9685c71/5649ff2/eb6d220 followed
-      reviewer-specified fixes red-first.
+- [x] 7b. Merged to master (f8b93c2) and pushed 2026-10-20; rollback copies (`out/pre_remap_backup_124840/`,
+      `out/maps/mit_theory_computation/old_146/`) deleted. c317cb7 approved on re-review (all probes, 0 changed elements).
 - [ ] 8. Holdout run on the 7 unseen decks (not MIT): maps + 3 blind talk scripts each, shipped params, report against
       the bench rows. MIT is re-scored with them but reported as a dev deck.
 
