@@ -42,30 +42,31 @@ def _inline_fallbacks(slide_xml: bytes) -> bytes | None:
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-def _render_input(pptx_path: Path, tmp_dir: Path) -> Path:
-    """The file soffice renders: the deck itself, or — when a slide wraps a text
-    box in `mc:AlternateContent` with a picture Fallback (PowerPoint's equation
-    boxes; soffice renders the Choice but drops the equations, leaving gaps) —
-    a copy in `tmp_dir` with each such box replaced by its Fallback picture, as
-    PowerPoint drew it. The copy is deterministic: original entry order and
-    compression, fixed timestamps."""
+def _fallback_slides(pptx_path: Path) -> dict[str, bytes]:
+    """Slide parts (zip name -> xml) rewritten with each equation box's Fallback
+    picture in place of its `mc:AlternateContent`; empty when the deck has none.
+    (PowerPoint wraps a text box holding an equation that way; soffice renders
+    the Choice but drops the equations, leaving gaps mid-sentence.)"""
+    patched: dict[str, bytes] = {}
     with zipfile.ZipFile(pptx_path) as zin:
-        infos = zin.infolist()
-        patched = {}
-        for info in infos:
-            if _SLIDE_RE.fullmatch(info.filename):
-                xml = _inline_fallbacks(zin.read(info))
+        for name in zin.namelist():
+            if _SLIDE_RE.fullmatch(name):
+                xml = _inline_fallbacks(zin.read(name))
                 if xml is not None:
-                    patched[info.filename] = xml
-        if not patched:
-            return pptx_path
-        copy = tmp_dir / pptx_path.name
-        with zipfile.ZipFile(copy, "w") as zout:
-            for info in infos:
-                zi = zipfile.ZipInfo(info.filename, date_time=(1980, 1, 1, 0, 0, 0))
-                zi.compress_type = info.compress_type
-                zout.writestr(zi, patched[info.filename] if info.filename in patched
-                              else zin.read(info))
+                    patched[name] = xml
+    return patched
+
+
+def _picture_copy(pptx_path: Path, patched: dict[str, bytes], tmp_dir: Path) -> Path:
+    """A copy of the pptx in `tmp_dir` with the `patched` slide parts swapped in.
+    Deterministic: original entry order and compression, fixed timestamps."""
+    copy = tmp_dir / pptx_path.name
+    with zipfile.ZipFile(pptx_path) as zin, zipfile.ZipFile(copy, "w") as zout:
+        for info in zin.infolist():
+            zi = zipfile.ZipInfo(info.filename, date_time=(1980, 1, 1, 0, 0, 0))
+            zi.compress_type = info.compress_type
+            zout.writestr(zi, patched[info.filename] if info.filename in patched
+                          else zin.read(info))
     return copy
 
 
@@ -89,12 +90,24 @@ def _pdf_is_fresh(pptx_path: Path, pdf_path: Path) -> bool:
     return pdf_path.exists() and pdf_path.stat().st_mtime >= pptx_path.stat().st_mtime
 
 
-def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
-    """Produce and cache `pdf_dir/<stem>.pdf` from the pptx (mtime-keyed)."""
+def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out", *,
+             text_layer: bool = False) -> Path:
+    """Produce and cache a PDF of the pptx in `pdf_dir` (mtime-keyed).
+
+    `<stem>.pdf` (default) is the visual PDF the slide PNGs come from: an
+    equation box (`mc:AlternateContent` with a picture Fallback) is rendered
+    from that picture, so the equations show — as pixels, with no text layer.
+    `text_layer=True` gives `<stem>.text.pdf`, rendered from the original pptx:
+    soffice lays out the Choice text on the right lines (blank where the math
+    is), which is what refine_text needs for glyph boxes. A deck without such
+    boxes has one PDF serving both uses, and `text_layer=True` returns it.
+    """
     pptx_path = Path(pptx_path).resolve()
     pdf_dir = Path(pdf_dir).resolve()
     pdf_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = pdf_dir / (pptx_path.stem + ".pdf")
+    patched = _fallback_slides(pptx_path)
+    text_layer = text_layer and bool(patched)
+    pdf_path = pdf_dir / (pptx_path.stem + (".text.pdf" if text_layer else ".pdf"))
     if _pdf_is_fresh(pptx_path, pdf_path):
         return pdf_path
 
@@ -103,7 +116,8 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
         # A private user profile per run: soffice serialises on its profile, so
         # two concurrent renders (another test run, another agent) would collide.
         profile = td_path / "profile"
-        src = _render_input(pptx_path, td_path)
+        src = (_picture_copy(pptx_path, patched, td_path)
+               if patched and not text_layer else pptx_path)
         r = subprocess.run(
             [
                 "soffice", "--headless", "--nologo", "--nofirststartwizard",

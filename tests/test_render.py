@@ -21,10 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DECK = ROOT / "test_deck.pptx"
 
 
-def test_deck_pdf_gives_soffice_a_private_profile(tmp_path, monkeypatch):
-    # soffice serialises on its user profile, so two concurrent renders (another
-    # test run, another agent) collide unless each gets a fresh profile dir.
-    calls = []
+def _stub_soffice(monkeypatch) -> list[list[str]]:
+    """Replace subprocess.run with a stub that writes the PDF soffice would;
+    returns the list of argument lists it was called with."""
+    calls: list[list[str]] = []
 
     def fake_run(args, **kw):
         calls.append(args)
@@ -33,17 +33,84 @@ def test_deck_pdf_gives_soffice_a_private_profile(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_deck_pdf_gives_soffice_a_private_profile(tmp_path, monkeypatch):
+    # soffice serialises on its user profile, so two concurrent renders (another
+    # test run, another agent) collide unless each gets a fresh profile dir.
+    calls = _stub_soffice(monkeypatch)
     deck_pdf(DECK, tmp_path)
     (args,) = calls
     assert any(a.startswith("-env:UserInstallation=file://") for a in args), args
 
 
-def test_render_input_is_the_deck_itself_without_equation_boxes(tmp_path):
-    # No mc:AlternateContent with a picture Fallback -> soffice gets the original
-    # file; no copy is written.
-    from src.render import _render_input
-    assert _render_input(DECK, tmp_path) == DECK
-    assert list(tmp_path.iterdir()) == []
+def test_plain_deck_shares_one_pdf_for_pictures_and_text(tmp_path, monkeypatch):
+    # No equation boxes -> the visual PDF already carries the text layer: the
+    # text_layer call returns the same file, soffice ran once, on the deck itself.
+    calls = _stub_soffice(monkeypatch)
+    visual = deck_pdf(DECK, tmp_path)
+    assert deck_pdf(DECK, tmp_path, text_layer=True) == visual
+    assert len(calls) == 1 and calls[0][-1] == str(DECK)
+    assert [p.name for p in tmp_path.iterdir()] == ["test_deck.pdf"]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="soffice required")
+def test_text_layer_pdf_keeps_the_equation_box_text(tmp_path):
+    # The visual PDF draws an equation box from its Fallback picture — no glyphs.
+    # refine needs glyph positions, so it gets a second PDF rendered from the
+    # original pptx: the Choice text, laid out on the right lines (math blank).
+    import pypdfium2 as pdfium
+    from tools.make_corpus import build_corpus
+
+    def page_text(pdf: Path) -> str:
+        doc = pdfium.PdfDocument(str(pdf))
+        try:
+            return doc[0].get_textpage().get_text_range()
+        finally:
+            doc.close()
+
+    deck = {d.name: d for d in build_corpus(tmp_path / "corpus")}["math_textbox"]
+    visual = deck_pdf(deck.path, tmp_path)
+    text = deck_pdf(deck.path, tmp_path, text_layer=True)
+    assert text.name == "math_textbox.text.pdf" and visual.name == "math_textbox.pdf"
+    assert "Let" in page_text(text) and "be languages" in page_text(text)
+    assert "be languages" not in page_text(visual)
+    assert "Regular languages" in page_text(visual)  # ordinary boxes keep their text
+
+
+def test_build_index_refines_from_the_text_layer_pdf(tmp_path, monkeypatch):
+    # The refine stage must read the text-layer PDF (the visual one has no
+    # glyphs where equation boxes are). Wiring only: soffice stubbed, refine
+    # captured.
+    import src.build_index as B
+    from tools.make_corpus import build_corpus
+    deck = {d.name: d for d in build_corpus(tmp_path / "corpus")}["math_textbox"]
+    _stub_soffice(monkeypatch)
+    seen = []
+    monkeypatch.setattr(B, "refine_index", lambda index, pdf: seen.append(Path(pdf)) or index)
+    B.build_index(deck.path, tmp_path / "build", scope=False, render_slides=False, ocr=False)
+    assert seen == [tmp_path / "build" / "math_textbox.text.pdf"]
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="soffice required")
+@pytest.mark.xfail(strict=True, reason=(
+    "refine_text.select_text_words: the glyph run 'Let be languages' (equation blank) "
+    "shares only 11/14 alphanumerics with 'Let A, B be languages' as ONE block, under "
+    "its 80% rule, so the box stays bbox_source='shape'; needs a gap-tolerant match"))
+def test_build_index_gives_equation_box_glyph_lines(tmp_path):
+    # End to end: with the text-layer PDF an equation box should get glyph-
+    # derived line boxes instead of the parser's guessed lines.
+    from src.build_index import build_index
+    from tools.make_corpus import build_corpus
+    deck = {d.name: d for d in build_corpus(tmp_path / "corpus")}["math_textbox"]
+    index = build_index(deck.path, tmp_path / "build", scope=False, render_slides=False,
+                        ocr=False, vision_link=False)
+    el = next(e for s in index["slides"] for e in s["elements"]
+              if e["text"] == "Let A, B be languages")
+    assert el["bbox_source"] == "pdf_text" and el["line_bboxes"], el
 
 
 @pytest.mark.slow

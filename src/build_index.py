@@ -68,7 +68,10 @@ def build_index(
         if render_slides:
             # measured chart bars need the rendered PNGs; also caches the PDF
             render_deck(deck, slides_dir)
-        pdf_path = deck_pdf(deck, out)
+        # glyph boxes come from the PDF with the text layer: for a deck with
+        # equation boxes that is a second render (the visual one draws those
+        # boxes as pictures); otherwise the very same PDF the PNGs came from
+        pdf_path = deck_pdf(deck, out, text_layer=True)
         final = refine_index(final, pdf_path)
         if slides_dir.exists():
             from .chart_detect import refine_chart_bboxes
