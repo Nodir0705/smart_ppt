@@ -19,6 +19,7 @@ _log = logging.getLogger(__name__)
 
 EMU_PER_INCH = 914400
 ARROW_DIM_THRESHOLD_IN = 0.15  # any dimension below this with empty text → arrow
+OFF_CANVAS_TOL_IN = 0.05       # a shape this far outside the slide is wholly off-canvas
 
 
 # ---------- data classes ----------
@@ -36,6 +37,11 @@ class BBox:
 
     def contains_point(self, px: float, py: float) -> bool:
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+
+    def is_outside(self, w: float, h: float, tol: float) -> bool:
+        """Wholly outside the [0, w] x [0, h] canvas (beyond `tol`)."""
+        return (self.x + self.w < -tol or self.y + self.h < -tol
+                or self.x > w + tol or self.y > h + tol)
 
 
 @dataclass
@@ -655,9 +661,13 @@ def _parse_slide(slide, slide_no: int, slide_w: float, slide_h: float,
     #    leaf's bbox mapped from group child-space into slide coordinates)
     shapes_meta: list[dict] = []
     for shape, tf in _iter_flat(slide.shapes):
+        bbox = _transformed_bbox(shape, tf)
+        if bbox.is_outside(slide_w, slide_h, OFF_CANVAS_TOL_IN):
+            _log.debug("slide %d: %r off-canvas at %s; skipped", slide_no, shape.name, bbox)
+            continue
         shapes_meta.append({
             "shape": shape,
-            "bbox": _transformed_bbox(shape, tf),
+            "bbox": bbox,
             "text": _shape_text(shape),
             "is_picture": shape.shape_type == MSO_SHAPE_TYPE.PICTURE,
             "is_table": getattr(shape, "has_table", False),

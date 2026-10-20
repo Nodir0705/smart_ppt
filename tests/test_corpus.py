@@ -373,6 +373,14 @@ def test_hidden_shapes_are_not_indexed(tmp_path):
     assert texts == ["Visible sibling"], texts
 
 
+def test_off_canvas_shapes_are_not_indexed(tmp_path):
+    # Wholly outside the slide (y=9 in on a 7.5-in slide) → invisible → dropped;
+    # a box overhanging the bottom edge (y=7.3, h=0.5) is still partly visible.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    texts = _texts(parse_deck(decks["off_canvas"].path))
+    assert texts == ["On the slide", "Overhanging the edge"], texts
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")

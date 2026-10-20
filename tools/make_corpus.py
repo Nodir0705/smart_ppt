@@ -537,6 +537,22 @@ def _build_hidden_shapes(out_dir: Path) -> CorpusDeck:
                       note="hidden shape / hidden group subtree -> not indexed")
 
 
+def _build_off_canvas(out_dir: Path) -> CorpusDeck:
+    """A text box parked entirely below the 7.5-in slide (authors stash notes
+    and leftovers off-canvas) is not on the rendered slide → not indexed. One
+    that merely overhangs the bottom edge stays."""
+    prs = Presentation()
+    s = _blank_slide(prs)
+    _textbox(s.shapes, "On the slide", y=1.0)
+    _textbox(s.shapes, "Overhanging the edge", y=7.3, h=0.5)
+    _textbox(s.shapes, "Parked off-canvas", y=9.0)
+    path = out_dir / "off_canvas.pptx"
+    prs.save(str(path))
+    return CorpusDeck("off_canvas", str(path),
+                      expected_texts=["On the slide", "Overhanging the edge"],
+                      note="shape wholly outside the slide -> not indexed; partial overlap stays")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -570,6 +586,7 @@ _BUILDERS = [
     _build_image_no_text,
     _build_math_textbox,
     _build_hidden_shapes,
+    _build_off_canvas,
     _build_empty_slide,
 ]
 
