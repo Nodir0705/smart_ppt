@@ -4,9 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFont
 
-from tools.coverage import _page_words, draw_overlay, main, slide_coverage
+from tools.coverage import _font, _page_words, draw_overlay, main, slide_coverage
 
 ROOT = Path(__file__).resolve().parents[1]
 DECK_DIR = ROOT / "out" / "bench" / "test_deck" / "default"
@@ -99,6 +99,29 @@ def test_page_words_split_on_whitespace_and_hyphen_break_marker():
     assert [w["text"] for w in words] == ["ab", "c", "d"]
     assert words[0] == {"text": "ab", "x0": 10, "x1": 20, "top": 100.0, "bottom": 110.0}
     assert words[2]["top"] == 120.0  # the line after a hyphen break stays its own word
+
+
+def test_page_words_skip_degenerate_glyph_boxes():
+    tp = _FakeTextPage([("a", 10, 90, 15, 100), ("x", 0, 0, 0, 0), ("b", 16, 90, 20, 100)])
+    assert _page_words(tp, 200.0) == [
+        {"text": "ab", "x0": 10, "x1": 20, "top": 100.0, "bottom": 110.0}]
+
+
+def test_page_words_split_on_unicode_spaces():
+    tp = _FakeTextPage([("a", 10, 90, 15, 100), ("\u2009", 0, 0, 0, 0), ("b", 16, 90, 20, 100),
+                        ("\u3000", 0, 0, 0, 0), ("c", 30, 90, 35, 100)])
+    assert [w["text"] for w in _page_words(tp, 200.0)] == ["a", "b", "c"]
+
+
+def test_font_fallback_keeps_requested_size(monkeypatch):
+    real = ImageFont.truetype
+
+    def no_system_font(font=None, *a, **k):  # load_default(size) itself uses truetype(BytesIO)
+        if isinstance(font, str):
+            raise OSError("no font")
+        return real(font, *a, **k)
+    monkeypatch.setattr(ImageFont, "truetype", no_system_font)
+    assert _font(18).size == 18
 
 
 def test_overlay_keeps_size_and_draws_something():

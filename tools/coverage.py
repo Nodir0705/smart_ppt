@@ -67,12 +67,14 @@ def _page_words(textpage, page_height: float) -> list[dict]:
     cur: dict | None = None
     for i in range(textpage.count_chars()):
         ch = textpage.get_text_range(i, 1)
-        if ch in _SEPARATORS:
+        if ch in _SEPARATORS or ch.isspace():
             if cur is not None:
                 words.append(cur)
             cur = None
             continue
         left, bottom, right, top = textpage.get_charbox(i, loose=False)
+        if right <= left or top <= bottom:  # degenerate box: no ink to measure
+            continue
         box = {"text": ch, "x0": left, "x1": right,
                "top": page_height - top, "bottom": page_height - bottom}
         if cur is None:
@@ -133,7 +135,7 @@ def _font(size: int):
     try:
         return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
     except OSError:
-        return ImageFont.load_default()
+        return ImageFont.load_default(size)
 
 
 def _colour(e: dict) -> tuple[int, int, int]:
