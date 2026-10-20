@@ -48,9 +48,13 @@ def deck_pdf(pptx_path: str | Path, pdf_dir: str | Path = "out") -> Path:
 
     with tempfile.TemporaryDirectory(prefix="smartppt_pdf_") as td:
         td_path = Path(td)
+        # A private user profile per run: soffice serialises on its profile, so
+        # two concurrent renders (another test run, another agent) would collide.
+        profile = td_path / "profile"
         r = subprocess.run(
             [
                 "soffice", "--headless", "--nologo", "--nofirststartwizard",
+                f"-env:UserInstallation={profile.as_uri()}",
                 "--convert-to", "pdf", "--outdir", str(td_path), str(pptx_path),
             ],
             check=False, capture_output=True, text=True, timeout=120,

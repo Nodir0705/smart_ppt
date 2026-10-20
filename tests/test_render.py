@@ -9,15 +9,33 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
-from src.render import render_deck
+from src.render import deck_pdf, render_deck
 
 ROOT = Path(__file__).resolve().parents[1]
 DECK = ROOT / "test_deck.pptx"
+
+
+def test_deck_pdf_gives_soffice_a_private_profile(tmp_path, monkeypatch):
+    # soffice serialises on its user profile, so two concurrent renders (another
+    # test run, another agent) collide unless each gets a fresh profile dir.
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        outdir = Path(args[args.index("--outdir") + 1])
+        (outdir / (Path(args[-1]).stem + ".pdf")).write_bytes(b"%PDF-1.4\n")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    deck_pdf(DECK, tmp_path)
+    (args,) = calls
+    assert any(a.startswith("-env:UserInstallation=file://") for a in args), args
 
 
 @pytest.mark.slow
