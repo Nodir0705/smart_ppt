@@ -766,7 +766,7 @@ Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_
       (AI_Handout identical throughout; TapHole changed only by truth and by the alt-text commit, for the better);
       verbatim bench level or better on all five decks; hand fixture 38/40 · 1 · 1; filler ≤ 2 per deck; coverage: 0
       unclaimed words on AI_Handout, TapHole, test_deck, Open-Q; MIT 2/813.
-- [x] 7a. Attribution table (`out/bench/attribution.md`, script `scratchpad/rebuild_replay.sh <commit> <label>`: clean
+- [x] 7a. Attribution table (`out/bench/attribution.md`, script `tools/rebuild_replay.sh <commit> <label> [deck …]`: clean
       worktree → build default → remap → build map → clause_replay, AI_Handout + TapHole):
       | commit | AI orig/jumpy/meaning lit · false ids · false s | TapHole same |
       | baseline 7fe4c79 | 46/48·3·4.5, 59/61·3·10.5, 57/59·8·22.7 | 63/65·12·46.8, 59/70·7·27.2, 68/72·5·13.7 |
@@ -783,6 +783,10 @@ Dev decks for parser work: 4 bench decks + MIT + 5 local (Wheel-Rail GUI, Wheel_
       | occlusion guards 3f16fac…c8af1ad · text-layer PDF 58becba · gap-tolerant refine fc7f514 | identical | identical (no equation boxes on these decks; refine byte-identical) |
       | final HEAD c317cb7 (alt-text markers, cropped-picture occlusion, palette PNG, spacer metrics, table render, refine anchors) | identical | identical |
       | Open-Q at HEAD (one row, remap: −3 ids = 2 off-canvas texts + 1 occluded strip, 0 retyped, no script step touched) | — | orig 94/117 · 28 · 129.5 s, jumpy 92/124 · 29 · 159.6, meaning 116/146 · 18 · 60.9 (strict). Last recorded rows 89–91/117 (2026-10-02, adjudicated false s 46.2). [UNCERTAIN: no pre-branch strict clause-pointer row for Open-Q was recorded; the removed elements were invisible and unreferenced, so they could only have lit falsely] |
+- [ ] 7b. Housekeeping before merge: `out/pre_remap_backup_124840/` (165 MB, pre-remap maps/scripts/presenter dirs) and
+      `out/maps/mit_theory_computation/old_146/` are rollback copies, not live artefacts — delete once the branch is merged.
+      Re-review of c317cb7 (refine anchors) requested from its reviewer; parser fixes 9685c71/5649ff2/eb6d220 followed
+      reviewer-specified fixes red-first.
 - [ ] 8. Holdout run on the 7 unseen decks (not MIT): maps + 3 blind talk scripts each, shipped params, report against
       the bench rows. MIT is re-scored with them but reported as a dev deck.
 
