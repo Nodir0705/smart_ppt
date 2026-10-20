@@ -445,7 +445,8 @@ def _paragraph_metrics(shape) -> list[dict]:
 
     Uses each paragraph's own font size when present; falls back to the
     first non-None run font size; finally to 16 pt. Line height = font * 1.2
-    unless `line_spacing` overrides (float multiplier or absolute Length).
+    unless `line_spacing` overrides (float multiplier or absolute Length),
+    times the paragraph's line count (each soft line break `a:br` adds one).
     """
     if not shape.has_text_frame:
         return []
@@ -471,6 +472,7 @@ def _paragraph_metrics(shape) -> list[dict]:
                 line_h = ls.inches
             except AttributeError:
                 line_h = size_in * _DEFAULT_LINE_SPACING
+        line_h *= 1 + text.count("\n")  # a soft line break (a:br) adds a line
         sa = p.space_after
         sa_in = sa.inches if sa is not None else 0.0
         out.append({"text": text, "line_h": line_h, "space_after": sa_in})

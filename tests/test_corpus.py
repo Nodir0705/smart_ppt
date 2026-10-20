@@ -61,6 +61,32 @@ def test_plain_paragraph_text_unchanged():
     assert [m["text"] for m in _paragraph_metrics(tb)] == _paragraphs(tb)
 
 
+def test_soft_line_break_paragraph_spans_two_lines():
+    # paragraph 1 = "a" + br + "b" occupies TWO lines, so its box is two line
+    # heights tall and paragraph 2 starts two line heights below its top — not
+    # one, which drifted every bullet after a br-paragraph upward onto it.
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from src.parser import _bullet_bboxes
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(3))
+    p1 = tb.text_frame.paragraphs[0]
+    p1.add_run().text = "a"
+    p1.add_line_break()
+    p1.add_run().text = "b"
+    p1.font.size = Pt(20)
+    p2 = tb.text_frame.add_paragraph()
+    p2.text = "c"
+    p2.font.size = Pt(20)
+
+    (t1, b1), (t2, b2) = _bullet_bboxes(tb)
+    assert (t1, t2) == ("a\nb", "c")
+    one_line = Pt(20).inches * 1.2  # 20 pt at the default 1.2 line spacing
+    assert abs(b1.h - 2 * one_line) < 1e-6, b1
+    assert abs(b2.y - (b1.y + 2 * one_line)) < 1e-6, (b1, b2)
+
+
 def _a_p(inner: str):
     from lxml import etree
     return etree.fromstring(
