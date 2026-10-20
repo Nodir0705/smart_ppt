@@ -640,23 +640,40 @@ def _build_occluded_text(out_dir: Path) -> CorpusDeck:
            box=(1.5, 3.35, 4.0, 0.3), tb=(3.2, 2.0, 0.6, 0.4))
     # an ellipse: the AABB's corner is unpainted
     corner("In an ellipse's corner", MSO_SHAPE.OVAL)
+
+    def picture_cover(text, color, *, fade=None):
+        # a picture over the text box: RGBA (alpha channel) or faded
+        # (`a:alphaModFix`) may show what is under it; a plain RGB one hides it
+        s = _blank_slide(prs)
+        _textbox(s.shapes, text, x=1.0, y=2.0, w=4.0, h=1.0)
+        pic = s.shapes.add_picture(_png((60, 20), color), Inches(0.5), Inches(1.5),
+                                   Inches(6), Inches(2))
+        if fade is not None:
+            pic._element.blipFill.blip.append(etree.fromstring(
+                f'<a:alphaModFix xmlns:a="{_A_NS}" amt="{fade}"/>'))
+
+    picture_cover("Under an RGBA picture", (0, 0, 0, 128))
+    picture_cover("Under a faded picture", (0, 0, 0), fade=50000)
+    picture_cover("Under an opaque picture", (0, 0, 0))
     path = out_dir / "occluded_text.pptx"
     prs.save(str(path))
     return CorpusDeck("occluded_text", str(path),
                       expected_texts=["Cover has no fill", "Cover is half transparent",
                                       "Rect is underneath", "Only partly covered",
                                       "Cover enters on click", "Beside a rotated bar",
-                                      "In an ellipse's corner"],
-                      note="text under a later opaque shape -> not indexed; 7 controls stay")
+                                      "In an ellipse's corner", "Under an RGBA picture",
+                                      "Under a faded picture"],
+                      note="text under a later opaque shape -> not indexed; 9 controls stay")
 
 
 def _png(size=(320, 240), color=(90, 130, 180)):
+    """A solid PNG; a 4-tuple colour makes it RGBA (alpha channel)."""
     import io
 
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGB", size, color).save(buf, "PNG")
+    Image.new("RGBA" if len(color) == 4 else "RGB", size, color).save(buf, "PNG")
     buf.seek(0)
     return buf
 

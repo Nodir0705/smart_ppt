@@ -354,17 +354,33 @@ _RECT_PRESETS = frozenset(
     "round1Rect round2SameRect round2DiagRect flowChartProcess".split())
 
 
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _picture_may_show_through(shape) -> bool:
+    """A faded picture (`a:alphaModFix` < 100 %) or a PNG with an alpha
+    channel (IHDR colour type 4 or 6) can reveal what lies under it."""
+    for fix in shape._element.iter(_A_NS + "alphaModFix"):
+        if (fix.get("amt") or "").isdigit() and int(fix.get("amt")) < 100000:
+            return True
+    try:
+        blob = (getattr(shape, "image", None) or shape.poster_frame).blob
+    except Exception:
+        return False  # linked picture: nothing to inspect, assume opaque
+    return blob[:8] == _PNG_SIG and len(blob) > 25 and blob[25] in (4, 6)
+
+
 def _is_opaque(shape) -> bool:
     """A leaf that hides whatever lies wholly under its (axis-aligned) bbox: a
-    picture (ponytail: PNG alpha not inspected), or a rectangular `p:sp`
-    filled with no `a:alpha` < 100 %. A rotated shape's AABB exceeds its
-    paint, so it never occludes; nor do connectors, graphic frames, custom
-    geometry or transparent shapes."""
+    picture without transparency, or a rectangular `p:sp` filled with no
+    `a:alpha` < 100 %. A rotated shape's AABB exceeds its paint, so it never
+    occludes; nor do connectors, graphic frames, custom geometry or
+    transparent shapes."""
     if (getattr(shape, "rotation", 0.0) or 0.0) % 90 != 0:
         return False
     tag = shape._element.tag
     if tag == _P_NS + "pic":
-        return True
+        return not _picture_may_show_through(shape)
     if tag != _P_NS + "sp":
         return False
     geom = shape._element.find(_P_NS + "spPr/" + _A_NS + "prstGeom")
