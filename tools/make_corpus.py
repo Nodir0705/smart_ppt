@@ -662,6 +662,29 @@ def _build_arrow_shapes(out_dir: Path) -> CorpusDeck:
                       note="connector/arrow preset/thin filled bar -> arrow; dot & zero-width box -> skipped")
 
 
+def _build_background_panel(out_dir: Path) -> CorpusDeck:
+    """A full-slide empty rectangle (a drawn background) behind a title and two
+    body boxes. It holds several texts, so it is a panel, not a label box: no
+    pair may form (the old rule paired it with the title, giving the title a
+    full-slide bbox) and the title is typed by its own geometry."""
+    from pptx.enum.shapes import MSO_SHAPE
+
+    prs = Presentation()
+    s = _blank_slide(prs)
+    bg = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, prs.slide_width, prs.slide_height)
+    bg.text_frame.clear()
+    _textbox(s.shapes, "Panel Title", x=0.5, y=0.4, w=8.0, h=0.8)
+    _textbox(s.shapes, "First point on the panel", x=0.5, y=2.0, w=8.0, h=0.8, size=18)
+    _textbox(s.shapes, "Second point on the panel", x=0.5, y=3.0, w=8.0, h=0.8, size=18)
+    path = out_dir / "background_panel.pptx"
+    prs.save(str(path))
+    return CorpusDeck("background_panel", str(path),
+                      expected_texts=["Panel Title", "First point on the panel",
+                                      "Second point on the panel"],
+                      expected_types=["title", "body", "body"],
+                      note="full-slide rect holding 3 texts -> no pair; title typed by geometry")
+
+
 def _build_empty_slide(out_dir: Path) -> CorpusDeck:
     """A slide with no shapes — parsing must not crash and yields 0 elements."""
     prs = Presentation()
@@ -700,6 +723,7 @@ _BUILDERS = [
     _build_placeholder_picture,
     _build_movie,
     _build_arrow_shapes,
+    _build_background_panel,
     _build_empty_slide,
 ]
 

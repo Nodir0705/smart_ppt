@@ -22,6 +22,7 @@ ARROW_DIM_THRESHOLD_IN = 0.15  # thinner than this in one dimension = line-thin
 ARROW_MIN_LEN_IN = 0.5         # ... and at least this long = a drawn line (not a dot)
 OFF_CANVAS_TOL_IN = 0.05       # a shape this far outside the slide is wholly off-canvas
 OCCLUSION_TOL_IN = 0.02        # a later opaque shape reaching this close to a leaf's edges covers it
+MAX_TEXTS_IN_LABEL_BOX = 2     # a label box holds a label and at most a sub-label (KPI number + caption)
 
 
 # ---------- data classes ----------
@@ -503,29 +504,27 @@ def _find_container_text_pairs(shapes_meta: list[dict]) -> list[tuple[int, int]]
 
     Returns list of (container_idx, text_idx). Each index appears at most
     once. Containers must have non-trivial area; text shapes must have text.
+    A box holding more than MAX_TEXTS_IN_LABEL_BOX text centres is a
+    background/cover/panel, not a label box — it pairs with nothing (a
+    full-slide rectangle used to pair with the slide title).
     """
     pairs: list[tuple[int, int]] = []
     used: set[int] = set()
     for ci, c in enumerate(shapes_meta):
-        if ci in used:
-            continue
         if c["text"]:
             continue  # container must be empty-text
         if c["is_picture"] or c["is_table"] or c["is_chart"]:
             continue
         if c["bbox"].w < 0.5 or c["bbox"].h < 0.5:
             continue  # arrows / tiny stuff
-        for ti, t in enumerate(shapes_meta):
-            if ti == ci or ti in used:
-                continue
-            if not t["text"]:
-                continue
-            if t["is_picture"] or t["is_table"] or t["is_chart"]:
-                continue
-            tcx, tcy = t["bbox"].center()
-            if c["bbox"].contains_point(tcx, tcy):
+        inside = [ti for ti, t in enumerate(shapes_meta)
+                  if t["text"] and not (t["is_picture"] or t["is_table"] or t["is_chart"])
+                  and c["bbox"].contains_point(*t["bbox"].center())]
+        if len(inside) > MAX_TEXTS_IN_LABEL_BOX:
+            continue
+        for ti in inside:
+            if ti not in used:
                 pairs.append((ci, ti))
-                used.add(ci)
                 used.add(ti)
                 break
     return pairs

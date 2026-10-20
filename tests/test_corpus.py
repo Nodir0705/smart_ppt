@@ -425,6 +425,20 @@ def test_arrows_come_from_geometry_not_from_being_small(tmp_path):
         (2.0, 0.5), (3.0, 0.05), (3.0, 0.5)]
 
 
+def test_box_holding_several_texts_is_not_a_label_box(tmp_path):
+    # A full-slide empty rect behind a title + two body boxes is a background:
+    # it pairs with nothing (no diagram_label/stat with its bbox); the title is
+    # typed by `_classify_text_shape` (y < 1.2 in, wide) with its own bbox.
+    decks = {d.name: d for d in build_corpus(tmp_path)}
+    els = [e for s in parse_deck(decks["background_panel"].path)["slides"] for e in s["elements"]]
+    assert [(e["type"], e["text"]) for e in els] == [
+        ("title", "Panel Title"),
+        ("body", "First point on the panel"),
+        ("body", "Second point on the panel"),
+    ], els
+    assert round(els[0]["bbox"]["w"], 2) == 8.0 and round(els[0]["bbox"]["y"], 2) == 0.4
+
+
 def test_corpus_parse_is_deterministic(tmp_path):
     # The generator + parser are deterministic: same build → same parsed texts.
     a = build_corpus(tmp_path / "a")
