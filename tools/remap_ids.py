@@ -104,17 +104,131 @@ def build_id_map(old_index: dict, new_index: dict) -> dict:
             "retyped": retyped}
 
 
+def remap_json(obj, id_map: dict) -> tuple[object, list[str]]:
+    """(copy of obj with every id string replaced via id_map, old ids that mapped to null).
+    Null-mapped ids vanish from lists and dict keys and become null as dict values; strings
+    not in the map are left alone (ids are matched whole, never inside prose)."""
+    dropped: list[str] = []
+
+    def gone(s) -> bool:
+        if isinstance(s, str) and s in id_map and id_map[s] is None:
+            if s not in dropped:
+                dropped.append(s)
+            return True
+        return False
+
+    def go(o):
+        if isinstance(o, dict):
+            return {id_map.get(k, k): go(v) for k, v in o.items() if not gone(k)}
+        if isinstance(o, list):
+            return [go(v) for v in o if not gone(v)]
+        if isinstance(o, str) and o in id_map:
+            gone(o)
+            return id_map[o]
+        return o
+
+    return go(obj), dropped
+
+
+def _ids(o):
+    """Every id-shaped string in o, keys included."""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if ID.match(k):
+                yield k
+            yield from _ids(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _ids(v)
+    elif isinstance(o, str) and ID.match(o):
+        yield o
+
+
+def _segments(obj):
+    """(slide, segment dict) for presenter-script shaped files."""
+    for s in (obj.get("slides") or []) if isinstance(obj, dict) else []:
+        for seg in s.get("segments") or []:
+            if isinstance(seg, dict):
+                yield s.get("slide"), seg
+
+
+def is_slide_map(obj) -> bool:
+    return isinstance(obj, dict) and "items" in obj and "units" in obj
+
+
+def is_packet(obj) -> bool:
+    return isinstance(obj, dict) and "elements" in obj and "png" in obj
+
+
+def remap_file(obj, id_map: dict, new_index: dict) -> tuple[object, dict]:
+    """(remapped obj, report). Slide maps also get local_slide_map.fixup against the new
+    index's packet: new ids become items + singleton units, emptied units go (with their
+    relations and order entry). `segments` lists (slide, dropped ids, text) per talk segment
+    that lost an id, for re-annotation."""
+    from tools.local_slide_map import fixup   # pure; imported lazily to keep `--out` light
+
+    rep = {"remapped": len({i for i in _ids(obj) if id_map.get(i) not in (None, i)}),
+           "dropped": [], "new": [],
+           "segments": [(n, lost, seg.get("text")) for n, seg in _segments(obj)
+                        if (lost := [i for i in seg.get("refers_to") or [] if i in id_map and id_map[i] is None])]}
+    out, rep["dropped"] = remap_json(obj, id_map)
+    if is_slide_map(out):
+        before = set(out["items"])
+        packet = {"slide": out.get("slide"), "slide_size": new_index.get("slide_size"),
+                  "elements": next((s["elements"] for s in new_index["slides"]
+                                    if s["slide_number"] == out.get("slide")), [])}
+        out, _ = fixup(out, packet)
+        rep["new"] = [i for i in out["items"] if i not in before]
+    return out, rep
+
+
+def _dumps(obj, raw: str) -> str:
+    """Keep the file's own indent width and trailing-newline habit."""
+    m = re.search(r"\n( +)\S", raw)
+    return json.dumps(obj, indent=len(m.group(1)) if m else 1, ensure_ascii=False) + ("\n" if raw.endswith("\n") else "")
+
+
+def apply(paths: list[Path], id_map: dict, new_index: dict) -> list[str]:
+    """Rewrite every *.json under paths in place; markdown report lines."""
+    files = sorted({f for p in paths for f in ([p] if p.is_file() else p.rglob("*.json"))})
+    lines = []
+    for p in files:
+        raw = p.read_text()
+        obj = json.loads(raw)
+        if is_packet(obj):
+            lines += [f"## {p}", "- skipped: packet (regenerate with tools.slide_map packets)"]
+            continue
+        out, rep = remap_file(obj, id_map, new_index)
+        if out == obj:
+            lines += [f"## {p}", "- unchanged"]
+            continue
+        p.write_text(_dumps(out, raw))
+        lines += [f"## {p}", f"- remapped: {rep['remapped']} ids",
+                  f"- dropped: {', '.join(rep['dropped']) or 'none'}"]
+        lines += [f"  - slide {n}: {', '.join(lost)} — {text!r}" for n, lost, text in rep["segments"]]
+        if is_slide_map(out):
+            lines.append(f"- new: {', '.join(rep['new']) or 'none'}")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("old_index", type=Path)
     ap.add_argument("new_index", type=Path)
     ap.add_argument("--out", type=Path, help="write the id map here")
+    ap.add_argument("--apply", nargs="+", type=Path, default=[], metavar="PATH",
+                    help="rewrite these files / every *.json under these dirs in place")
     a = ap.parse_args(argv)
-    result = build_id_map(json.loads(a.old_index.read_text()), json.loads(a.new_index.read_text()))
+    new_index = json.loads(a.new_index.read_text())
+    result = build_id_map(json.loads(a.old_index.read_text()), new_index)
     text = json.dumps(result, indent=1, ensure_ascii=False) + "\n"
     if a.out:
         a.out.write_text(text)
-    else:
+    if a.apply:
+        print(f"# remap_ids: {len(result['map'])} old ids, {len(result['dropped'])} dropped, "
+              f"{len(result['new'])} new, {len(result['retyped'])} retyped")
+        print("\n".join(apply(a.apply, result["map"], new_index)))
+    elif not a.out:
         print(text, end="")
     return 0
 
