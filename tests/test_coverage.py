@@ -87,8 +87,15 @@ def test_overlay_keeps_size_and_draws_something():
 @pytest.mark.skipif(not (DECK_DIR / "index.scoped.json").exists(),
                     reason="test_deck not built under out/bench")
 def test_main_writes_report_and_overlays(tmp_path):
+    import json
+    import pypdfium2 as pdfium
+
     assert main([str(DECK_DIR), "--out", str(tmp_path)]) == 0
-    assert (tmp_path / "report.json").exists()
     assert (tmp_path / "report.md").exists()
     assert sorted(p.name for p in tmp_path.glob("slide_*.png")) == [
         f"slide_{n:03d}.png" for n in range(1, 8)]
+    report = json.loads((tmp_path / "report.json").read_text())
+    pdf = pdfium.PdfDocument(str(DECK_DIR / "test_deck.pdf"))
+    # words are pdfium's own whitespace tokens, not refine_text's glyph fragments
+    assert report["totals"]["words"] == sum(
+        len(page.get_textpage().get_text_range().split()) for page in pdf)

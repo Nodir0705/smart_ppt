@@ -10,7 +10,8 @@ Inputs (all already built, nothing is rendered here): ``index.scoped.json``,
 * ``slide_NNN.png`` — the render with every element's region drawn and labelled
   with its short id (``e13``): blue = text types, magenta = image, grey = arrow,
   orange = ``needs_vision``. ``line_bboxes`` are drawn when present, else ``bbox``.
-* ``report.json`` / ``report.md`` — per slide:
+* ``report.json`` / ``report.md`` — per slide (a PDF word is one of pdfium's
+  whitespace tokens, tight glyph box, in slide inches):
   - unclaimed lines: PDF words (>= 2 alphanumerics) whose centre lies in no
     element region (union of ``line_bboxes`` else ``bbox``, each padded by 0.03 in),
     clustered into lines; a line whose y0 is below 92 % of the slide height is
@@ -24,11 +25,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
+import pypdfium2 as pdfium
 from PIL import Image, ImageDraw, ImageFont
 
-from src.refine_text import (PT_PER_INCH, _iter_pdf_pages, _norm, cluster_lines,
+from src.refine_text import (PT_PER_INCH, _assemble_words, _norm, cluster_lines,
                              union_bbox, words_to_inches)
 
 PAD_IN = 0.03
@@ -49,6 +52,23 @@ def regions(e: dict) -> list[dict]:
 
 def _inside(b: dict, cx: float, cy: float) -> bool:
     return b["x"] <= cx <= b["x"] + b["w"] and b["y"] <= cy <= b["y"] + b["h"]
+
+
+def _pdf_pages(pdf_path: Path) -> list[tuple[float, float, list[dict]]]:
+    """(width_pt, height_pt, words) per page; words in points, y from the top.
+
+    A word is one of pdfium's own whitespace tokens: refine_text's 2 pt / 3 pt
+    gap splits (right for snapping line boxes) cut large-font words into glyph
+    fragments, which is noise for a word-centre test and garbles the report.
+    """
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        return [(*page.get_size(),
+                 _assemble_words(page.get_textpage(), page.get_size()[1],
+                                 x_tol=math.inf, y_tol=math.inf))
+                for page in pdf]
+    finally:
+        pdf.close()
 
 
 def slide_coverage(slide: dict, words: list[dict], slide_size: dict) -> dict:
@@ -147,7 +167,7 @@ def run(deck_dir: Path, out_dir: Path) -> dict:
     pdfs = sorted(deck_dir.glob("*.pdf"))
     if not pdfs:
         raise FileNotFoundError(f"no PDF in {deck_dir}")
-    pages = list(_iter_pdf_pages(pdfs[0]))
+    pages = _pdf_pages(pdfs[0])
     if len(pages) != len(index["slides"]):
         raise RuntimeError(f"PDF has {len(pages)} pages but index has {len(index['slides'])} slides")
     size = index["slide_size"]
